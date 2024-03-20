@@ -365,8 +365,8 @@ fn write_packet(
     let buf = ip_header.0;
 
     let mut udp_header = Udp(&mut buf[IPV4_HEADER_SIZE..]);
-    udp_header.set_src_port(RDMA_DEFAULT_PORT.to_be());
-    udp_header.set_dst_port(RDMA_DEFAULT_PORT.to_be());
+    udp_header.set_src_port(RDMA_DEFAULT_PORT);
+    udp_header.set_dst_port(RDMA_DEFAULT_PORT);
     udp_header.set_length((ACKPACKET_WITHOUT_IPV4_HEADER_SIZE as u16).to_be());
     // It might redundant to calculate checksum, as the ICRC will calculate the another checksum
     udp_header.set_checksum(0);

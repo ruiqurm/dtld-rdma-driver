@@ -130,7 +130,7 @@ impl WorkDescPollerContext {
             ToHostWorkRbDescWriteType::First | ToHostWorkRbDescWriteType::Only
         ) {
             let mut recv_pkt_map_guard = self.recv_pkt_map.write().unwrap();
-            let real_payload_len = desc.len - desc.common.pad_cnt as u32;
+            let real_payload_len = desc.len;
             let guard = self.qp_table.read().unwrap();
 
             let pmtu = if let Some(qp_ctx) = guard.get(&desc.common.dqpn) {

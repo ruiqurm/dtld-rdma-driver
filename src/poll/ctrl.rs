@@ -1,7 +1,6 @@
 use crate::{
     device::{
-        ToHostCtrlRbDesc, ToHostCtrlRbDescQpManagement, ToHostCtrlRbDescUpdateMrTable,
-        ToHostCtrlRbDescUpdatePageTable,
+        ToHostCtrlRbDesc, ToHostCtrlRbDescQpManagement, ToHostCtrlRbDescSetNetworkParam, ToHostCtrlRbDescSetRawPacketReceiveMeta, ToHostCtrlRbDescUpdateMrTable, ToHostCtrlRbDescUpdatePageTable
     },
     Device,
 };
@@ -18,6 +17,8 @@ impl Device {
                     self.handle_ctrl_desc_update_page_table(desc)
                 }
                 ToHostCtrlRbDesc::QpManagement(desc) => self.handle_ctrl_desc_qp_management(desc),
+                ToHostCtrlRbDesc::SetNetworkParam(desc) => self.handle_ctrl_desc_network_management(desc),
+                ToHostCtrlRbDesc::SetRawPacketReceiveMeta(desc) => self.handle_ctrl_desc_raw_packet_receive_meta(desc),
             }
         }
     }
@@ -43,6 +44,26 @@ impl Device {
     }
 
     fn handle_ctrl_desc_qp_management(&self, desc: ToHostCtrlRbDescQpManagement) {
+        let ctx_map = self.0.ctrl_op_ctx_map.read().unwrap();
+
+        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
+            ctx.set_result(desc.common.is_success);
+        } else {
+            eprintln!("no ctrl cmd ctx found");
+        }
+    }
+
+    fn handle_ctrl_desc_network_management(&self, desc: ToHostCtrlRbDescSetNetworkParam) {
+        let ctx_map = self.0.ctrl_op_ctx_map.read().unwrap();
+
+        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
+            ctx.set_result(desc.common.is_success);
+        } else {
+            eprintln!("no ctrl cmd ctx found");
+        }
+    }
+
+    fn handle_ctrl_desc_raw_packet_receive_meta(&self, desc: ToHostCtrlRbDescSetRawPacketReceiveMeta) {
         let ctx_map = self.0.ctrl_op_ctx_map.read().unwrap();
 
         if let Some(ctx) = ctx_map.get(&desc.common.op_id) {

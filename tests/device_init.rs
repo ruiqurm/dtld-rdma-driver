@@ -1,8 +1,12 @@
-use std::ffi::c_void;
+use std::{ffi::c_void, net::Ipv4Addr};
 
 use buddy_system_allocator::LockedHeap;
 
-use open_rdma_driver::{Device, types::MemAccessTypeFlag};
+use eui48::MacAddress;
+use open_rdma_driver::{
+    types::{MemAccessTypeFlag, RdmaDeviceNetwork},
+    Device,
+};
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -44,10 +48,18 @@ fn init_global_allocator() {
 #[test]
 fn device_init() {
     let head_start_addr = unsafe { HEAP_START_ADDR };
+    let network = RdmaDeviceNetwork {
+        gateway: Ipv4Addr::LOCALHOST,
+        netmask: Ipv4Addr::LOCALHOST,
+        ipaddr: Ipv4Addr::LOCALHOST,
+        macaddr: MacAddress::default(),
+    };
     let _emulated =
-        Device::new_emulated("127.0.0.1:9875".parse().unwrap(), head_start_addr).unwrap();
+        Device::new_emulated("127.0.0.1:9875".parse().unwrap(), head_start_addr, network).unwrap();
     let pd = _emulated.alloc_pd().unwrap();
-    let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead | MemAccessTypeFlag::IbvAccessRemoteWrite | MemAccessTypeFlag::IbvAccessLocalWrite;
+    let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
+        | MemAccessTypeFlag::IbvAccessRemoteWrite
+        | MemAccessTypeFlag::IbvAccessLocalWrite;
     let mr = _emulated.reg_mr(pd, 0, 100, 4096, access_flag).unwrap();
     _emulated.dereg_mr(mr).unwrap();
     // let _hardware = Device::new_hardware().unwrap();

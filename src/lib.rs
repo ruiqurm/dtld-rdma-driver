@@ -6,7 +6,10 @@ use crate::{
     mr::{MrCtx, MrPgt},
     pd::PdCtx,
 };
-use device::{ToCardCtrlRbDescSge, ToCardWorkRbDescBuilder};
+use device::{
+    ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSge,
+    ToCardWorkRbDescBuilder,
+};
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::PacketChecker;
 use poll::work::{QpnWithLastPsn, WorkDescPoller};
@@ -14,11 +17,15 @@ use qp::QpContext;
 use recv_pkt_map::RecvPktMap;
 use responser::{DescResponser, WorkDescriptorSender};
 use std::{
-    collections::HashMap, net::SocketAddr, sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering}, Arc, Mutex, OnceLock, RwLock
-    }, thread
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex, OnceLock, RwLock,
+    },
+    thread,
 };
-use types::{Key, MemAccessTypeFlag, Psn, Qpn};
+use types::{Key, MemAccessTypeFlag, Psn, Qpn, RdmaDeviceNetwork};
 use utils::calculate_packet_cnt;
 
 pub mod mr;
@@ -69,7 +76,7 @@ pub struct Sge {
 impl Device {
     const MR_TABLE_EMPTY_ELEM: Option<MrCtx> = None;
 
-    pub fn new_hardware() -> Result<Self, Error> {
+    pub fn new_hardware(network: RdmaDeviceNetwork) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let qp_availability: Vec<AtomicBool> =
             (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
@@ -95,12 +102,12 @@ impl Device {
         });
 
         let dev = Self(inner);
-        dev.init()?;
+        dev.init(network)?;
 
         Ok(dev)
     }
 
-    pub fn new_software() -> Result<Self, Error> {
+    pub fn new_software(network: RdmaDeviceNetwork) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let qp_availability: Vec<AtomicBool> =
             (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
@@ -126,7 +133,7 @@ impl Device {
         });
 
         let dev = Self(inner);
-        dev.init()?;
+        dev.init(network)?;
 
         Ok(dev)
     }
@@ -134,6 +141,7 @@ impl Device {
     pub fn new_emulated(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
+        network: RdmaDeviceNetwork,
     ) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let qp_availability: Vec<AtomicBool> =
@@ -161,7 +169,7 @@ impl Device {
 
         let dev = Self(inner);
 
-        dev.init()?;
+        dev.init(network)?;
 
         Ok(dev)
     }
@@ -197,7 +205,6 @@ impl Device {
                 qp_type: qp.qp_type,
                 psn: Psn::default(),
             };
-            println!("{:?}",common);
             let send_psn = &mut qp.inner.lock().unwrap().send_psn;
             common.psn = *send_psn;
             let packet_cnt = calculate_packet_cnt(qp.pmtu.clone(), raddr, total_len);
@@ -299,7 +306,7 @@ impl Device {
         self.0.next_ctrl_op_id.fetch_add(1, Ordering::AcqRel)
     }
 
-    fn init(&self) -> Result<(), Error> {
+    fn init(&self, _network: RdmaDeviceNetwork) -> Result<(), Error> {
         let (send_queue, rece_queue) = std::sync::mpsc::channel();
         let dev_for_poll_ctrl_rb = self.clone();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
@@ -337,6 +344,27 @@ impl Device {
             panic!("pkt_checker_thread has been set");
         }
 
+        // set card network
+        // self.set_network(network)?;
+
+        Ok(())
+    }
+
+    #[allow(unused)]
+    fn set_network(&self, network: RdmaDeviceNetwork) -> Result<(), Error> {
+        let op_id = self.get_ctrl_op_id();
+        let desc = ToCardCtrlRbDesc::SetNetworkParam(ToCardCtrlRbDescSetNetworkParam {
+            common: ToCardCtrlRbDescCommon { op_id },
+            gateway: network.gateway,
+            netmask: network.netmask,
+            ipaddr: network.ipaddr,
+            macaddr: network.macaddr,
+        });
+        let ctx = self.do_ctrl_op(op_id, desc)?;
+        let is_success = ctx.wait_result().expect("set network param failed");
+        if !is_success {
+            return Err(Error::SetNetworkParamFailed);
+        };
         Ok(())
     }
 }

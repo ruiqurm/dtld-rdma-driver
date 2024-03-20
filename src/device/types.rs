@@ -1,14 +1,7 @@
-#![allow(unused)]
-
 use bitfield::bitfield;
-use bitflags::bitflags;
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::{
-    mem::{size_of, size_of_val},
-    net::Ipv4Addr,
-    ops::Range,
-};
+use std::{net::Ipv4Addr, ops::Range};
 
 use crate::{
     types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
@@ -16,6 +9,7 @@ use crate::{
     Error, Sge,
 };
 
+#[allow(unused)]
 pub(crate) enum ToCardCtrlRbDesc {
     UpdateMrTable(ToCardCtrlRbDescUpdateMrTable),
     UpdatePageTable(ToCardCtrlRbDescUpdatePageTable),
@@ -33,7 +27,6 @@ pub(crate) enum ToHostCtrlRbDesc {
 }
 
 #[derive(Clone)]
-#[allow(private_interfaces)]
 pub enum ToCardWorkRbDesc {
     Read(ToCardWorkRbDescRead),
     Write(ToCardWorkRbDescWrite),
@@ -176,8 +169,10 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
 
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
+    #[allow(unused)]
     pub(crate) trans: ToHostWorkRbDescTransType,
     pub(crate) dqpn: Qpn,
+    #[allow(unused)]
     pub(crate) pad_cnt: u8,
 }
 
@@ -199,6 +194,7 @@ pub(crate) struct ToHostWorkRbDescWrite {
     pub(crate) key: Key,
 }
 
+#[allow(unused)]
 pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
@@ -209,6 +205,7 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) key: Key,
 }
 
+#[allow(unused)]
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
@@ -216,6 +213,7 @@ pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) psn: Psn,
 }
 
+#[allow(unused)]
 pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
@@ -367,6 +365,7 @@ impl ToCardCtrlRbDesc {
 
             let mut common = CmdQueueDescCommonHead(dst);
             common.set_valid(true);
+            common.set_reserverd(0);
             common.set_is_success_or_need_signal_cplt(false);
             common.set_op_code(opcode as u32);
             common.set_extra_segment_cnt(0);
@@ -428,7 +427,6 @@ impl ToCardCtrlRbDesc {
             //     CmdQueueDescCommonHead          commonHeader;   // 64  bits
             // } CmdQueueReqDescQpManagementSeg0 deriving(Bits, FShow);
 
-            // bytes[0..7] have been padding in `CmdQueueReqDescQpManagementSeg0``
             let mut seg0 = CmdQueueReqDescQpManagementSeg0(dst);
             seg0.set_is_valid(desc.is_valid);
             seg0.set_is_error(false);
@@ -484,6 +482,7 @@ impl ToCardCtrlRbDesc {
         }
     }
 
+    #[allow(unused)]
     pub(super) fn serialized_desc_cnt(&self) -> usize {
         1
     }
@@ -499,7 +498,7 @@ impl ToHostCtrlRbDesc {
         //     Bool                    isSuccessOrNeedSignalCplt;
         //     Bool                    valid;
         // } CmdQueueDescCommonHead deriving(Bits, FShow);
-        let mut head = CmdQueueDescCommonHead(src);
+        let head = CmdQueueDescCommonHead(src);
 
         let valid = head.get_valid();
         assert!(valid);
@@ -534,6 +533,7 @@ impl ToHostCtrlRbDesc {
         }
     }
 
+    #[allow(unused)]
     pub(super) fn serialized_desc_cnt(&self) -> usize {
         1
     }
@@ -565,16 +565,6 @@ impl ToCardWorkRbDesc {
             ),
         };
 
-        // typedef struct {
-        //     Length                  totalLen;                       // 32 bits
-        //     ReservedZero#(20)       reserved1;                      // 20 bits
-        //     Bit#(4)                 extraSegmentCnt;                //  4 bits
-        //     WorkReqOpCode           opCode;                         //  4 bits
-        //     Bool                    isLast;                         //  1 bits
-        //     Bool                    isFirst;                        //  1 bits
-        //     Bool                    isSuccessOrNeedSignalCplt;      //  1 bits
-        //     Bool                    valid;                          //  1 bit
-        // } SendQueueDescCommonHead deriving(Bits, FShow);
         let mut head = SendQueueDescCommonHead(dst);
         head.set_valid(true);
         head.set_is_success_or_need_signal_cplt(false);
@@ -652,7 +642,7 @@ impl ToCardWorkRbDesc {
         };
         let mut desc_common = SendQueueReqDescSeg1(dst);
         desc_common.set_pmtu(common.pmtu.clone() as u64);
-        desc_common.set_flags(common.flags.bits().into());
+        desc_common.set_flags(common.flags.bits() as u64);
         desc_common.set_qp_type(common.qp_type as u64);
         desc_common.set_seg_cnt(sge_cnt.into());
         desc_common.set_psn(common.psn.get().into());
@@ -767,7 +757,7 @@ impl ToHostWorkRbDesc {
             // } MeatReportQueueDescFragRETH deriving(Bits, FShow);
 
             // first 12 bytes are desc type, status and bth
-            let mut frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
+            let frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
             let addr = frag_reth.get_va();
             let key = Key::new(frag_reth.get_rkey() as u32);
             let len = frag_reth.get_dlen() as u32;
@@ -781,7 +771,7 @@ impl ToHostWorkRbDesc {
             // } MeatReportQueueDescFragImmDT deriving(Bits, FShow);
 
             // first 28 bytes are desc type, status, bth and reth
-            let mut imm = MeatReportQueueDescFragImmDT(&src[28..32]);
+            let imm = MeatReportQueueDescFragImmDT(&src[28..32]);
             // call the `to_be` to convert order
             imm.get_imm()
         }
@@ -796,7 +786,7 @@ impl ToHostWorkRbDesc {
             // } MeatReportQueueDescFragAETH deriving(Bits, FShow);
 
             // first 12 bytes are desc type, status and bth
-            let mut frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
+            let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
             let psn = Psn::new(frag_aeth.get_psn());
             let msn = Msn::new(frag_aeth.get_msn());
             let value = frag_aeth.get_aeth_value() as u8;
@@ -813,8 +803,8 @@ impl ToHostWorkRbDesc {
         //     MeatReportQueueDescType         descType;       // 1
         // } MeatReportQueueDescBth deriving(Bits, FShow);
         let desc_bth = MeatReportQueueDescBth(&src[0..32]);
-        let is_pkt_meta = desc_bth.get_desc_type();
-        assert!(is_pkt_meta); // only support pkt meta for now
+        // let is_pkt_meta = desc_bth.get_desc_type();
+        // assert!(is_pkt_meta); // only support pkt meta for now
 
         let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).unwrap();
 
@@ -968,6 +958,7 @@ impl ToHostWorkRbDesc {
         }
     }
 
+    #[allow(unused)]
     pub(super) fn serialized_desc_cnt(&self) -> usize {
         match self {
             ToHostWorkRbDesc::Read(_) => 2,
@@ -1022,7 +1013,7 @@ bitfield! {
     get_is_success_or_need_signal_cplt, set_is_success_or_need_signal_cplt: 1;
     get_op_code, set_op_code: 7, 2;
     get_extra_segment_cnt, set_extra_segment_cnt: 11, 8;
-    _reserverd, _: 31, 12;
+    _reserverd, set_reserverd: 31, 12;
     get_user_data, set_user_data: 63, 32;
 }
 
@@ -1056,13 +1047,13 @@ bitfield! {
     get_is_valid, set_is_valid: 64;                                             // 1bit
     get_is_error, set_is_error: 65;                                             // 1bit
     _reserverd4, _: 71, 66;                                                     // 6bits
-    get_qpn, set_qpn: 96, 72;                                                   // 24bits
-    get_pd_handler, set_pd_handler: 128, 97;                                    // 32bits
-    get_qp_type, set_qp_type: 132, 129;                                         // 4bits
-    _reserverd3, _: 136, 133;                                                   // 4bits
-    get_rq_access_flags, set_rq_access_flags: 144, 137;                         // 8bits
-    get_pmtu, set_pmtu: 147, 145;                                               // 3bits
-    _reserverd2, _: 151, 148;                                                   // 5bits
+    get_qpn, set_qpn: 95, 72;                                                   // 24bits
+    get_pd_handler, set_pd_handler: 127, 96;                                    // 32bits
+    get_qp_type, set_qp_type: 131, 128;                                         // 4bits
+    _reserverd3, _: 135, 132;                                                   // 4bits
+    get_rq_access_flags, set_rq_access_flags: 143, 136;                         // 8bits
+    get_pmtu, set_pmtu: 146, 144;                                               // 3bits
+    _reserverd2, _: 151, 147;                                                   // 5bits
     _reserverd1, _: 255, 152;                                                   // 104bits
 }
 
@@ -1195,7 +1186,9 @@ pub(crate) struct ToCardWorkRbDescBuilder {
     type_: ToCardWorkRbDescOpcode,
     common: Option<ToCardWorkRbDescCommon>,
     seg_list: Vec<Sge>,
+    #[allow(dead_code)]
     is_first: Option<bool>,
+    #[allow(dead_code)]
     is_last: Option<bool>,
     imm: Option<u32>,
 }
@@ -1204,17 +1197,6 @@ impl ToCardWorkRbDescBuilder {
     pub fn new_write() -> Self {
         Self {
             type_: ToCardWorkRbDescOpcode::Write,
-            common: None,
-            seg_list: Vec::new(),
-            is_first: None,
-            is_last: None,
-            imm: None,
-        }
-    }
-
-    pub fn new_write_imm() -> Self {
-        Self {
-            type_: ToCardWorkRbDescOpcode::WriteWithImm,
             common: None,
             seg_list: Vec::new(),
             is_first: None,
@@ -1262,21 +1244,6 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub fn with_is_first(mut self, is_first: bool) -> Self {
-        self.is_first = Some(is_first);
-        self
-    }
-
-    pub fn with_is_last(mut self, is_last: bool) -> Self {
-        self.is_last = Some(is_last);
-        self
-    }
-
-    pub fn with_imm(mut self, imm: u32) -> Self {
-        self.imm = Some(imm);
-        self
-    }
-
     pub fn build(mut self) -> Result<ToCardWorkRbDesc, Error> {
         let common = self
             .common
@@ -1290,10 +1257,6 @@ impl ToCardWorkRbDescBuilder {
                 let sge1 = self.seg_list.pop();
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
-                let total_len = sge0.len
-                    + sge1.as_ref().map_or(0, |sge| sge.len)
-                    + sge2.as_ref().map_or(0, |sge| sge.len)
-                    + sge3.as_ref().map_or(0, |sge| sge.len);
                 Ok(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
                     common,
                     is_last: true,
@@ -1312,10 +1275,6 @@ impl ToCardWorkRbDescBuilder {
                 let sge1 = self.seg_list.pop();
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
-                let total_len = sge0.len
-                    + sge1.as_ref().map_or(0, |sge| sge.len)
-                    + sge2.as_ref().map_or(0, |sge| sge.len)
-                    + sge3.as_ref().map_or(0, |sge| sge.len);
                 let imm = self.imm.ok_or_else(|| Error::BuildDescFailed("imm"))?;
                 Ok(ToCardWorkRbDesc::WriteWithImm(
                     ToCardWorkRbDescWriteWithImm {
@@ -1335,7 +1294,6 @@ impl ToCardWorkRbDescBuilder {
                     .seg_list
                     .pop()
                     .ok_or_else(|| Error::BuildDescFailed("sge"))?;
-                let total_len = sge0.len;
                 Ok(ToCardWorkRbDesc::Read(ToCardWorkRbDescRead {
                     common,
                     sge: sge0.into(),
@@ -1349,10 +1307,6 @@ impl ToCardWorkRbDescBuilder {
                 let sge1 = self.seg_list.pop();
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
-                let total_len = sge0.len
-                    + sge1.as_ref().map_or(0, |sge| sge.len)
-                    + sge2.as_ref().map_or(0, |sge| sge.len)
-                    + sge3.as_ref().map_or(0, |sge| sge.len);
                 Ok(ToCardWorkRbDesc::ReadResp(ToCardWorkRbDescWrite {
                     common,
                     is_last: true,

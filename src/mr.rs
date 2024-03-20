@@ -93,7 +93,7 @@ impl Device {
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
         
-        let res = ctx.wait_result().unwrap();
+        let res = ctx.wait_result().expect("register mr failed");
 
         if !res {
             mr_pgt.dealloc(pgt_offset, pgte_cnt);

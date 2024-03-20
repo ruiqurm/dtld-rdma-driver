@@ -1,4 +1,7 @@
+use std::net::Ipv4Addr;
+
 use bitflags::bitflags;
+use eui48::MacAddress;
 use serde::ser::StdError;
 use thiserror::Error;
 
@@ -112,12 +115,12 @@ impl ThreeBytesStruct {
     }
 
     /// The absolute difference between two PSN
-    /// We assume that the bigger PSN should not exceed the 
+    /// We assume that the bigger PSN should not exceed the
     /// smaller PSN by more than 2^23(that half of the range)
-    pub fn wrapping_abs(&self,rhs : Psn) -> u32{
-        if self.0 >= rhs.0{
+    pub fn wrapping_abs(&self, rhs: Psn) -> u32 {
+        if self.0 >= rhs.0 {
             self.0 - rhs.get()
-        }else{
+        } else {
             self.0 + Self::MAX - rhs.0
         }
     }
@@ -194,6 +197,24 @@ pub struct Sge {
     pub key: Key,
 }
 
+pub struct RdmaDeviceNetwork {
+    pub gateway: Ipv4Addr,
+    pub netmask: Ipv4Addr,
+    pub ipaddr: Ipv4Addr,
+    pub macaddr: MacAddress,
+}
+
+impl RdmaDeviceNetwork {
+    pub fn new(ipaddr: Ipv4Addr, macaddr: MacAddress, netmask: Ipv4Addr, gateway: Ipv4Addr) -> Self {
+        Self {
+            ipaddr,
+            macaddr,
+            netmask,
+            gateway,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -228,6 +249,8 @@ pub enum Error {
     AllocPageTable,
     #[error("build descriptor failed, lack of `{0}`")]
     BuildDescFailed(&'static str),
+    #[error("In ctrl, set network param failed")]
+    SetNetworkParamFailed,
 }
 
 #[cfg(test)]
@@ -264,12 +287,12 @@ mod tests {
     }
 
     #[test]
-    fn test_wrapping_abs(){
+    fn test_wrapping_abs() {
         let psn = Psn::new(0);
         let psn2 = psn.wrapping_sub(1);
-        assert_eq!(psn2.get(),0xffffff);
+        assert_eq!(psn2.get(), 0xffffff);
 
         let psn = psn.wrapping_abs(psn2);
-        assert_eq!(psn,1);
+        assert_eq!(psn, 1);
     }
 }
