@@ -481,6 +481,8 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 mod tests {
     use std::{sync::Mutex, thread::sleep};
 
+    use eui48::MacAddress;
+
     use crate::{
         device::{ToCardWorkRbDescBuilder, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
         qp::QpContext,
@@ -538,7 +540,7 @@ mod tests {
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessNoFlags,
                 pmtu: Pmtu::Mtu4096,
                 dqp_ip: std::net::Ipv4Addr::LOCALHOST,
-                mac_addr: [0u8; 6],
+                mac_addr: MacAddress::default(),
                 inner: std::sync::Mutex::new(crate::qp::QpInner {
                     send_psn: Psn::default(),
                     recv_psn: Psn::default(),
@@ -596,7 +598,7 @@ mod tests {
                 assert_eq!(desc.common.rkey.get(), 10);
                 assert_eq!(desc.common.raddr, 0);
                 assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
-                assert_eq!(desc.common.mac_addr, [0u8; 6]);
+                assert_eq!(desc.common.mac_addr, MacAddress::default());
                 assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
                 assert_eq!(desc.common.flags.bits(), 0);
                 assert!(matches!(desc.common.qp_type, crate::types::QpType::Rc));
@@ -618,7 +620,7 @@ mod tests {
                 assert_eq!(desc.common.rkey.get(), 0);
                 assert_eq!(desc.common.raddr, 0);
                 assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
-                assert_eq!(desc.common.mac_addr, [0u8; 6]);
+                assert_eq!(desc.common.mac_addr, MacAddress::default());
                 assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
                 assert_eq!(desc.common.flags.bits(), 0);
                 assert!(matches!(
@@ -644,7 +646,7 @@ mod tests {
                 assert_eq!(desc.common.rkey.get(), 0);
                 assert_eq!(desc.common.raddr, 0);
                 assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
-                assert_eq!(desc.common.mac_addr, [0u8; 6]);
+                assert_eq!(desc.common.mac_addr, MacAddress::default());
                 assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
                 assert_eq!(desc.common.flags.bits(), 0);
                 assert!(matches!(

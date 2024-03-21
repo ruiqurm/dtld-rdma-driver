@@ -1,5 +1,7 @@
 use std::net::Ipv4Addr;
 
+use eui48::MacAddress;
+
 use crate::{
     device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement,
@@ -160,7 +162,7 @@ impl ToCardWorkRbDescBuilder {
             psn: crate::types::Psn::new(self.psn.unwrap()),
             flags: self.flags.unwrap(),
             dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
-            mac_addr: [0; 6],
+            mac_addr: MacAddress::default(),
         };
         let (sge0, sge1, sge2, sge3) = self.sg_list.take().unwrap().into_four_sges();
         match self.opcode.clone().unwrap() {

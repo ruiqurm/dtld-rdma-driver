@@ -10,6 +10,7 @@ use crate::{
 };
 
 #[allow(unused)]
+#[derive(Debug)]
 pub(crate) enum ToCardCtrlRbDesc {
     UpdateMrTable(ToCardCtrlRbDescUpdateMrTable),
     UpdatePageTable(ToCardCtrlRbDescUpdatePageTable),
@@ -18,6 +19,7 @@ pub(crate) enum ToCardCtrlRbDesc {
     SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta),
 }
 
+#[derive(Debug)]
 pub(crate) enum ToHostCtrlRbDesc {
     UpdateMrTable(ToHostCtrlRbDescUpdateMrTable),
     UpdatePageTable(ToHostCtrlRbDescUpdatePageTable),
@@ -54,10 +56,12 @@ impl ToHostWorkRbDesc {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescUpdateMrTable {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) addr: u64,
@@ -68,6 +72,7 @@ pub(crate) struct ToCardCtrlRbDescUpdateMrTable {
     pub(crate) pgt_offset: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescUpdatePageTable {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) start_addr: u64,
@@ -75,6 +80,7 @@ pub(crate) struct ToCardCtrlRbDescUpdatePageTable {
     pub(crate) pgte_cnt: u32, //bytes
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescQpManagement {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) is_valid: bool,
@@ -85,6 +91,7 @@ pub(crate) struct ToCardCtrlRbDescQpManagement {
     pub(crate) pmtu: Pmtu,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescSetNetworkParam {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) gateway: Ipv4Addr,
@@ -93,33 +100,40 @@ pub(crate) struct ToCardCtrlRbDescSetNetworkParam {
     pub(crate) macaddr: MacAddress,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbDescSetRawPacketReceiveMeta {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) base_write_addr: u64,
     pub(crate) key: Key,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
     pub(crate) is_success: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescUpdateMrTable {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescUpdatePageTable {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescQpManagement {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescSetNetworkParam {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescSetRawPacketReceiveMeta {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
@@ -131,7 +145,7 @@ pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) rkey: Key,
     pub(crate) dqp_ip: Ipv4Addr,
     pub(crate) dqpn: Qpn,
-    pub(crate) mac_addr: [u8; 6],
+    pub(crate) mac_addr: MacAddress,
     pub(crate) pmtu: Pmtu,
     pub(crate) flags: MemAccessTypeFlag,
     pub(crate) qp_type: QpType,
@@ -646,8 +660,7 @@ impl ToCardWorkRbDesc {
         desc_common.set_qp_type(common.qp_type as u64);
         desc_common.set_seg_cnt(sge_cnt.into());
         desc_common.set_psn(common.psn.get().into());
-        let mac = &common.mac_addr;
-        desc_common.0[8..14].copy_from_slice(&[mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
+        desc_common.0[8..14].copy_from_slice(common.mac_addr.as_bytes());
 
         desc_common.set_dqpn(common.dqpn.get().into());
 

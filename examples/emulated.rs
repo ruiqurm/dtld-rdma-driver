@@ -1,5 +1,6 @@
 use buddy_system_allocator::LockedHeap;
 
+use eui48::MacAddress;
 use open_rdma_driver::{
     types::{MemAccessTypeFlag, Pmtu, QpType, RdmaDeviceNetwork},
     Device, Mr, Pd, Qp, Sge,
@@ -44,16 +45,14 @@ fn init_global_allocator() {
     }
 }
 
-fn create_and_init_card(card_id: usize, mock_server_addr: &str) -> (Device, Pd, Mr, Qp, Box<[u8]>) {
+fn create_and_init_card(
+    card_id: usize,
+    mock_server_addr: &str,
+    network: RdmaDeviceNetwork,
+) -> (Device, Pd, Mr, Qp, Box<[u8]>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
-    let network = RdmaDeviceNetwork {
-        gateway: Ipv4Addr::LOCALHOST,
-        netmask: Ipv4Addr::LOCALHOST,
-        ipaddr: Ipv4Addr::LOCALHOST,
-        macaddr: Default::default(),
-    };
     let dev =
-        Device::new_emulated(mock_server_addr.parse().unwrap(), head_start_addr, network).unwrap();
+        Device::new_emulated(mock_server_addr.parse().unwrap(), head_start_addr, &network).unwrap();
     eprintln!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -89,8 +88,8 @@ fn create_and_init_card(card_id: usize, mock_server_addr: &str) -> (Device, Pd, 
             QpType::Rc,
             Pmtu::Mtu4096,
             access_flag,
-            Ipv4Addr::new(0x44, 0x33, 0x22, 0x11),
-            [0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA],
+            network.ipaddr,
+            network.macaddr,
         )
         .unwrap();
     eprintln!("[{}] QP created", card_id);
@@ -100,8 +99,22 @@ fn create_and_init_card(card_id: usize, mock_server_addr: &str) -> (Device, Pd, 
 #[allow(unused)]
 fn main() {
     const SEND_CNT: usize = 8192 * 4;
-    let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) = create_and_init_card(0, "0.0.0.0:9873");
-    let (dev_b, _pd_b, mr_b, _qp_b, mut mr_buffer_b) = create_and_init_card(1, "0.0.0.0:9875");
+    let a_network = RdmaDeviceNetwork {
+        gateway: Ipv4Addr::new(192, 168, 0, 0x1),
+        netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ipaddr: Ipv4Addr::new(192, 168, 0, 0x44),
+        macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]),
+    };
+    let b_network = RdmaDeviceNetwork {
+        gateway: Ipv4Addr::new(192, 168, 0, 0x1),
+        netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ipaddr: Ipv4Addr::new(192, 168, 0, 0x55),
+        macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+    };
+    let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) =
+        create_and_init_card(0, "0.0.0.0:9873", a_network);
+    let (dev_b, _pd_b, mr_b, _qp_b, mut mr_buffer_b) =
+        create_and_init_card(1, "0.0.0.0:9875", b_network);
 
     // fill mr_buffer with some data
     let current_time = time::SystemTime::now()
@@ -146,8 +159,8 @@ fn main() {
             &mr_buffer_b[65537] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::IbvAccessRemoteRead
-            | MemAccessTypeFlag::IbvAccessRemoteWrite
-            | MemAccessTypeFlag::IbvAccessLocalWrite,
+                | MemAccessTypeFlag::IbvAccessRemoteWrite
+                | MemAccessTypeFlag::IbvAccessLocalWrite,
             sge0,
             None,
             None,

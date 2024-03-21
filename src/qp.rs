@@ -1,3 +1,5 @@
+use eui48::MacAddress;
+
 use crate::{
     device::{ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
     types::{MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn},
@@ -21,7 +23,7 @@ pub struct Qp {
     pub(crate) _rq_acc_flags: MemAccessTypeFlag,
     pub(crate) _pmtu: Pmtu,
     pub(crate) _dqp_ip: Ipv4Addr,
-    pub(crate) _mac_addr: [u8; 6],
+    pub(crate) _mac_addr: MacAddress,
 }
 
 pub struct QpContext {
@@ -32,7 +34,7 @@ pub struct QpContext {
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
     pub(crate) dqp_ip: Ipv4Addr,
-    pub(crate) mac_addr: [u8; 6],
+    pub(crate) mac_addr: MacAddress,
     pub(crate) inner: Mutex<QpInner>,
 }
 
@@ -57,7 +59,7 @@ impl Device {
         pmtu: Pmtu,
         rq_acc_flags: MemAccessTypeFlag,
         dqp_ip: Ipv4Addr,
-        mac_addr: [u8; 6],
+        mac_addr: MacAddress,
     ) -> Result<Qp, Error> {
         let mut qp_pool = self.0.qp_table.write().unwrap();
         let mut pd_pool = self.0.pd.lock().unwrap();

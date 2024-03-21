@@ -155,11 +155,11 @@ impl DeviceAdaptor for Arc<EmulatedDevice> {
 
 impl ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), Overflowed> {
-        eprintln!("ctrl push");
         let mut guard = self.to_card_ctrl_rb.lock().unwrap();
         let mut writer = guard.write();
 
         let mem = writer.next().unwrap();
+        eprintln!("{:?}",desc);
         desc.write(mem);
 
         Ok(())
@@ -168,11 +168,12 @@ impl ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice {
 
 impl ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice {
     fn pop(&self) -> ToHostCtrlRbDesc {
-        eprintln!("ToHostRb ctrl pop");
         let mut guard = self.to_host_ctrl_rb.lock().unwrap();
         let mut reader = guard.read();
         let mem = reader.next().unwrap();
-        ToHostCtrlRbDesc::read(mem)
+        let a = ToHostCtrlRbDesc::read(mem);
+        eprintln!("{:?}",a);
+        a
     }
 }
 

@@ -202,6 +202,8 @@ mod tests {
         thread::sleep,
     };
 
+    use eui48::MacAddress;
+
     use crate::{
         device::{
             ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead,
@@ -319,7 +321,7 @@ mod tests {
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessRemoteWrite,
                 pmtu: crate::types::Pmtu::Mtu1024,
                 dqp_ip: Ipv4Addr::LOCALHOST,
-                mac_addr: [0; 6],
+                mac_addr: MacAddress::default(),
                 inner: Mutex::new(crate::qp::QpInner {
                     send_psn: Psn::new(0),
                     recv_psn: Psn::new(0),

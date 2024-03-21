@@ -102,7 +102,7 @@ impl Device {
         });
 
         let dev = Self(inner);
-        dev.init(network)?;
+        dev.init(&network)?;
 
         Ok(dev)
     }
@@ -133,7 +133,7 @@ impl Device {
         });
 
         let dev = Self(inner);
-        dev.init(network)?;
+        dev.init(&network)?;
 
         Ok(dev)
     }
@@ -141,7 +141,7 @@ impl Device {
     pub fn new_emulated(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
-        network: RdmaDeviceNetwork,
+        network: &RdmaDeviceNetwork,
     ) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let qp_availability: Vec<AtomicBool> =
@@ -306,7 +306,7 @@ impl Device {
         self.0.next_ctrl_op_id.fetch_add(1, Ordering::AcqRel)
     }
 
-    fn init(&self, _network: RdmaDeviceNetwork) -> Result<(), Error> {
+    fn init(&self, network: &RdmaDeviceNetwork) -> Result<(), Error> {
         let (send_queue, rece_queue) = std::sync::mpsc::channel();
         let dev_for_poll_ctrl_rb = self.clone();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
@@ -345,13 +345,12 @@ impl Device {
         }
 
         // set card network
-        // self.set_network(network)?;
+        self.set_network(network)?;
 
         Ok(())
     }
 
-    #[allow(unused)]
-    fn set_network(&self, network: RdmaDeviceNetwork) -> Result<(), Error> {
+    fn set_network(&self, network: &RdmaDeviceNetwork) -> Result<(), Error> {
         let op_id = self.get_ctrl_op_id();
         let desc = ToCardCtrlRbDesc::SetNetworkParam(ToCardCtrlRbDescSetNetworkParam {
             common: ToCardCtrlRbDescCommon { op_id },

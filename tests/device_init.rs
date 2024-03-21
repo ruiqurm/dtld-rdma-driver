@@ -55,7 +55,7 @@ fn device_init() {
         macaddr: MacAddress::default(),
     };
     let _emulated =
-        Device::new_emulated("127.0.0.1:9875".parse().unwrap(), head_start_addr, network).unwrap();
+        Device::new_emulated("127.0.0.1:9875".parse().unwrap(), head_start_addr, &network).unwrap();
     let pd = _emulated.alloc_pd().unwrap();
     let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
         | MemAccessTypeFlag::IbvAccessRemoteWrite

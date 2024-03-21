@@ -1,5 +1,7 @@
 use std::{collections::LinkedList, net::Ipv4Addr};
 
+use eui48::MacAddress;
+
 use crate::device::{
     ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
 };
@@ -14,7 +16,7 @@ pub fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWor
             rkey: Key::new(1234_u32),
             dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
             dqpn: Qpn::new(qpn),
-            mac_addr: [0; 6],
+            mac_addr: MacAddress::default(),
             pmtu: Pmtu::Mtu1024,
             flags: MemAccessTypeFlag::IbvAccessNoFlags,
             qp_type: QpType::Rc,
@@ -47,7 +49,7 @@ pub fn generate_big_descriptor(size: u32) -> ToCardWorkRbDesc {
             rkey: Key::new(1234_u32),
             dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
             dqpn: Qpn::new(4),
-            mac_addr: [0; 6],
+            mac_addr: MacAddress::default(),
             pmtu: Pmtu::Mtu1024,
             flags: MemAccessTypeFlag::IbvAccessNoFlags,
             qp_type: QpType::Rc,
