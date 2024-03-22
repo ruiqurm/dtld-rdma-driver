@@ -152,7 +152,7 @@ impl Device {
                 buffer.as_mut_ptr() as u64,
                 ACKNOWLEDGE_BUFFER_SIZE as u32,
                 2 * 1024 * 1024, // 2MB
-                MemAccessTypeFlag::IbvAccessLocalWrite,
+                MemAccessTypeFlag::IbvAccessLocalWrite | MemAccessTypeFlag::IbvAccessRemoteRead | MemAccessTypeFlag::IbvAccessRemoteWrite
             )?;
         let ack_buf = AcknowledgeBuffer::new(buffer.as_mut_ptr() as usize, ACKNOWLEDGE_BUFFER_SIZE, mr.get_key());
         Ok(ack_buf)

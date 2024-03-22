@@ -5,6 +5,8 @@ use eui48::MacAddress;
 use serde::ser::StdError;
 use thiserror::Error;
 
+use crate::PoisonErrorWrapper;
+
 /// Type for `Imm`
 #[derive(Debug, Clone, Copy, Hash)]
 pub struct Imm(u32);
@@ -251,6 +253,8 @@ pub enum Error {
     BuildDescFailed(&'static str),
     #[error("In ctrl, set network param failed")]
     SetNetworkParamFailed,
+    #[error("Mutex lock poisoned")]
+    LockPoisoned(#[from] PoisonErrorWrapper),
 }
 
 #[cfg(test)]

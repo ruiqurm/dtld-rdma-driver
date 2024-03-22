@@ -28,7 +28,7 @@ pub(crate) enum ToHostCtrlRbDesc {
     SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta),
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub enum ToCardWorkRbDesc {
     Read(ToCardWorkRbDescRead),
     Write(ToCardWorkRbDescWrite),
@@ -36,6 +36,7 @@ pub enum ToCardWorkRbDesc {
     ReadResp(ToCardWorkRbDescWrite),
 }
 
+#[derive(Debug)]
 pub(crate) enum ToHostWorkRbDesc {
     Read(ToHostWorkRbDescRead),
     Write(ToHostWorkRbDescWrite),
@@ -138,7 +139,7 @@ pub(crate) struct ToHostCtrlRbDescSetRawPacketReceiveMeta {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) total_len: u32,
     pub(crate) raddr: u64,
@@ -152,13 +153,13 @@ pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) psn: Psn,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub(crate) struct ToCardWorkRbDescRead {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) sge: ToCardCtrlRbDescSge,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
@@ -169,7 +170,7 @@ pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
@@ -181,6 +182,7 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
     #[allow(unused)]
@@ -190,6 +192,7 @@ pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) pad_cnt: u8,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescRead {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) len: u32,
@@ -199,6 +202,7 @@ pub(crate) struct ToHostWorkRbDescRead {
     pub(crate) rkey: Key,
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescWrite {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
@@ -209,6 +213,7 @@ pub(crate) struct ToHostWorkRbDescWrite {
 }
 
 #[allow(unused)]
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
@@ -220,6 +225,7 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
 }
 
 #[allow(unused)]
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
@@ -228,6 +234,7 @@ pub(crate) struct ToHostWorkRbDescAck {
 }
 
 #[allow(unused)]
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
@@ -270,6 +277,7 @@ pub(crate) enum ToHostWorkRbDescTransType {
     Xrc = 0x05,
 }
 
+#[derive(Debug)]
 pub(crate) enum ToHostWorkRbDescWriteType {
     First,
     Middle,
@@ -602,7 +610,7 @@ impl ToCardWorkRbDesc {
         let mut head = SendQueueReqDescSeg0(dst);
         head.set_raddr(common.raddr);
         head.set_rkey(common.rkey.get().into());
-        head.0[20..24].copy_from_slice(&common.dqp_ip.octets());
+        head.set_dqp_ip(u8_slice_to_u64(&common.dqp_ip.octets()));
     }
 
     pub(super) fn write_1(&self, dst: &mut [u8]) {
@@ -660,7 +668,7 @@ impl ToCardWorkRbDesc {
         desc_common.set_qp_type(common.qp_type as u64);
         desc_common.set_seg_cnt(sge_cnt.into());
         desc_common.set_psn(common.psn.get().into());
-        desc_common.0[8..14].copy_from_slice(common.mac_addr.as_bytes());
+        desc_common.set_mac_addr(u8_slice_to_u64(common.mac_addr.as_bytes()));
 
         desc_common.set_dqpn(common.dqpn.get().into());
 

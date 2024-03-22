@@ -5,7 +5,7 @@ use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 use bitfield::bitfield;
 use lockfree::queue::Queue;
 
-use crate::qp::QpContext;
+use crate::qp::RemoteQpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 use crate::utils::calculate_packet_cnt;
 use crate::Sge;
@@ -76,7 +76,7 @@ impl DescResponser {
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
         ack_buffers: AcknowledgeBuffer,
-        qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        qp_table: Arc<RwLock<HashMap<Qpn, RemoteQpContext>>>,
     ) -> Self {
         let _thread = spawn(|| Self::working_thread(device, recving_queue, ack_buffers, qp_table));
         Self { _thread }
@@ -86,7 +86,7 @@ impl DescResponser {
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
         ack_buffers: AcknowledgeBuffer,
-        qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        qp_table: Arc<RwLock<HashMap<Qpn, RemoteQpContext>>>,
     ) {
         loop {
             match recving_queue.recv() {
@@ -96,13 +96,13 @@ impl DescResponser {
                     let src_ip = Ipv4Addr::LOCALHOST;
                     let (dst_ip, common) = match qp_table.read().unwrap().get(&ack.dpqn) {
                         Some(qp) => {
-                            let dst_ip = qp.dqp_ip;
+                            let dst_ip = qp.ip;
                             let common = ToCardWorkRbDescCommon {
                                 total_len: ACKPACKET_SIZE as u32,
                                 rkey: Key::default(),
                                 raddr: 0,
-                                dqp_ip: qp.dqp_ip,
-                                dqpn: qp.qpn,
+                                dqp_ip : dst_ip,
+                                dqpn: ack.dpqn,
                                 mac_addr: qp.mac_addr,
                                 pmtu: qp.pmtu.clone(),
                                 flags: MemAccessTypeFlag::IbvAccessNoFlags,
@@ -148,7 +148,7 @@ impl DescResponser {
                                 total_len: resp.desc.len,
                                 rkey: resp.desc.rkey,
                                 raddr: resp.desc.raddr,
-                                dqp_ip: qp.dqp_ip,
+                                dqp_ip: qp.ip,
                                 dqpn: dpqn,
                                 mac_addr: qp.mac_addr,
                                 pmtu: qp.pmtu.clone(),
@@ -156,14 +156,14 @@ impl DescResponser {
                                 qp_type: qp.qp_type,
                                 psn: Psn::default(),
                             };
-                            let send_psn = &mut qp.inner.lock().unwrap().send_psn;
-                            common.psn = *send_psn;
+                            let send_psn = Psn::new(0);
                             let packet_cnt = calculate_packet_cnt(
                                 qp.pmtu.clone(),
                                 resp.desc.raddr,
                                 resp.desc.len,
                             );
-                            *send_psn = send_psn.wrapping_add(packet_cnt);
+                            send_psn.wrapping_add(packet_cnt);
+                            common.psn = send_psn;
                             common
                         }
                         None => {
@@ -485,9 +485,9 @@ mod tests {
 
     use crate::{
         device::{ToCardWorkRbDescBuilder, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
-        qp::QpContext,
+        qp::RemoteQpContext,
         responser::{calculate_ipv4_checksum, ACKPACKET_SIZE},
-        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, Qpn},
+        types::{Key, Msn, Pmtu, Psn, Qpn},
     };
 
     #[test]
@@ -532,19 +532,11 @@ mod tests {
             std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
         qp_table.write().unwrap().insert(
             Qpn::new(3),
-            QpContext {
-                handle: 0,
-                pd: crate::Pd { handle: 0 },
-                qpn: Qpn::new(3),
+            RemoteQpContext {
                 qp_type: crate::types::QpType::Rc,
-                rq_acc_flags: MemAccessTypeFlag::IbvAccessNoFlags,
                 pmtu: Pmtu::Mtu4096,
-                dqp_ip: std::net::Ipv4Addr::LOCALHOST,
+                ip: std::net::Ipv4Addr::LOCALHOST,
                 mac_addr: MacAddress::default(),
-                inner: std::sync::Mutex::new(crate::qp::QpInner {
-                    send_psn: Psn::default(),
-                    recv_psn: Psn::default(),
-                }),
             },
         );
         let _ = super::DescResponser::new(dummy.clone(), receiver, ack_buffers, qp_table);

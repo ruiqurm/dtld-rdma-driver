@@ -113,9 +113,13 @@ fn main() {
     };
     let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", a_network);
-    let (dev_b, _pd_b, mr_b, _qp_b, mut mr_buffer_b) =
+    let (dev_b, _pd_b, mr_b, qp_b, mut mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", b_network);
-
+    
+    // qp communication
+    dev_a.add_remote_qp(&qp_b);
+    dev_b.add_remote_qp(&qp_a);
+    
     // fill mr_buffer with some data
     let current_time = time::SystemTime::now()
         .duration_since(time::UNIX_EPOCH)
@@ -155,7 +159,7 @@ fn main() {
     // };
     let ctx = dev_a
         .write(
-            qp_a.get_qpn(),
+            &qp_b,
             &mr_buffer_b[65537] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::IbvAccessRemoteRead
@@ -202,7 +206,7 @@ fn main() {
 
     // let ctx = dev_a
     //     .read(
-    //         qp_a.get_qpn(),
+    //         qp_b,
     //         &mr_buffer_b[65537] as *const u8 as u64,
     //         mr_b.get_key(),
     //         MemAccessTypeFlag::IbvAccessNoFlags,

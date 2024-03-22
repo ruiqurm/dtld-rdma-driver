@@ -88,7 +88,7 @@ impl WorkDescPollerContext {
     pub(crate) fn poll_working_thread(ctx: Self) {
         loop {
             let desc = ctx.work_rb.pop();
-
+            eprintln!("{:?}",desc);
             if !matches!(desc.common().status, ToHostWorkRbDescStatus::Normal) {
                 eprintln!("desc status is {:?}", desc.common().status);
                 continue;
@@ -322,10 +322,6 @@ mod tests {
                 pmtu: crate::types::Pmtu::Mtu1024,
                 dqp_ip: Ipv4Addr::LOCALHOST,
                 mac_addr: MacAddress::default(),
-                inner: Mutex::new(crate::qp::QpInner {
-                    send_psn: Psn::new(0),
-                    recv_psn: Psn::new(0),
-                }),
             },
         );
         let (sending_queue, recv_queue) = std::sync::mpsc::channel::<RespCommand>();
