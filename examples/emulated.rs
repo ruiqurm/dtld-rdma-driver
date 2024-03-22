@@ -102,13 +102,13 @@ fn main() {
     let a_network = RdmaDeviceNetwork {
         gateway: Ipv4Addr::new(192, 168, 0, 0x1),
         netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ipaddr: Ipv4Addr::new(192, 168, 0, 0x44),
+        ipaddr: Ipv4Addr::new(192, 168, 0, 2),
         macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]),
     };
     let b_network = RdmaDeviceNetwork {
         gateway: Ipv4Addr::new(192, 168, 0, 0x1),
         netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ipaddr: Ipv4Addr::new(192, 168, 0, 0x55),
+        ipaddr: Ipv4Addr::new(192, 168, 0, 3),
         macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
     };
     let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) =
@@ -157,25 +157,25 @@ fn main() {
     //     len: SEND_CNT as u32 - 3,
     //     key: mr_a.get_key(),
     // };
-    let ctx = dev_a
-        .write(
-            &qp_b,
-            &mr_buffer_b[65537] as *const u8 as u64,
-            mr_b.get_key(),
-            MemAccessTypeFlag::IbvAccessRemoteRead
-                | MemAccessTypeFlag::IbvAccessRemoteWrite
-                | MemAccessTypeFlag::IbvAccessLocalWrite,
-            sge0,
-            None,
-            None,
-            None,
-            // Some(sge1),
-            // Some(sge2),
-            // Some(sge3),
-        )
-        .unwrap();
-    ctx.wait();
-    eprintln!("Write req sent");
+    // let ctx = dev_a
+    //     .write(
+    //         &qp_b,
+    //         &mr_buffer_b[65537] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         MemAccessTypeFlag::IbvAccessRemoteRead
+    //             | MemAccessTypeFlag::IbvAccessRemoteWrite
+    //             | MemAccessTypeFlag::IbvAccessLocalWrite,
+    //         sge0,
+    //         None,
+    //         None,
+    //         None,
+    //         // Some(sge1),
+    //         // Some(sge2),
+    //         // Some(sge3),
+    //     )
+    //     .unwrap();
+    // ctx.wait();
+    // eprintln!("Write req sent");
 
     // for idx in 0..SEND_CNT {
     //     if mr_buffer_a[idx] != mr_buffer_b[65537 + idx] {
@@ -197,24 +197,25 @@ fn main() {
     // }
     // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[65537..65537 + SEND_CNT]);
 
-    // let sge_read = Sge {
-    //     addr: &mr_buffer_a[128 * 1024] as *const u8 as u64,
-    //     // len: 32767,
-    //     len: SEND_CNT as u32,
-    //     key: mr_a.get_key(),
-    // };
+    let sge_read = Sge {
+        addr: &mr_buffer_b[0] as *const u8 as u64,
+        len: 32767,
+        // len: SEND_CNT as u32,
+        key: mr_b.get_key(),
+    };
 
-    // let ctx = dev_a
-    //     .read(
-    //         qp_b,
-    //         &mr_buffer_b[65537] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessNoFlags,
-    //         sge_read,
-    //     )
-    //     .unwrap();
-    // ctx.wait();
-    // eprintln!("Read req sent");
+    // read text from b to a.
+    let ctx = dev_b
+        .read(
+            qp_a,
+            &mr_buffer_a[0] as *const u8 as u64,
+            mr_a.get_key(),
+            MemAccessTypeFlag::IbvAccessNoFlags,
+            sge_read,
+        )
+        .unwrap();
+    ctx.wait();
+    eprintln!("Read req sent");
 
     // // assert!(mr_buffer[0..0 + 32767] == mr_buffer[128 * 1024..128 * 1024 + 32767]);
     // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_a[128 * 1024..128 * 1024 + SEND_CNT]);
