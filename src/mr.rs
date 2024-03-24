@@ -3,16 +3,19 @@ use crate::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateMrTable,
         ToCardCtrlRbDescUpdatePageTable,
     },
-    Device, Error, Pd, types::{Key, MemAccessTypeFlag}, responser::AcknowledgeBuffer,
+    responser::AcknowledgeBuffer,
+    types::{Key, MemAccessTypeFlag, PAGE_SIZE},
+    Device, Error, Pd,
 };
 use rand::RngCore as _;
 use std::{
     hash::{Hash, Hasher},
-    mem, ptr,
+    mem, ptr, slice::from_raw_parts_mut,
 };
 
-const ACKNOWLEDGE_BUFFER_SLOT_CNT : usize = 1024;
-const ACKNOWLEDGE_BUFFER_SIZE : usize = ACKNOWLEDGE_BUFFER_SLOT_CNT * AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
+const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
+const ACKNOWLEDGE_BUFFER_SIZE: usize =
+    ACKNOWLEDGE_BUFFER_SLOT_CNT * AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
 
 #[derive(Debug, Clone)]
 pub struct Mr {
@@ -37,7 +40,7 @@ pub(crate) struct MrCtx {
 }
 
 pub(crate) struct MrPgt {
-    table: [u64; crate::MR_PGT_SIZE],
+    table: &'static mut [u64],
     free_blk_list: *mut MrPgtFreeBlk,
 }
 
@@ -75,15 +78,23 @@ impl Device {
 
         let pgte_cnt = len.div_ceil(pg_size) as usize;
         let pgt_offset = mr_pgt.alloc(pgte_cnt)?;
-
         for pgt_idx in 0..pgte_cnt {
             let va = addr + (pg_size as usize * pgt_idx) as u64;
             let pa = self.0.adaptor.get_phys_addr(va as usize);
+            // we must make sure va and pa are all allign to pg_size
+            if va as usize & (PAGE_SIZE - 1) != 0 {
+                return Err(Error::AddressNotAlign("va", va as usize));
+            }
+            if pa & (PAGE_SIZE - 1) != 0 {
+                return Err(Error::AddressNotAlign("pa", pa));
+            }
+            println!("va: {:x}, pa: {:x}", va, pa);
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 
         let op_id = self.get_ctrl_op_id();
-
+        println!("pgt {:?}", mr_pgt.table);
+        println!("pgt addr: {:X}", mr_pgt.table.as_ptr() as usize);
         let desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
             common: ToCardCtrlRbDescCommon { op_id },
             start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64,
@@ -92,8 +103,8 @@ impl Device {
         });
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
-        
-        let res = ctx.wait_result().expect("register mr failed");
+
+        let res = ctx.wait_result().ok_or(Error::DeviceReturnFailed)?;
 
         if !res {
             mr_pgt.dealloc(pgt_offset, pgte_cnt);
@@ -143,18 +154,24 @@ impl Device {
         Ok(mr)
     }
 
-    pub(crate) fn init_ack_buf(&self) -> Result<AcknowledgeBuffer,Error>{
-        let buffer = Box::leak(Box::new([0u8; ACKNOWLEDGE_BUFFER_SIZE]));
+    pub(crate) fn init_ack_buf(&self) -> Result<AcknowledgeBuffer, Error> {
+        let buffer = Box::leak(Box::new([0u8; ACKNOWLEDGE_BUFFER_SIZE + PAGE_SIZE]));
+        let buffer_addr  = (buffer.as_mut_ptr() as usize+ PAGE_SIZE -1)& !(PAGE_SIZE -1);
         let pd = self.alloc_pd()?;
-        let mr = self
-            .reg_mr(
-                pd, // FIXME: Do we need a special pd for acknowledge buffer?
-                buffer.as_mut_ptr() as u64,
-                ACKNOWLEDGE_BUFFER_SIZE as u32,
-                2 * 1024 * 1024, // 2MB
-                MemAccessTypeFlag::IbvAccessLocalWrite | MemAccessTypeFlag::IbvAccessRemoteRead | MemAccessTypeFlag::IbvAccessRemoteWrite
-            )?;
-        let ack_buf = AcknowledgeBuffer::new(buffer.as_mut_ptr() as usize, ACKNOWLEDGE_BUFFER_SIZE, mr.get_key());
+        let mr = self.reg_mr(
+            pd,
+            buffer_addr as u64,
+            ACKNOWLEDGE_BUFFER_SIZE as u32,
+            PAGE_SIZE as u32, // 2MB
+            MemAccessTypeFlag::IbvAccessLocalWrite
+                | MemAccessTypeFlag::IbvAccessRemoteRead
+                | MemAccessTypeFlag::IbvAccessRemoteWrite,
+        )?;
+        let ack_buf = AcknowledgeBuffer::new(
+            buffer_addr,
+            ACKNOWLEDGE_BUFFER_SIZE,
+            mr.get_key(),
+        );
         Ok(ack_buf)
     }
 
@@ -185,7 +202,7 @@ impl Device {
         });
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
-        
+
         let res = ctx.wait_result().unwrap();
 
         if !res {
@@ -213,8 +230,13 @@ impl MrPgt {
             next: ptr::null_mut(),
         }));
 
+        let table = Box::leak(vec![0; crate::MR_PGT_SIZE+PAGE_SIZE].into_boxed_slice());
+        let table_addr  = (table.as_ptr() as usize+ PAGE_SIZE -1)& !(PAGE_SIZE -1);
+        let table = unsafe{
+            from_raw_parts_mut(table_addr as *mut u64, crate::MR_PGT_SIZE)
+        };
         Self {
-            table: [0; crate::MR_PGT_SIZE],
+            table,
             free_blk_list: free_blk,
         }
     }

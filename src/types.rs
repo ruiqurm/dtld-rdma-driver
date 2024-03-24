@@ -7,6 +7,8 @@ use thiserror::Error;
 
 use crate::PoisonErrorWrapper;
 
+pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
+
 /// Type for `Imm`
 #[derive(Debug, Clone, Copy, Hash)]
 pub struct Imm(u32);
@@ -207,7 +209,12 @@ pub struct RdmaDeviceNetwork {
 }
 
 impl RdmaDeviceNetwork {
-    pub fn new(ipaddr: Ipv4Addr, macaddr: MacAddress, netmask: Ipv4Addr, gateway: Ipv4Addr) -> Self {
+    pub fn new(
+        ipaddr: Ipv4Addr,
+        macaddr: MacAddress,
+        netmask: Ipv4Addr,
+        gateway: Ipv4Addr,
+    ) -> Self {
         Self {
             ipaddr,
             macaddr,
@@ -255,6 +262,8 @@ pub enum Error {
     SetNetworkParamFailed,
     #[error("Mutex lock poisoned")]
     LockPoisoned(#[from] PoisonErrorWrapper),
+    #[error("Address of {0} is not aligned,which is {1:x}")]
+    AddressNotAlign(&'static str, usize),
 }
 
 #[cfg(test)]

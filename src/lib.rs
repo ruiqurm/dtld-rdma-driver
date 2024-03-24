@@ -19,6 +19,7 @@ use responser::{DescResponser, WorkDescriptorSender};
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    slice::from_raw_parts_mut,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
@@ -26,7 +27,7 @@ use std::{
     thread,
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Psn, Qpn, RdmaDeviceNetwork};
+use types::{Key, MemAccessTypeFlag, Psn, Qpn, RdmaDeviceNetwork, PAGE_SIZE};
 use utils::calculate_packet_cnt;
 
 pub mod mr;
@@ -90,6 +91,8 @@ impl Device {
         qp_availability[0].store(false, Ordering::Relaxed);
         qp_availability[1].store(false, Ordering::Relaxed);
 
+        let adaptor = HardwareDevice::init().map_err(Error::Device)?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
@@ -101,7 +104,7 @@ impl Device {
             ctrl_op_ctx_map: RwLock::new(HashMap::new()),
             next_ctrl_op_id: AtomicU32::new(0),
             qp_availability: qp_availability.into_boxed_slice(),
-            adaptor: HardwareDevice::init().map_err(Error::Device)?,
+            adaptor,
             responser: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
@@ -123,6 +126,8 @@ impl Device {
         qp_availability[0].store(false, Ordering::Relaxed);
         qp_availability[1].store(false, Ordering::Relaxed);
 
+        let adaptor = SoftwareDevice::init().map_err(Error::Device)?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
@@ -137,7 +142,7 @@ impl Device {
             responser: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
-            adaptor: SoftwareDevice::init().map_err(Error::Device)?,
+            adaptor,
         });
 
         let dev = Self(inner);
@@ -159,6 +164,10 @@ impl Device {
         // by IB spec, QP0 and QP1 are reserved, so qpn should start with 2
         qp_availability[0].store(false, Ordering::Relaxed);
         qp_availability[1].store(false, Ordering::Relaxed);
+
+        let adaptor =
+            EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr).map_err(Error::Device)?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
@@ -173,8 +182,7 @@ impl Device {
             responser: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
-            adaptor: EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr)
-                .map_err(Error::Device)?,
+            adaptor,
         });
 
         let dev = Self(inner);
