@@ -152,7 +152,7 @@ impl WorkDescPollerContext {
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len as u32).div_ceil(pmtu);
             recv_pkt_map_guard.insert(
                 fake_msn.clone(),
-                Mutex::new(RecvPktMap::new(
+                Mutex::new(RecvPktMap::new_write(
                     pkt_cnt as usize,
                     desc.psn,
                     desc.common.dqpn,
@@ -182,6 +182,7 @@ impl WorkDescPollerContext {
             op_ctx.set_result(());
         } else {
             eprintln!("receive ack, but op_ctx not found for {:?}", key);
+            eprintln!("{:?}",guard);
         }
 
         // TODO: since we don't have MSN yet, we don't have enough information to clear

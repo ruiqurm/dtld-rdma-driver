@@ -7,7 +7,7 @@ use super::{
     constants, ringbuf::Ringbuf, DeviceAdaptor, Overflowed, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc
 };
 use std::{
-    error::Error, net::SocketAddr, slice::from_raw_parts, sync::{Arc, Mutex}
+    error::Error, net::SocketAddr, sync::{Arc, Mutex}
 };
 
 mod rpc_cli;
@@ -191,18 +191,7 @@ impl ToCardRb<ToCardWorkRbDesc> for EmulatedDevice {
         if desc_cnt == 4 {
             desc.write_3(writer.next().unwrap());
         }
-        match desc{
-            ToCardWorkRbDesc::Write(desc) => {
-                // read data of seg0?
-                let buf = unsafe{from_raw_parts(desc.sge0.addr as *const u8, desc.sge0.len as usize)};
-                println!("{:?}",buf);
-                println!("dma addr :{:?}",desc.sge0.addr - self.heap_mem_start_addr as u64);
-                
-            }
-            ToCardWorkRbDesc::Read(_) => todo!(),
-            ToCardWorkRbDesc::WriteWithImm(_) => todo!(),
-            ToCardWorkRbDesc::ReadResp(_) => todo!(),
-        }
+
         Ok(())
     }
 }

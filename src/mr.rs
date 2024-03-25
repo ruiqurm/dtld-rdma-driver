@@ -10,7 +10,7 @@ use crate::{
 use rand::RngCore as _;
 use std::{
     hash::{Hash, Hasher},
-    mem, ptr, slice::from_raw_parts_mut,
+    mem, ptr,
 };
 
 const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
@@ -40,7 +40,7 @@ pub(crate) struct MrCtx {
 }
 
 pub(crate) struct MrPgt {
-    table: &'static mut [u64],
+    table: [u64; crate::MR_PGT_SIZE],
     free_blk_list: *mut MrPgtFreeBlk,
 }
 
@@ -88,16 +88,14 @@ impl Device {
             if pa & (PAGE_SIZE - 1) != 0 {
                 return Err(Error::AddressNotAlign("pa", pa));
             }
-            println!("va: {:x}, pa: {:x}", va, pa);
+            println!("va: {:x}, pa: {:x}, pa pn{:x}", va, pa,pa>>21);
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 
         let op_id = self.get_ctrl_op_id();
-        println!("pgt {:?}", mr_pgt.table);
-        println!("pgt addr: {:X}", mr_pgt.table.as_ptr() as usize);
         let desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
             common: ToCardCtrlRbDescCommon { op_id },
-            start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64,
+            start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64 + pgt_offset as u64*8,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
         });
@@ -230,13 +228,8 @@ impl MrPgt {
             next: ptr::null_mut(),
         }));
 
-        let table = Box::leak(vec![0; crate::MR_PGT_SIZE+PAGE_SIZE].into_boxed_slice());
-        let table_addr  = (table.as_ptr() as usize+ PAGE_SIZE -1)& !(PAGE_SIZE -1);
-        let table = unsafe{
-            from_raw_parts_mut(table_addr as *mut u64, crate::MR_PGT_SIZE)
-        };
         Self {
-            table,
+            table:[0u64; crate::MR_PGT_SIZE],
             free_blk_list: free_blk,
         }
     }

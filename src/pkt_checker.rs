@@ -133,7 +133,7 @@ mod tests {
         let key = RKeyWithQpn::new(Key::new(1), Qpn::new(3));
         recv_pkt_map.write().unwrap().insert(
             key.clone(),
-            RecvPktMap::new(2, Psn::new(1), Qpn::new(3)).into(),
+            RecvPktMap::new_write(2, Psn::new(1), Qpn::new(3)).into(),
         );
         recv_pkt_map
             .read()

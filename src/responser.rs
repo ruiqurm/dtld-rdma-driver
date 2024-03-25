@@ -7,7 +7,7 @@ use lockfree::queue::Queue;
 
 use crate::qp::RemoteQpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
-use crate::utils::calculate_packet_cnt;
+
 use crate::Sge;
 use crate::{
     device::{
@@ -101,7 +101,7 @@ impl DescResponser {
                                 total_len: ACKPACKET_SIZE as u32,
                                 rkey: Key::default(),
                                 raddr: 0,
-                                dqp_ip : dst_ip,
+                                dqp_ip: dst_ip,
                                 dqpn: ack.dpqn,
                                 mac_addr: qp.mac_addr,
                                 pmtu: qp.pmtu.clone(),
@@ -130,6 +130,7 @@ impl DescResponser {
                         eprintln!("Failed to write ack/nack packet: {:?}", e);
                         continue;
                     }
+                    println!("{:?}", ack_buf);
                     let sge = ack_buffers.convert_buf_into_sge(&ack_buf, ACKPACKET_SIZE as u32);
                     let desc_builder = ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)
@@ -157,12 +158,6 @@ impl DescResponser {
                                 psn: Psn::default(),
                             };
                             let send_psn = Psn::new(0);
-                            let packet_cnt = calculate_packet_cnt(
-                                qp.pmtu.clone(),
-                                resp.desc.raddr,
-                                resp.desc.len,
-                            );
-                            send_psn.wrapping_add(packet_cnt);
                             common.psn = send_psn;
                             common
                         }
@@ -345,6 +340,7 @@ fn write_packet(
     psn: Psn,
     last_retry_psn: Option<Psn>,
 ) -> Result<(), Error> {
+    let buf = &mut buf[..ACKPACKET_SIZE];
     // write a ip header
     let mut ip_header = Ipv4(buf);
     ip_header.set_version_and_len(IP_DEFAULT_VERSION_AND_LEN as u32);
@@ -417,8 +413,7 @@ const ACKPACKET_SIZE: usize = IPV4_HEADER_SIZE
     + AETH_HEADER_SIZE
     + NRETH_HEADER_SIZE
     + ICRCSIZE;
-const ACKPACKET_WITHOUT_IPV4_HEADER_SIZE: usize =
-    UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE + NRETH_HEADER_SIZE + ICRCSIZE;
+const ACKPACKET_WITHOUT_IPV4_HEADER_SIZE: usize = ACKPACKET_SIZE - IPV4_HEADER_SIZE;
 
 const IP_DEFAULT_VERSION_AND_LEN: u8 = 0x45;
 const IP_DEFAULT_TTL: u8 = 64;
@@ -451,7 +446,7 @@ fn calculate_icrc(data: &mut [u8]) -> Result<(), Error> {
     hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - 4]);
     let icrc = hasher.finalize();
     let len = data.len();
-    data[len - 4..].copy_from_slice(&icrc.to_be_bytes());
+    data[len - 4..].copy_from_slice(&icrc.to_le_bytes());
     Ok(())
 }
 
@@ -490,6 +485,31 @@ mod tests {
         types::{Key, Msn, Pmtu, Psn, Qpn},
     };
 
+    use super::calculate_icrc;
+    #[test]
+    fn test_icrc_computing() {
+        let mut packet = [
+            0x45, 0x00, 0x00, 0xbc, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0xf8, 0xda, 0xc0, 0xa8,
+            0x00, 0x02, 0xc0, 0xa8, 0x00, 0x03, 0x12, 0xb7, 0x12, 0xb7, 0x00, 0xa8, 0x00, 0x00,
+            0x0a, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x7f, 0x7e, 0x91, 0x00, 0x00, 0x00, 0x01, 0x70, 0x9a, 0x33, 0x00, 0x00, 0x00, 0x80,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff, 0xc6, 0x87, 0x22, 0x98,
+        ];
+        calculate_icrc(&mut packet).unwrap();
+        assert_eq!(
+            packet[packet.len() - 4..packet.len()],
+            [0xc6, 0x87, 0x22, 0x98]
+        );
+    }
     #[test]
     fn test_calculate_ipv4_checksum() {
         // capture from a real packet
@@ -506,6 +526,13 @@ mod tests {
         ];
         let expected_checksum: u16 = u16::from_be_bytes([0x7d, 0x53]);
         let checksum = calculate_ipv4_checksum(&ref_header);
+        assert_eq!(checksum, expected_checksum);
+        let ref_header = [
+            0x45, 0x0, 0x0, 0xbc, 0x0, 0x1, 0x0, 0x0, 0x40, 0x11, 0x0, 0x0, 0xc0, 0xa8, 0x0, 0x2,
+            0xc0, 0xa8, 0x0, 0x3,
+        ];
+        let checksum = calculate_ipv4_checksum(&ref_header);
+        let expected_checksum: u16 = u16::from_be_bytes([0xf8, 0xda]);
         assert_eq!(checksum, expected_checksum);
     }
 

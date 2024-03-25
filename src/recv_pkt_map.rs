@@ -3,6 +3,8 @@ use std::mem;
 use crate::types::{Psn, Qpn};
 
 pub(crate) struct RecvPktMap {
+    #[allow(unused)]
+    is_read_resp: bool,
     start_psn: Psn,
     end_psn: Psn,
     stage_0: Box<[u64]>,
@@ -20,7 +22,7 @@ impl RecvPktMap {
     const FULL_CHUNK_DIV_BIT_SHIFT_CNT: u32 = 64usize.ilog2();
     const LAST_CHUNK_MOD_MASK: usize = mem::size_of::<u64>() * 8 - 1;
 
-    pub(crate) fn new(pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
+    fn new_common(is_read_resp : bool,pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
         let create_stage = |len| {
             // used-bit count in the last u64, len % 64
             let rem = len & Self::LAST_CHUNK_MOD_MASK;
@@ -35,8 +37,8 @@ impl RecvPktMap {
         let (stage_0, stage_0_last_chunk) = create_stage(pkt_cnt);
         let (stage_1, stage_1_last_chunk) = create_stage(stage_0.len());
         let (stage_2, stage_2_last_chunk) = create_stage(stage_1.len());
-
         Self {
+            is_read_resp,
             start_psn,
             end_psn: start_psn.wrapping_add(pkt_cnt as u32 - 1),
             stage_0,
@@ -49,6 +51,15 @@ impl RecvPktMap {
             is_out_of_order: false,
             dqpn,
         }
+    }
+
+    #[allow(unused)]
+    pub(crate) fn new_read_resp(pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
+        Self::new_common(true,pkt_cnt, start_psn, dqpn)
+    }
+
+    pub(crate) fn new_write(pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
+        Self::new_common(false,pkt_cnt, start_psn, dqpn)
     }
 
     pub(crate) fn insert(&mut self, new_psn: Psn) {
@@ -81,6 +92,11 @@ impl RecvPktMap {
             self.is_out_of_order = true;
         }
         self.last_pkt_psn = new_psn;
+    }
+
+    #[allow(unused)]
+    pub(crate) fn is_read_resp(&self) -> bool {
+        self.is_read_resp
     }
 
     pub(crate) fn is_out_of_order(&self) -> bool {

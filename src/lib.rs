@@ -19,7 +19,6 @@ use responser::{DescResponser, WorkDescriptorSender};
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    slice::from_raw_parts_mut,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
@@ -27,7 +26,7 @@ use std::{
     thread,
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Psn, Qpn, RdmaDeviceNetwork, PAGE_SIZE};
+use types::{Key, MemAccessTypeFlag, Psn, Qpn, RdmaDeviceNetwork};
 use utils::calculate_packet_cnt;
 
 pub mod mr;
@@ -223,8 +222,7 @@ impl Device {
             };
             let send_psn = Psn::new(0);
             let packet_cnt = calculate_packet_cnt(dqp.pmtu.clone(), raddr, total_len);
-            send_psn.wrapping_add(packet_cnt);
-            (common, send_psn.wrapping_sub(1))
+            (common, send_psn.wrapping_add(packet_cnt-1))
         };
 
         let builder = ToCardWorkRbDescBuilder::new_write()
@@ -238,12 +236,13 @@ impl Device {
 
         let ctx = WriteOpCtx::new_running();
         let key = QpnWithLastPsn::new(dqp.qpn, last_pkt_psn);
+        println!("{:?}",&key);
+
         self.0
             .write_op_ctx_map
             .write()
             .unwrap()
             .insert(key, ctx.clone());
-
         Ok(ctx)
     }
 
@@ -271,8 +270,7 @@ impl Device {
             };
             let send_psn = Psn::new(0);
             let packet_cnt = calculate_packet_cnt(dqp.pmtu.clone(), raddr, total_len);
-            send_psn.wrapping_add(packet_cnt);
-            (common, send_psn.wrapping_sub(1))
+            (common, send_psn.wrapping_add(packet_cnt-1))
         };
 
         let builder = ToCardWorkRbDescBuilder::new_read()
@@ -360,7 +358,7 @@ impl Device {
             recv_pkt_map.clone(),
             self.0.local_qp_table.clone(),
             send_queue.clone(),
-            self.0.read_op_ctx_map.clone(),
+            self.0.write_op_ctx_map.clone(),
         );
         if self.0.work_desc_poller.set(work_desc_poller).is_err() {
             panic!("work_desc_poller has been set");
