@@ -14,19 +14,19 @@ use std::{
 // static QP_AVAILABLITY: [AtomicBool; QP_MAX_CNT] = unsafe { mem::transmute([true; QP_MAX_CNT]) };
 
 #[derive(Debug, Clone)]
-#[allow(unused)]
 pub struct Qp {
     pub(crate) handle: u32,
+    #[allow(unused)]
     pub(crate) pd: Pd,
     pub(crate) qpn: Qpn,
     pub(crate) qp_type: QpType,
+    #[allow(unused)]
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
     pub(crate) dqp_ip: Ipv4Addr,
     pub(crate) mac_addr: MacAddress,
 }
 
-#[allow(unused)]
 pub struct QpContext {
     pub(crate) handle: u32,
     pub(crate) pd: Pd,
@@ -34,7 +34,9 @@ pub struct QpContext {
     pub(crate) qp_type: QpType,
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
+    #[allow(unused)]
     pub(crate) dqp_ip: Ipv4Addr,
+    #[allow(unused)]
     pub(crate) mac_addr: MacAddress,
 }
 

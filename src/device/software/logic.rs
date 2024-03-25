@@ -5,7 +5,7 @@ use crate::{
         ToCardCtrlRbDesc, ToCardWorkRbDesc, ToCardWorkRbDescOpcode, ToHostWorkRbDesc,
         ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon,
         ToHostWorkRbDescOpcode, ToHostWorkRbDescRead, ToHostWorkRbDescStatus,
-        ToHostWorkRbDescTransType, ToHostWorkRbDescWrite, ToHostWorkRbDescWriteType,
+        ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         ToHostWorkRbDescWriteWithImm,
     },
     types::{MemAccessTypeFlag, Pmtu, QpType},
@@ -434,6 +434,13 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 };
 
                 common.status = status;
+                let is_read_resp = matches!(
+                    header.common_meta.opcode,
+                    ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+                        | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+                        | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+                        | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+                );
                 // Write a descriptor to host
                 match header.common_meta.opcode {
                     ToHostWorkRbDescOpcode::RdmaWriteFirst
@@ -444,8 +451,9 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
                     | ToHostWorkRbDescOpcode::RdmaReadResponseLast
                     | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
-                        ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+                        ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                             common,
+                            is_read_resp,
                             write_type: write_type.unwrap(),
                             psn: crate::types::Psn::new(header.common_meta.psn.get()),
                             addr: header.reth.va,

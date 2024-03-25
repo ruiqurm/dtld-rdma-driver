@@ -7,7 +7,7 @@ use std::{
 use crate::{
     device::{
         ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack,
-        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWrite,
+        ToHostWorkRbDescRead, ToHostWorkRbDescWriteOrReadResp,
         ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
     },
     qp::QpContext,
@@ -89,14 +89,14 @@ impl WorkDescPollerContext {
         loop {
             let desc = ctx.work_rb.pop();
             eprintln!("{:?}",desc);
-            if !matches!(desc.common().status, ToHostWorkRbDescStatus::Normal) {
-                eprintln!("desc status is {:?}", desc.common().status);
-                continue;
-            }
+            // if !matches!(desc.common().status, ToHostWorkRbDescStatus::Normal) {
+            //     eprintln!("desc status is {:?}", desc.common().status);
+            //     continue;
+            // }
 
             let flag = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
-                ToHostWorkRbDesc::Write(desc) => ctx.handle_work_desc_write(desc),
+                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(desc),
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(desc),
                 ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(desc),
                 ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(desc),
@@ -120,7 +120,7 @@ impl WorkDescPollerContext {
         }
     }
 
-    fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWrite) -> ThreadFlag {
+    fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWriteOrReadResp) -> ThreadFlag {
         // TODO: since we don't have the MSN currently, we use qpn+key as index.
         // But it's just a temporary solution.
         let fake_msn = RKeyWithQpn::new(desc.key, desc.common.dqpn);
@@ -152,7 +152,8 @@ impl WorkDescPollerContext {
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len as u32).div_ceil(pmtu);
             recv_pkt_map_guard.insert(
                 fake_msn.clone(),
-                Mutex::new(RecvPktMap::new_write(
+                Mutex::new(RecvPktMap::new(
+                    desc.is_read_resp,
                     pkt_cnt as usize,
                     desc.psn,
                     desc.common.dqpn,
@@ -208,7 +209,7 @@ mod tests {
     use crate::{
         device::{
             ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead,
-            ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWrite,
+            ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp,
             ToHostWorkRbDescWriteType, ToHostWorkRbDescAck,
         },
         qp::QpContext,
@@ -240,13 +241,14 @@ mod tests {
     fn test_work_desc_poller() {
         let mut input = vec![
             // test writeFirst
-            ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+            ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
                     status: ToHostWorkRbDescStatus::Normal,
                     trans: ToHostWorkRbDescTransType::Rc,
                     pad_cnt: 0,
                 },
+                is_read_resp: false,
                 addr: 0,
                 len: 3192,
                 key: Key::new(0),
@@ -254,13 +256,14 @@ mod tests {
                 psn: Psn::new(0),
             }),
             // test writeMiddle
-            ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+            ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
                     status: ToHostWorkRbDescStatus::Normal,
                     trans: ToHostWorkRbDescTransType::Rc,
                     pad_cnt: 0,
                 },
+                is_read_resp: false,
                 addr: 1024,
                 len: 1024,
                 key: Key::new(0),
@@ -268,13 +271,14 @@ mod tests {
                 psn: Psn::new(1),
             }),
             // test writeLast
-            ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+            ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
                     status: ToHostWorkRbDescStatus::Normal,
                     trans: ToHostWorkRbDescTransType::Rc,
                     pad_cnt: 0,
                 },
+                is_read_resp: false,
                 addr: 1024,
                 len: 1024,
                 key: Key::new(0),

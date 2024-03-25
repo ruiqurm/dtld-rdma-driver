@@ -60,7 +60,6 @@ pub(crate) struct RespReadRespCommand {
 /// Currently, it supports two types of response:
 /// * Acknowledge(ack,nack)
 /// * Read Response
-#[allow(dead_code)]
 pub(crate) enum RespCommand {
     Acknowledge(RespAckCommand), // Acknowledge or Negative Acknowledge
     ReadResponse(RespReadRespCommand),
@@ -130,7 +129,6 @@ impl DescResponser {
                         eprintln!("Failed to write ack/nack packet: {:?}", e);
                         continue;
                     }
-                    println!("{:?}", ack_buf);
                     let sge = ack_buffers.convert_buf_into_sge(&ack_buf, ACKPACKET_SIZE as u32);
                     let desc_builder = ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)

@@ -39,22 +39,10 @@ pub enum ToCardWorkRbDesc {
 #[derive(Debug)]
 pub(crate) enum ToHostWorkRbDesc {
     Read(ToHostWorkRbDescRead),
-    Write(ToHostWorkRbDescWrite),
+    WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp),
     WriteWithImm(ToHostWorkRbDescWriteWithImm),
     Ack(ToHostWorkRbDescAck),
     Nack(ToHostWorkRbDescNack),
-}
-
-impl ToHostWorkRbDesc {
-    pub(crate) fn common(&self) -> &ToHostWorkRbDescCommon {
-        match self {
-            ToHostWorkRbDesc::Read(desc) => &desc.common,
-            ToHostWorkRbDesc::Write(desc) => &desc.common,
-            ToHostWorkRbDesc::WriteWithImm(desc) => &desc.common,
-            ToHostWorkRbDesc::Ack(desc) => &desc.common,
-            ToHostWorkRbDesc::Nack(desc) => &desc.common,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -203,8 +191,9 @@ pub(crate) struct ToHostWorkRbDescRead {
 }
 
 #[derive(Debug)]
-pub(crate) struct ToHostWorkRbDescWrite {
+pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) common: ToHostWorkRbDescCommon,
+    pub(crate) is_read_resp: bool,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
     pub(crate) psn: Psn,
     pub(crate) addr: u64,
@@ -854,13 +843,19 @@ impl ToHostWorkRbDesc {
             dqpn,
             pad_cnt,
         };
-
+        let is_read_resp = matches!(
+            opcode,
+            ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+                | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+                | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly);
         match opcode {
             ToHostWorkRbDescOpcode::RdmaWriteFirst => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                     common,
+                    is_read_resp,
                     write_type: ToHostWorkRbDescWriteType::First,
                     psn,
                     addr,
@@ -871,8 +866,9 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::RdmaWriteMiddle => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                     common,
+                    is_read_resp,
                     write_type: ToHostWorkRbDescWriteType::Middle,
                     psn,
                     addr,
@@ -883,8 +879,9 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::RdmaWriteLast => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                     common,
+                    is_read_resp,
                     write_type: ToHostWorkRbDescWriteType::Last,
                     psn,
                     addr,
@@ -895,8 +892,61 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::RdmaWriteOnly => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::Write(ToHostWorkRbDescWrite {
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                     common,
+                    is_read_resp,
+                    write_type: ToHostWorkRbDescWriteType::Only,
+                    psn,
+                    addr,
+                    len,
+                    key,
+                }))
+            }
+            ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
+                let (addr, key, len) = read_reth(src);
+
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
+                    common,
+                    is_read_resp,
+                    write_type: ToHostWorkRbDescWriteType::First,
+                    psn,
+                    addr,
+                    len,
+                    key,
+                }))
+            }
+            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
+                let (addr, key, len) = read_reth(src);
+
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
+                    common,
+                    is_read_resp,
+                    write_type: ToHostWorkRbDescWriteType::Middle,
+                    psn,
+                    addr,
+                    len,
+                    key,
+                }))
+            }
+            ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
+                let (addr, key, len) = read_reth(src);
+
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
+                    common,
+                    is_read_resp,
+                    write_type: ToHostWorkRbDescWriteType::Last,
+                    psn,
+                    addr,
+                    len,
+                    key,
+                }))
+            }
+            ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
+                let (addr, key, len) = read_reth(src);
+
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
+                    common,
+                    is_read_resp,
                     write_type: ToHostWorkRbDescWriteType::Only,
                     psn,
                     addr,
@@ -975,7 +1025,6 @@ impl ToHostWorkRbDesc {
                     ToHostWorkRbDescAethCode::Rsvd => unimplemented!(),
                 }
             }
-            _ => unimplemented!(),
         }
     }
 
@@ -983,7 +1032,7 @@ impl ToHostWorkRbDesc {
     pub(super) fn serialized_desc_cnt(&self) -> usize {
         match self {
             ToHostWorkRbDesc::Read(_) => 2,
-            ToHostWorkRbDesc::Write(_) => 1,
+            ToHostWorkRbDesc::WriteOrReadResp(_) => 1,
             ToHostWorkRbDesc::WriteWithImm(_) => 1,
             ToHostWorkRbDesc::Ack(_) => 1,
             ToHostWorkRbDesc::Nack(_) => 1,
@@ -992,7 +1041,6 @@ impl ToHostWorkRbDesc {
 }
 
 impl IncompleteToHostWorkRbDesc {
-    #[allow(unreachable_code)]
     pub(super) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
         fn read_second_reth(src: &[u8]) -> (u64, Key) {
             // typedef struct {
@@ -1012,18 +1060,15 @@ impl IncompleteToHostWorkRbDesc {
                     let (raddr, rkey) = read_second_reth(src);
                     desc.raddr = raddr;
                     desc.rkey = rkey;
-                    return Ok(ToHostWorkRbDesc::Read(desc));
+                    Ok(ToHostWorkRbDesc::Read(desc))
                 }
                 _ => unreachable!(),
             },
-            ToHostWorkRbDesc::Write(_) => unreachable!(),
+            ToHostWorkRbDesc::WriteOrReadResp(_) => unreachable!(),
             ToHostWorkRbDesc::WriteWithImm(_) => unreachable!(),
             ToHostWorkRbDesc::Ack(_) => unreachable!(),
             ToHostWorkRbDesc::Nack(_) => unreachable!(),
         }
-
-        self.parsed_cnt += 1;
-        Err(self)
     }
 }
 

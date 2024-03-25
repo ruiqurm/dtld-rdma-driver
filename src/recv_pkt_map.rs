@@ -3,7 +3,6 @@ use std::mem;
 use crate::types::{Psn, Qpn};
 
 pub(crate) struct RecvPktMap {
-    #[allow(unused)]
     is_read_resp: bool,
     start_psn: Psn,
     end_psn: Psn,
@@ -22,7 +21,7 @@ impl RecvPktMap {
     const FULL_CHUNK_DIV_BIT_SHIFT_CNT: u32 = 64usize.ilog2();
     const LAST_CHUNK_MOD_MASK: usize = mem::size_of::<u64>() * 8 - 1;
 
-    fn new_common(is_read_resp : bool,pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
+    pub(crate) fn new(is_read_resp : bool,pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
         let create_stage = |len| {
             // used-bit count in the last u64, len % 64
             let rem = len & Self::LAST_CHUNK_MOD_MASK;
@@ -51,15 +50,6 @@ impl RecvPktMap {
             is_out_of_order: false,
             dqpn,
         }
-    }
-
-    #[allow(unused)]
-    pub(crate) fn new_read_resp(pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
-        Self::new_common(true,pkt_cnt, start_psn, dqpn)
-    }
-
-    pub(crate) fn new_write(pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
-        Self::new_common(false,pkt_cnt, start_psn, dqpn)
     }
 
     pub(crate) fn insert(&mut self, new_psn: Psn) {
@@ -94,7 +84,6 @@ impl RecvPktMap {
         self.last_pkt_psn = new_psn;
     }
 
-    #[allow(unused)]
     pub(crate) fn is_read_resp(&self) -> bool {
         self.is_read_resp
     }

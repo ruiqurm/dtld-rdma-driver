@@ -269,7 +269,7 @@ impl Device {
                 psn: Psn::default(),
             };
             let send_psn = Psn::new(0);
-            let packet_cnt = calculate_packet_cnt(dqp.pmtu.clone(), raddr, total_len);
+            let packet_cnt = calculate_packet_cnt(dqp.pmtu.clone(), sge.addr, total_len);
             (common, send_psn.wrapping_add(packet_cnt-1))
         };
 

@@ -59,10 +59,11 @@ impl PacketCheckerContext {
         let mut remove_list = LinkedList::new();
         let iter_maps = self.recv_pkt_map.read().unwrap();
         for (rkey_with_qpn, map) in iter_maps.iter() {
-            let (is_complete, is_out_of_order, dqpn, end_psn) = {
+            let (is_complete, is_read_resp,is_out_of_order, dqpn, end_psn) = {
                 let guard = map.lock().unwrap();
                 (
                     guard.is_complete(),
+                    guard.is_read_resp(),
                     guard.is_out_of_order(),
                     guard.dqpn(),
                     guard.end_psn(),
@@ -71,14 +72,17 @@ impl PacketCheckerContext {
             // send ack
             if is_complete {
                 // TODO: we don't have MSN yet. fill it later.
-                let command = RespCommand::Acknowledge(RespAckCommand::new_ack(
-                    dqpn,
-                    Msn::default(),
-                    end_psn,
-                ));
-                if self.send_queue.send(command).is_err() {
-                    eprintln!("Failed to send ack command");
-                    return ThreadFlag::Stopped("Send queue is broken");
+                if !is_read_resp{
+                    // If we are not in read response, we should send ack
+                    let command = RespCommand::Acknowledge(RespAckCommand::new_ack(
+                        dqpn,
+                        Msn::default(),
+                        end_psn,
+                    ));
+                    if self.send_queue.send(command).is_err() {
+                        eprintln!("Failed to send ack command");
+                        return ThreadFlag::Stopped("Send queue is broken");
+                    }
                 }
                 let key = QpnWithLastPsn::new(dqpn, end_psn);
                 if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&key){
@@ -133,7 +137,7 @@ mod tests {
         let key = RKeyWithQpn::new(Key::new(1), Qpn::new(3));
         recv_pkt_map.write().unwrap().insert(
             key.clone(),
-            RecvPktMap::new_write(2, Psn::new(1), Qpn::new(3)).into(),
+            RecvPktMap::new(false,2, Psn::new(1), Qpn::new(3)).into(),
         );
         recv_pkt_map
             .read()

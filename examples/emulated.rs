@@ -124,9 +124,8 @@ fn create_and_init_card(
 
     (dev, pd, mr, qp, mr_buffer)
 }
-#[allow(unused)]
 fn main() {
-    const SEND_CNT: usize = 8192 * 4;
+    const SEND_CNT: usize = 8192;
     let a_network = RdmaDeviceNetwork {
         gateway: Ipv4Addr::new(192, 168, 0, 0x1),
         netmask: Ipv4Addr::new(255, 255, 255, 0),
@@ -141,15 +140,15 @@ fn main() {
     };
     let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", a_network);
-    let (dev_b, _pd_b, mr_b, qp_b, mut mr_buffer_b) =
+    let (dev_b, _pd_b, mr_b, qp_b, mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", b_network);
 
     // qp communication
-    dev_a.add_remote_qp(&qp_b);
-    dev_b.add_remote_qp(&qp_a);
+    dev_a.add_remote_qp(&qp_b).unwrap();
+    dev_b.add_remote_qp(&qp_a).unwrap();
 
     // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = 0xff;
+    //     *item = idx as u8;
     // }
     // for item in mr_buffer_b[0..].iter_mut() {
     //     *item = 0
@@ -196,17 +195,17 @@ fn main() {
     // ctx.wait();
     // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
    
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for item in mr_buffer_a.iter_mut() {
         *item = 0;
     }
-    for item in mr_buffer_b[0..].iter_mut() {
-        *item = 0xff;
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
     }
 
     // we read from b to a
 
     let sge_read = Sge {
-        addr: &mr_buffer_b[0] as *const u8 as u64,
+        addr: &mr_buffer_a[0] as *const u8 as u64,
         len: SEND_CNT as u32,
         key: mr_a.get_key(),
     };
@@ -215,7 +214,7 @@ fn main() {
     let ctx = dev_a
         .read(
             qp_b,
-            &mr_buffer_b[0] as *const u8 as u64,
+            &mr_buffer_b[1024] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::IbvAccessNoFlags,
             sge_read,
@@ -224,8 +223,7 @@ fn main() {
     ctx.wait();
     eprintln!("Read req sent");
 
-    // assert!(mr_buffer[0..0 + 32767] == mr_buffer[128 * 1024..128 * 1024 + 32767]);
-    // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_a[128 * 1024..128 * 1024 + SEND_CNT]);
+    assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024+SEND_CNT]);
 
     // dev_a.dereg_mr(mr_a).unwrap();
     // dev_b.dereg_mr(mr_b).unwrap();
