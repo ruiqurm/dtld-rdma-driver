@@ -28,7 +28,7 @@ pub(crate) enum ToHostCtrlRbDesc {
     SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta),
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub enum ToCardWorkRbDesc {
     Read(ToCardWorkRbDescRead),
     Write(ToCardWorkRbDescWrite),
@@ -43,6 +43,18 @@ pub(crate) enum ToHostWorkRbDesc {
     WriteWithImm(ToHostWorkRbDescWriteWithImm),
     Ack(ToHostWorkRbDescAck),
     Nack(ToHostWorkRbDescNack),
+}
+
+impl ToHostWorkRbDesc {
+    pub(crate) fn status(&self) -> &ToHostWorkRbDescStatus {
+        match self {
+            ToHostWorkRbDesc::Read(desc) => &desc.common.status,
+            ToHostWorkRbDesc::WriteOrReadResp(desc) => &desc.common.status,
+            ToHostWorkRbDesc::WriteWithImm(desc) => &desc.common.status,
+            ToHostWorkRbDesc::Ack(desc) => &desc.common.status,
+            ToHostWorkRbDesc::Nack(desc) => &desc.common.status,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -127,7 +139,7 @@ pub(crate) struct ToHostCtrlRbDescSetRawPacketReceiveMeta {
     pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) total_len: u32,
     pub(crate) raddr: u64,
@@ -139,15 +151,16 @@ pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) flags: MemAccessTypeFlag,
     pub(crate) qp_type: QpType,
     pub(crate) psn: Psn,
+    pub(crate) msn: Msn,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescRead {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) sge: ToCardCtrlRbDescSge,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
@@ -158,7 +171,7 @@ pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
@@ -178,6 +191,9 @@ pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) dqpn: Qpn,
     #[allow(unused)]
     pub(crate) pad_cnt: u8,
+    pub(crate) msn : Msn,
+    #[allow(unused)]
+    pub(crate) expected_psn: Psn,
 }
 
 #[derive(Debug)]
@@ -600,6 +616,8 @@ impl ToCardWorkRbDesc {
         head.set_raddr(common.raddr);
         head.set_rkey(common.rkey.get().into());
         head.set_dqp_ip(u8_slice_to_u64(&common.dqp_ip.octets()));
+        // We use the pkey field to store the `MSN`.
+        head.set_pkey(common.msn.get().into());
     }
 
     pub(super) fn write_1(&self, dst: &mut [u8]) {
@@ -775,6 +793,7 @@ impl ToHostWorkRbDesc {
             (addr, key, len)
         }
 
+        // FIXME: imm will be in next desc
         fn read_imm(src: &[u8]) -> u32 {
             // typedef struct {
             //     IMM                             data;           // 32
@@ -798,7 +817,7 @@ impl ToHostWorkRbDesc {
             // first 12 bytes are desc type, status and bth
             let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
             let psn = Psn::new(frag_aeth.get_psn());
-            let msn = Msn::new(frag_aeth.get_msn());
+            let msn = Msn::new(frag_aeth.get_msn() as u16);
             let value = frag_aeth.get_aeth_value() as u8;
             let code = ToHostWorkRbDescAethCode::try_from(frag_aeth.get_aeth_code() as u8).unwrap();
 
@@ -806,15 +825,15 @@ impl ToHostWorkRbDesc {
         }
 
         // typedef struct {
-        //     ReservedZero#(160)              reserved1;      // 160
+        //     ReservedZero#(8)                reserved1;      // 8
+        //     MSN                             msn;            // 24
+        //     MeatReportQueueDescFragRETH     reth;           // 128
         //     MeatReportQueueDescFragBTH      bth;            // 64
         //     RdmaReqStatus                   reqStatus;      // 8
-        //     ReservedZero#(23)               reserved2;      // 23
-        //     MeatReportQueueDescType         descType;       // 1
-        // } MeatReportQueueDescBth deriving(Bits, FShow);
-        let desc_bth = MeatReportQueueDescBth(&src[0..32]);
-        // let is_pkt_meta = desc_bth.get_desc_type();
-        // assert!(is_pkt_meta); // only support pkt meta for now
+        //     PSN                             expectedPSN;    // 24
+        // } MeatReportQueueDescBthRethReth deriving(Bits, FShow);
+        let desc_bth = MeatReportQueueDescBthReth(&src[0..32]);
+        let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
         let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).unwrap();
 
@@ -829,130 +848,150 @@ impl ToHostWorkRbDesc {
         //     TransType                       trans;        // 3
         // } MeatReportQueueDescFragBTH deriving(Bits, FShow);
 
-        let desc_frag_bth = MeatReportQueueDescFragBTH(&src[4..32]);
+        let desc_frag_bth = MeatReportQueueDescFragBTH(&src[4..12]);
         let trans =
             ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8).unwrap();
         let opcode = ToHostWorkRbDescOpcode::try_from(desc_frag_bth.get_opcode() as u8).unwrap();
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
         let pad_cnt = desc_frag_bth.get_pad_cnt() as u8;
+        let msn = Msn::new(desc_bth.get_msn() as u16);
 
         let common = ToHostWorkRbDescCommon {
             status,
             trans,
             dqpn,
             pad_cnt,
+            msn,
+            expected_psn
         };
         let is_read_resp = matches!(
             opcode,
             ToHostWorkRbDescOpcode::RdmaReadResponseFirst
                 | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
                 | ToHostWorkRbDescOpcode::RdmaReadResponseLast
-                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly);
+                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+        );
         match opcode {
             ToHostWorkRbDescOpcode::RdmaWriteFirst => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::First,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::First,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaWriteMiddle => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Middle,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Middle,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaWriteLast => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Last,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Last,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaWriteOnly => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Only,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Only,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::First,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::First,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Middle,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Middle,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Last,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Last,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                 let (addr, key, len) = read_reth(src);
 
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
-                    common,
-                    is_read_resp,
-                    write_type: ToHostWorkRbDescWriteType::Only,
-                    psn,
-                    addr,
-                    len,
-                    key,
-                }))
+                Ok(ToHostWorkRbDesc::WriteOrReadResp(
+                    ToHostWorkRbDescWriteOrReadResp {
+                        common,
+                        is_read_resp,
+                        write_type: ToHostWorkRbDescWriteType::Only,
+                        psn,
+                        addr,
+                        len,
+                        key,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate => {
                 let (addr, key, len) = read_reth(src);
@@ -1165,7 +1204,8 @@ bitfield! {
     get_raddr, set_raddr: 127, 64;    // 64bits
     get_rkey, set_rkey: 159, 128;     // 32bits
     get_dqp_ip, set_dqp_ip: 191, 160; // 32bits
-    _reserverd, _: 255, 192;          // 64bits
+    get_pkey, set_pkey: 207, 192;     // 16bits
+    _reserverd, _: 255, 208;          // 48bits
 }
 
 bitfield! {
@@ -1220,13 +1260,14 @@ bitfield! {
     get_aeth_code, set_aeth_code: 55, 53;   // 3bits
 }
 bitfield! {
-    struct MeatReportQueueDescBth([u8]);
+    struct MeatReportQueueDescBthReth([u8]);
     u64;
-    get_desc_type, set_desc_type: 0; // 1bit
-    reserved2,_ : 23, 1;              // 23bits
-    get_req_status, set_req_status: 31,24; // 8bit
-    get_bth, set_bth: 95, 32;         // 64bits
-    reserved1,_ : 255, 96;            // 160bits
+    get_expected_psn, _: 23,0;      // 24bits
+    get_req_status, _: 31,24;       // 8bit
+    get_bth, _: 95, 32;             // 64bits
+    get_reth, _: 223, 96;           // 128bits
+    get_msn, _: 247,224;            // 24bits
+    reserved1,_ : 255, 248;         // 8bits
 }
 
 bitfield! {

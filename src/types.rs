@@ -5,7 +5,7 @@ use eui48::MacAddress;
 use serde::ser::StdError;
 use thiserror::Error;
 
-use crate::PoisonErrorWrapper;
+use crate::{Pd, PoisonErrorWrapper};
 
 pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
 
@@ -33,6 +33,35 @@ impl Imm {
 impl From<u32> for Imm {
     fn from(imm: u32) -> Self {
         Self::new(imm)
+    }
+}
+
+/// Message Sequence Number
+#[derive(Debug, Clone, Copy, Hash,PartialEq, Eq)]
+pub struct Msn(u16);
+impl Msn {
+    pub fn new(msn: u16) -> Self {
+        Self(msn)
+    }
+
+    pub fn get(&self) -> u16 {
+        self.0
+    }
+
+    pub fn into_be(self) -> u16 {
+        self.0.to_be()
+    }
+}
+
+impl From<u16> for Msn {
+    fn from(msn: u16) -> Self {
+        Self::new(msn)
+    }
+}
+
+impl Default for Msn {
+    fn default() -> Self {
+        Self::new(0)
     }
 }
 
@@ -65,8 +94,7 @@ impl From<u32> for Key {
     }
 }
 
-/// Message Sequence Number
-pub type Msn = ThreeBytesStruct;
+
 
 /// Packet Sequence Number
 pub type Psn = ThreeBytesStruct;
@@ -224,6 +252,21 @@ impl RdmaDeviceNetwork {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Qp {
+    #[allow(unused)]
+    pub pd: Pd,
+    pub qpn: Qpn,
+    pub qp_type: QpType,
+    #[allow(unused)]
+    pub rq_acc_flags: MemAccessTypeFlag,
+    pub pmtu: Pmtu,
+    pub dqp_ip: Ipv4Addr,
+    pub dqp_mac: MacAddress,
+    pub local_ip: Ipv4Addr,
+    pub local_mac: MacAddress,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -244,8 +287,8 @@ pub enum Error {
     InvalidPd,
     #[error("invalid MR handle")]
     InvalidMr,
-    #[error("invalid QP handle")]
-    InvalidQp,
+    #[error("invalid QPN")]
+    InvalidQpn,
     #[error("PD in use")]
     PdInUse,
     #[error("QP in use")]

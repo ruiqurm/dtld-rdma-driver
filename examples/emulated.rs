@@ -2,11 +2,12 @@ use buddy_system_allocator::LockedHeap;
 
 use eui48::MacAddress;
 use open_rdma_driver::{
-    types::{MemAccessTypeFlag, Pmtu, QpType, RdmaDeviceNetwork, PAGE_SIZE},
-    Device, Mr, Pd, Qp, Sge,
+    qp::QpManager,
+    types::{MemAccessTypeFlag, Pmtu, Qp, QpType, Qpn, RdmaDeviceNetwork, PAGE_SIZE},
+    Device, Mr, Pd, Sge,
 };
-use std::{ffi::c_void, net::Ipv4Addr};
 use std::slice::from_raw_parts_mut;
+use std::{ffi::c_void, net::Ipv4Addr};
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -45,8 +46,8 @@ fn init_global_allocator() {
         let addr = heap as usize;
         let size = HEAP_BLOCK_SIZE;
         HEAP_START_ADDR = addr;
-        
-        HEAP_ALLOCATOR.lock().init(addr, size );
+
+        HEAP_ALLOCATOR.lock().init(addr, size);
     }
 }
 
@@ -76,11 +77,17 @@ fn allocate_aligned_buf(size: usize) -> Box<[u8]> {
 fn create_and_init_card(
     card_id: usize,
     mock_server_addr: &str,
-    network: RdmaDeviceNetwork,
-) -> (Device, Pd, Mr, Qp, Box<[u8]>) {
+    qpn: Qpn,
+    local_network: &RdmaDeviceNetwork,
+    remote_network: &RdmaDeviceNetwork,
+) -> (Device, Pd, Mr, Box<[u8]>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
-    let dev =
-        Device::new_emulated(mock_server_addr.parse().unwrap(), head_start_addr, &network).unwrap();
+    let dev = Device::new_emulated(
+        mock_server_addr.parse().unwrap(),
+        head_start_addr,
+        local_network,
+    )
+    .unwrap();
     eprintln!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -109,23 +116,26 @@ fn create_and_init_card(
         )
         .unwrap();
     eprintln!("[{}] MR registered", card_id);
-
-    let qp = dev
-        .create_qp(
-            pd.clone(),
-            QpType::Rc,
-            Pmtu::Mtu4096,
-            access_flag,
-            network.ipaddr,
-            network.macaddr,
-        )
-        .unwrap();
+    let qp = Qp {
+        pd: pd.clone(),
+        qpn,
+        qp_type: QpType::Rc,
+        rq_acc_flags: access_flag,
+        pmtu: Pmtu::Mtu4096,
+        dqp_ip: remote_network.ipaddr,
+        dqp_mac: remote_network.macaddr,
+        local_ip: local_network.ipaddr,
+        local_mac: local_network.macaddr,
+    };
+    dev.create_qp(&qp).unwrap();
     eprintln!("[{}] QP created", card_id);
 
-    (dev, pd, mr, qp, mr_buffer)
+    (dev, pd, mr, mr_buffer)
 }
 fn main() {
     const SEND_CNT: usize = 8192;
+    let qp_manager = QpManager::new();
+    let qpn = qp_manager.alloc().unwrap();
     let a_network = RdmaDeviceNetwork {
         gateway: Ipv4Addr::new(192, 168, 0, 0x1),
         netmask: Ipv4Addr::new(255, 255, 255, 0),
@@ -138,15 +148,11 @@ fn main() {
         ipaddr: Ipv4Addr::new(192, 168, 0, 3),
         macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
     };
-    let (dev_a, _pd_a, mr_a, qp_a, mut mr_buffer_a) =
-        create_and_init_card(0, "0.0.0.0:9873", a_network);
-    let (dev_b, _pd_b, mr_b, qp_b, mr_buffer_b) =
-        create_and_init_card(1, "0.0.0.0:9875", b_network);
-
-    // qp communication
-    dev_a.add_remote_qp(&qp_b).unwrap();
-    dev_b.add_remote_qp(&qp_a).unwrap();
-
+    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
+        create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
+    let (dev_b, _pd_b, mr_b, mr_buffer_b) =
+        create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
+    let dpqn = qpn;
     // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
     //     *item = idx as u8;
     // }
@@ -194,7 +200,7 @@ fn main() {
     //     .unwrap();
     // ctx.wait();
     // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
-   
+
     for item in mr_buffer_a.iter_mut() {
         *item = 0;
     }
@@ -213,7 +219,7 @@ fn main() {
     // // read text from b to a.
     let ctx = dev_a
         .read(
-            qp_b,
+            dpqn,
             &mr_buffer_b[1024] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::IbvAccessNoFlags,
@@ -223,8 +229,33 @@ fn main() {
     ctx.wait();
     eprintln!("Read req sent");
 
-    assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024+SEND_CNT]);
+    assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024 + SEND_CNT]);
 
+    for item in mr_buffer_a.iter_mut() {
+        *item = 0;
+    }
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
+    }
+
+    let sge_read = Sge {
+        addr: &mr_buffer_a[0] as *const u8 as u64,
+        len: SEND_CNT as u32,
+        key: mr_a.get_key(),
+    };
+
+    // read text from b to a.
+    let ctx = dev_a
+        .read(
+            dpqn,
+            &mr_buffer_b[1024] as *const u8 as u64,
+            mr_b.get_key(),
+            MemAccessTypeFlag::IbvAccessNoFlags,
+            sge_read,
+        )
+        .unwrap();
+    ctx.wait();
+    eprintln!("Read req sent");
     // dev_a.dereg_mr(mr_a).unwrap();
     // dev_b.dereg_mr(mr_b).unwrap();
     // eprintln!("MR deregistered");

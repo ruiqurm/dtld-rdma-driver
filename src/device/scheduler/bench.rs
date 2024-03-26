@@ -5,7 +5,7 @@ use eui48::MacAddress;
 use crate::device::{
     ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
 };
-use crate::types::{Key, MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn};
+use crate::types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn};
 
 #[allow(unused)]
 pub fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWorkRbDesc> {
@@ -21,6 +21,7 @@ pub fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWor
             flags: MemAccessTypeFlag::IbvAccessNoFlags,
             qp_type: QpType::Rc,
             psn: Psn::new(1234),
+            msn : Msn::new(0),
         },
         is_last: true,
         is_first: true,
@@ -54,6 +55,7 @@ pub fn generate_big_descriptor(size: u32) -> ToCardWorkRbDesc {
             flags: MemAccessTypeFlag::IbvAccessNoFlags,
             qp_type: QpType::Rc,
             psn: Psn::new(1234),
+            msn : Msn::new(0),
         },
         is_last: true,
         is_first: true,

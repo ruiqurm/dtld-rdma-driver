@@ -8,7 +8,7 @@ use crate::{
         ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         ToHostWorkRbDescWriteWithImm,
     },
-    types::{MemAccessTypeFlag, Pmtu, QpType},
+    types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
 };
 
 use super::{
@@ -393,6 +393,8 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
             trans: message.meta_data.common_meta().tran_type.clone(),
             dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
             pad_cnt: message.payload.get_pad_cnt() as u8,
+            msn: Msn::default(),
+            expected_psn: crate::types::Psn::new(0),
         };
         let descriptor = match meta {
             Metadata::General(header) => {
@@ -495,7 +497,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 match header.aeth_code {
                     ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                         common,
-                        msn: crate::types::Msn::new(header.msn),
+                        msn: crate::types::Msn::new(header.msn as u16),
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
                     }),

@@ -2,94 +2,61 @@ use eui48::MacAddress;
 
 use crate::{
     device::{ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
-    types::{MemAccessTypeFlag, Pmtu, QpType, Qpn},
+    types::{MemAccessTypeFlag, Pmtu, Psn, Qp, QpType, Qpn},
     Device, Error, Pd,
 };
 use std::{
     hash::{Hash, Hasher},
     net::Ipv4Addr,
-    sync::atomic::Ordering,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
 };
 
-// static QP_AVAILABLITY: [AtomicBool; QP_MAX_CNT] = unsafe { mem::transmute([true; QP_MAX_CNT]) };
-
-#[derive(Debug, Clone)]
-pub struct Qp {
-    pub(crate) handle: u32,
-    #[allow(unused)]
-    pub(crate) pd: Pd,
-    pub(crate) qpn: Qpn,
-    pub(crate) qp_type: QpType,
-    #[allow(unused)]
-    pub(crate) rq_acc_flags: MemAccessTypeFlag,
-    pub(crate) pmtu: Pmtu,
-    pub(crate) dqp_ip: Ipv4Addr,
-    pub(crate) mac_addr: MacAddress,
-}
+const QP_MAX_CNT: usize = 1024;
 
 pub struct QpContext {
-    pub(crate) handle: u32,
     pub(crate) pd: Pd,
     pub(crate) qpn: Qpn,
     pub(crate) qp_type: QpType,
+    #[allow(unused)]
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
     #[allow(unused)]
-    pub(crate) dqp_ip: Ipv4Addr,
+    pub(crate) local_ip: Ipv4Addr,
     #[allow(unused)]
-    pub(crate) mac_addr: MacAddress,
+    pub(crate) local_mac_addr: MacAddress,
+    pub(crate) dqp_ip: Ipv4Addr,
+    pub(crate) dqp_mac_addr: MacAddress,
+    pub(crate) sending_psn: Mutex<Psn>,
 }
 
-pub struct RemoteQpContext {
-    pub(crate) pmtu: Pmtu,
-    pub(crate) ip: Ipv4Addr,
-    pub(crate) qp_type: QpType,
-    pub(crate) mac_addr: MacAddress,
-}
-
-impl Qp {
-    pub fn get_qpn(&self) -> Qpn {
-        self.qpn
+impl From<&Qp> for QpContext {
+    fn from(qp: &Qp) -> QpContext {
+        QpContext {
+            pd: qp.pd.clone(),
+            qpn: qp.qpn,
+            qp_type: qp.qp_type,
+            rq_acc_flags: qp.rq_acc_flags,
+            pmtu: qp.pmtu.clone(),
+            local_ip: qp.local_ip,
+            local_mac_addr: qp.local_mac,
+            dqp_ip: qp.dqp_ip,
+            dqp_mac_addr: qp.dqp_mac,
+            sending_psn: Mutex::new(Psn::new(0)),
+        }
     }
 }
-
-
 impl Device {
     #[allow(clippy::too_many_arguments)]
-    pub fn create_qp(
-        &self,
-        pd: Pd,
-        qp_type: QpType,
-        pmtu: Pmtu,
-        rq_acc_flags: MemAccessTypeFlag,
-        dqp_ip: Ipv4Addr,
-        mac_addr: MacAddress,
-    ) -> Result<Qp, Error> {
-        let mut qp_pool = self.0.local_qp_table.write().unwrap();
+    pub fn create_qp(&self, qp: &Qp) -> Result<(), Error> {
+        let mut qp_pool = self.0.qp_table.write().unwrap();
         let mut pd_pool = self.0.pd.lock().unwrap();
-        let Some(qpn) = self
-            .0
-            .qp_availability
-            .iter()
-            .enumerate()
-            .find_map(|(idx, n)| n.swap(false, Ordering::AcqRel).then_some(idx))
-        else {
-            return Err(Error::NoAvailableQp);
-        };
-        let qpn = Qpn::new(qpn as u32);
-        let qp = QpContext {
-            handle: qpn.get(),
-            pd: pd.clone(),
-            qpn,
-            qp_type,
-            rq_acc_flags,
-            pmtu: pmtu.clone(),
-            dqp_ip,
-            mac_addr,
-        };
+        let pd = &qp.pd;
+        let pd_ctx = pd_pool.get_mut(pd).ok_or(Error::InvalidPd)?;
 
-        let pd_ctx = pd_pool.get_mut(&pd).ok_or(Error::InvalidPd)?;
-
+        let qpc = QpContext::from(qp);
         let op_id = self.get_ctrl_op_id();
 
         let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {
@@ -109,27 +76,18 @@ impl Device {
         if !res {
             return Err(Error::DeviceReturnFailed);
         }
-        let ret_qp = Qp {
-            handle: qp.handle,
-            pd,
-            qpn,
-            qp_type: qp.qp_type,
-            rq_acc_flags,
-            pmtu,
-            dqp_ip,
-            mac_addr,
-        };
-        let pd_res = pd_ctx.qp.insert(qpn);
-        let qp_res = qp_pool.insert(qpn, qp);
+
+        let pd_res = pd_ctx.qp.insert(qp.qpn);
+        let qp_res = qp_pool.insert(qp.qpn, qpc);
 
         assert!(pd_res);
         assert!(qp_res.is_none());
 
-        Ok(ret_qp)
+        Ok(())
     }
 
     pub fn destroy_qp(&self, qp: Qpn) -> Result<(), Error> {
-        let mut qp_pool = self.0.local_qp_table.write().unwrap();
+        let mut qp_pool = self.0.qp_table.write().unwrap();
         let mut pd_pool = self.0.pd.lock().unwrap();
 
         let op_id = self.get_ctrl_op_id();
@@ -147,7 +105,7 @@ impl Device {
             });
             (pd_ctx, desc)
         } else {
-            return Err(Error::InvalidQp);
+            return Err(Error::InvalidQpn);
         };
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
@@ -167,14 +125,52 @@ impl Device {
 
 impl Hash for Qp {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.handle.hash(state);
+        self.qpn.hash(state);
     }
 }
 
 impl PartialEq for Qp {
     fn eq(&self, other: &Self) -> bool {
-        self.handle == other.handle
+        self.qpn == other.qpn
     }
 }
 
 impl Eq for Qp {}
+
+pub struct QpManager {
+    qp_availability: Box<[AtomicBool]>,
+}
+
+impl QpManager {
+    pub fn new() -> Self {
+        let qp_availability: Vec<AtomicBool> =
+            (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
+
+        // by IB spec, QP0 and QP1 are reserved, so qpn should start with 2
+        qp_availability[0].store(false, Ordering::Relaxed);
+        qp_availability[1].store(false, Ordering::Relaxed);
+
+        Self {
+            qp_availability: qp_availability.into_boxed_slice(),
+        }
+    }
+
+    pub fn alloc(&self) -> Result<Qpn, Error> {
+        self
+            .qp_availability
+            .iter()
+            .enumerate()
+            .find_map(|(idx, n)| n.swap(false, Ordering::AcqRel).then_some(Qpn::new(idx as u32)))
+            .ok_or_else(|| Error::NoAvailableQp)
+    }
+
+    pub fn free(&self, qpn: Qpn) {
+        self.qp_availability[qpn.get() as usize].store(true, Ordering::Relaxed);
+    }
+}
+
+impl Default for QpManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

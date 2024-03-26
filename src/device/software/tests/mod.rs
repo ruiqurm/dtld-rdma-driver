@@ -163,6 +163,7 @@ impl ToCardWorkRbDescBuilder {
             flags: self.flags.unwrap(),
             dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
             mac_addr: MacAddress::default(),
+            msn : crate::types::Msn::new(0),
         };
         let (sge0, sge1, sge2, sge3) = self.sg_list.take().unwrap().into_four_sges();
         match self.opcode.clone().unwrap() {

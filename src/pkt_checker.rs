@@ -4,10 +4,10 @@ use std::{
 };
 
 use crate::{
-    poll::work::{RKeyWithQpn, QpnWithLastPsn},
+    op_ctx::ReadOpCtx,
     recv_pkt_map::RecvPktMap,
     responser::{RespAckCommand, RespCommand},
-    types::{Msn, Psn}, op_ctx::ReadOpCtx,
+    types::{Msn, Psn},
 };
 
 pub(crate) struct PacketChecker {
@@ -17,8 +17,8 @@ pub(crate) struct PacketChecker {
 impl PacketChecker {
     pub fn new(
         send_queue: Sender<RespCommand>,
-        recv_pkt_map: Arc<RwLock<HashMap<RKeyWithQpn, Mutex<RecvPktMap>>>>,
-        read_op_ctx_map :Arc<RwLock<HashMap<QpnWithLastPsn,ReadOpCtx>>>
+        recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+        read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
     ) -> Self {
         let ctx = PacketCheckerContext {
             send_queue,
@@ -34,8 +34,8 @@ impl PacketChecker {
 
 struct PacketCheckerContext {
     send_queue: Sender<RespCommand>,
-    recv_pkt_map: Arc<RwLock<HashMap<RKeyWithQpn, Mutex<RecvPktMap>>>>,
-    read_op_ctx_map :Arc<RwLock<HashMap<QpnWithLastPsn,ReadOpCtx>>>
+    recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+    read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
 }
 
 enum ThreadFlag {
@@ -57,9 +57,15 @@ impl PacketCheckerContext {
     }
     fn check_pkt_map(&self) -> ThreadFlag {
         let mut remove_list = LinkedList::new();
-        let iter_maps = self.recv_pkt_map.read().unwrap();
-        for (rkey_with_qpn, map) in iter_maps.iter() {
-            let (is_complete, is_read_resp,is_out_of_order, dqpn, end_psn) = {
+        let iter_maps = {
+            let guard = self.recv_pkt_map.lock().unwrap();
+            guard
+                .iter()
+                .map(|(k, v)| (*k, Arc::clone(v)))
+                .collect::<Vec<_>>()
+        };
+        for (msn, map) in iter_maps.into_iter() {
+            let (is_complete, is_read_resp, is_out_of_order, dqpn, end_psn) = {
                 let guard = map.lock().unwrap();
                 (
                     guard.is_complete(),
@@ -71,8 +77,9 @@ impl PacketCheckerContext {
             };
             // send ack
             if is_complete {
+                println!("Complete: {:?}", &msn);
                 // TODO: we don't have MSN yet. fill it later.
-                if !is_read_resp{
+                if !is_read_resp {
                     // If we are not in read response, we should send ack
                     let command = RespCommand::Acknowledge(RespAckCommand::new_ack(
                         dqpn,
@@ -84,11 +91,12 @@ impl PacketCheckerContext {
                         return ThreadFlag::Stopped("Send queue is broken");
                     }
                 }
-                let key = QpnWithLastPsn::new(dqpn, end_psn);
-                if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&key){
+                if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
                     ctx.set_result(());
+                }else{
+                    eprintln!("No read op ctx found for {:?}", msn);
                 }
-                remove_list.push_back(rkey_with_qpn);
+                remove_list.push_back(msn);
             } else if is_out_of_order {
                 // TODO: what should we put in NACK packet?
                 let command = RespCommand::Acknowledge(RespAckCommand::new_nack(
@@ -108,21 +116,27 @@ impl PacketCheckerContext {
         }
 
         // remove the completed recv_pkt_map
-        remove_list.iter().for_each(|dqpn| {
-            self.recv_pkt_map.write().unwrap().remove(dqpn);
-        });
+        if !remove_list.is_empty() {
+            let mut guard = self.recv_pkt_map.lock().unwrap();
+            remove_list.iter().for_each(|dqpn| {
+                guard.remove(dqpn);
+            });
+        }
         ThreadFlag::Running
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, thread::sleep, time::Duration};
+    use std::{
+        sync::{mpsc, Mutex},
+        thread::sleep,
+        time::Duration,
+    };
 
     use crate::{
-        poll::work::RKeyWithQpn,
         recv_pkt_map::RecvPktMap,
-        types::{Key, Psn, Qpn},
+        types::{Msn, Psn, Qpn},
     };
 
     use super::PacketChecker;
@@ -131,16 +145,18 @@ mod tests {
     fn test_packet_checker() {
         let (send_queue, recv_queue) = mpsc::channel();
         let recv_pkt_map =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let read_op_ctx_map =
             std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        let read_op_ctx_map = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        let _packet_checker = PacketChecker::new(send_queue, recv_pkt_map.clone(),read_op_ctx_map.clone());
-        let key = RKeyWithQpn::new(Key::new(1), Qpn::new(3));
-        recv_pkt_map.write().unwrap().insert(
-            key.clone(),
-            RecvPktMap::new(false,2, Psn::new(1), Qpn::new(3)).into(),
+        let _packet_checker =
+            PacketChecker::new(send_queue, recv_pkt_map.clone(), read_op_ctx_map.clone());
+        let key = Msn::new(1);
+        recv_pkt_map.lock().unwrap().insert(
+            key,
+            Mutex::new(RecvPktMap::new(false, 2, Psn::new(1), Qpn::new(3))).into(),
         );
         recv_pkt_map
-            .read()
+            .lock()
             .unwrap()
             .get(&key)
             .unwrap()
@@ -153,7 +169,7 @@ mod tests {
             Err(mpsc::TryRecvError::Empty)
         ));
         recv_pkt_map
-            .read()
+            .lock()
             .unwrap()
             .get(&key)
             .unwrap()

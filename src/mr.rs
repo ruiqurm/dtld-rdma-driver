@@ -90,7 +90,6 @@ impl Device {
             if pa & (PAGE_SIZE - 1) != 0 {
                 return Err(Error::AddressNotAlign("pa", pa));
             }
-            println!("va: {:x}, pa: {:x}, pa pn{:x}", va, pa,pa>>21);
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 
