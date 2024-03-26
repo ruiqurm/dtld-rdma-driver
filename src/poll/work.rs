@@ -23,7 +23,7 @@ pub struct WorkDescPoller {
 
 pub(crate) struct WorkDescPollerContext {
     work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-    recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+    recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
     qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     sending_queue: std::sync::mpsc::Sender<RespCommand>,
     write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
@@ -39,7 +39,7 @@ enum ThreadFlag {
 impl WorkDescPoller {
     pub(crate) fn new(
         work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-        recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+        recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
         sending_queue: std::sync::mpsc::Sender<RespCommand>,
         write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
@@ -130,10 +130,10 @@ impl WorkDescPollerContext {
                 desc.common.dqpn,
             );
             pkt_map.insert(desc.psn);
-            let mut recv_pkt_map_guard = self.recv_pkt_map.lock().unwrap();
+            let mut recv_pkt_map_guard = self.recv_pkt_map.write().unwrap();
             recv_pkt_map_guard.insert(msn, Mutex::new(pkt_map).into());
         } else {
-            let guard = self.recv_pkt_map.lock().unwrap();
+            let guard = self.recv_pkt_map.read().unwrap();
             if let Some(recv_pkt_map) = guard.get(&msn) {
                 let mut recv_pkt_map = recv_pkt_map.lock().unwrap();
                 recv_pkt_map.insert(desc.psn);
@@ -152,6 +152,7 @@ impl WorkDescPollerContext {
         eprintln!("in handle_work_desc_ack");
         let guard = self.write_op_ctx_map.read().unwrap();
         let key = desc.msn;
+        eprintln!("key: {:?}", key);
         if let Some(op_ctx) = guard.get(&key) {
             op_ctx.set_result(());
         } else {
@@ -297,7 +298,7 @@ mod tests {
         input.reverse();
 
         let work_rb = Arc::new(MockToHostRb::new(input));
-        let recv_pkt_map = Arc::new(Mutex::new(HashMap::new()));
+        let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         qp_table.write().unwrap().insert(
             Qpn::new(3),

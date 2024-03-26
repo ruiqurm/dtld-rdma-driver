@@ -309,7 +309,7 @@ impl Device {
     fn init(&self, network: &RdmaDeviceNetwork) -> Result<(), Error> {
         let (send_queue, rece_queue) = std::sync::mpsc::channel();
         let dev_for_poll_ctrl_rb = self.clone();
-        let recv_pkt_map = Arc::new(Mutex::new(HashMap::new()));
+        let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
 
         // enable ctrl desc poller module
         thread::spawn(move || dev_for_poll_ctrl_rb.poll_ctrl_rb());

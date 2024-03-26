@@ -17,7 +17,7 @@ pub(crate) struct PacketChecker {
 impl PacketChecker {
     pub fn new(
         send_queue: Sender<RespCommand>,
-        recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+        recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
         read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
     ) -> Self {
         let ctx = PacketCheckerContext {
@@ -34,7 +34,7 @@ impl PacketChecker {
 
 struct PacketCheckerContext {
     send_queue: Sender<RespCommand>,
-    recv_pkt_map: Arc<Mutex<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+    recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
     read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
 }
 
@@ -58,7 +58,7 @@ impl PacketCheckerContext {
     fn check_pkt_map(&self) -> ThreadFlag {
         let mut remove_list = LinkedList::new();
         let iter_maps = {
-            let guard = self.recv_pkt_map.lock().unwrap();
+            let guard = self.recv_pkt_map.read().unwrap();
             guard
                 .iter()
                 .map(|(k, v)| (*k, Arc::clone(v)))
@@ -78,20 +78,18 @@ impl PacketCheckerContext {
             // send ack
             if is_complete {
                 println!("Complete: {:?}", &msn);
-                // TODO: we don't have MSN yet. fill it later.
                 if !is_read_resp {
                     // If we are not in read response, we should send ack
                     let command = RespCommand::Acknowledge(RespAckCommand::new_ack(
                         dqpn,
-                        Msn::default(),
+                        msn,
                         end_psn,
                     ));
                     if self.send_queue.send(command).is_err() {
                         eprintln!("Failed to send ack command");
                         return ThreadFlag::Stopped("Send queue is broken");
                     }
-                }
-                if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
+                }else if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
                     ctx.set_result(());
                 }else{
                     eprintln!("No read op ctx found for {:?}", msn);
@@ -117,7 +115,7 @@ impl PacketCheckerContext {
 
         // remove the completed recv_pkt_map
         if !remove_list.is_empty() {
-            let mut guard = self.recv_pkt_map.lock().unwrap();
+            let mut guard = self.recv_pkt_map.write().unwrap();
             remove_list.iter().for_each(|dqpn| {
                 guard.remove(dqpn);
             });
@@ -145,18 +143,18 @@ mod tests {
     fn test_packet_checker() {
         let (send_queue, recv_queue) = mpsc::channel();
         let recv_pkt_map =
-            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+            std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
         let read_op_ctx_map =
             std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
         let _packet_checker =
             PacketChecker::new(send_queue, recv_pkt_map.clone(), read_op_ctx_map.clone());
         let key = Msn::new(1);
-        recv_pkt_map.lock().unwrap().insert(
+        recv_pkt_map.write().unwrap().insert(
             key,
             Mutex::new(RecvPktMap::new(false, 2, Psn::new(1), Qpn::new(3))).into(),
         );
         recv_pkt_map
-            .lock()
+            .write()
             .unwrap()
             .get(&key)
             .unwrap()
@@ -169,7 +167,7 @@ mod tests {
             Err(mpsc::TryRecvError::Empty)
         ));
         recv_pkt_map
-            .lock()
+            .write()
             .unwrap()
             .get(&key)
             .unwrap()

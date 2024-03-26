@@ -150,27 +150,27 @@ fn main() {
     };
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-    let (dev_b, _pd_b, mr_b, mr_buffer_b) =
+    let (dev_b, _pd_b, mr_b, mut mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
     let dpqn = qpn;
-    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = idx as u8;
-    // }
-    // for item in mr_buffer_b[0..].iter_mut() {
-    //     *item = 0
-    // }
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
+    }
+    for item in mr_buffer_b[0..].iter_mut() {
+        *item = 0
+    }
 
-    // let sge0 = Sge {
-    //     addr: &mr_buffer_a[0] as *const u8 as u64,
-    //     len: 1,
-    //     key: mr_a.get_key(),
-    // };
+    let sge0 = Sge {
+        addr: &mr_buffer_a[0] as *const u8 as u64,
+        len: 1024*8,
+        key: mr_a.get_key(),
+    };
 
-    // let sge1 = Sge {
-    //     addr: &mr_buffer_a[1] as *const u8 as u64,
-    //     len: 1,
-    //     key: mr_a.get_key(),
-    // };
+    let sge1 = Sge {
+        addr: &mr_buffer_a[1024*8] as *const u8 as u64,
+        len: 1024*8,
+        key: mr_a.get_key(),
+    };
 
     // let sge2 = Sge {
     //     addr: &mr_buffer_a[2] as *const u8 as u64,
@@ -184,77 +184,94 @@ fn main() {
     //     len: SEND_CNT as u32 - 3,
     //     key: mr_a.get_key(),
     // };
-    // let ctx = dev_a
-    //     .write(
-    //         &qp_b,
-    //         &mr_buffer_b[0] as *const u8 as u64,
+    let ctx1 = dev_a
+        .write(
+            &dpqn,
+            &mr_buffer_b[0] as *const u8 as u64,
+            mr_b.get_key(),
+            MemAccessTypeFlag::IbvAccessRemoteRead
+                | MemAccessTypeFlag::IbvAccessRemoteWrite
+                | MemAccessTypeFlag::IbvAccessLocalWrite,
+            sge0,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let ctx2 = dev_a
+        .write(
+            &dpqn,
+            &mr_buffer_b[1024*8] as *const u8 as u64,
+            mr_b.get_key(),
+            MemAccessTypeFlag::IbvAccessRemoteRead
+                | MemAccessTypeFlag::IbvAccessRemoteWrite
+                | MemAccessTypeFlag::IbvAccessLocalWrite,
+            sge1,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    ctx1.wait();
+    ctx2.wait();
+    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+
+    // for item in mr_buffer_a.iter_mut() {
+    //     *item = 0;
+    // }
+    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    //     *item = idx as u8;
+    // }
+
+    // // we read from b to a
+
+    // let sge_read = Sge {
+    //     addr: &mr_buffer_a[0] as *const u8 as u64,
+    //     len: SEND_CNT as u32,
+    //     key: mr_a.get_key(),
+    // };
+
+    // // // read text from b to a.
+    // let ctx1 = dev_a
+    //     .read(
+    //         dpqn,
+    //         &mr_buffer_b[1024] as *const u8 as u64,
     //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessRemoteRead
-    //             | MemAccessTypeFlag::IbvAccessRemoteWrite
-    //             | MemAccessTypeFlag::IbvAccessLocalWrite,
-    //         sge0,
-    //         None,
-    //         None,
-    //         None
+    //         MemAccessTypeFlag::IbvAccessNoFlags,
+    //         sge_read,
     //     )
     //     .unwrap();
-    // ctx.wait();
-    // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    // eprintln!("Read req sent");
 
-    for item in mr_buffer_a.iter_mut() {
-        *item = 0;
-    }
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
+    // // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024 + SEND_CNT]);
 
-    // we read from b to a
+    // for item in mr_buffer_a.iter_mut() {
+    //     *item = 0;
+    // }
+    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    //     *item = idx as u8;
+    // }
 
-    let sge_read = Sge {
-        addr: &mr_buffer_a[0] as *const u8 as u64,
-        len: SEND_CNT as u32,
-        key: mr_a.get_key(),
-    };
+    // let sge_read = Sge {
+    //     addr: &mr_buffer_a[0] as *const u8 as u64,
+    //     len: SEND_CNT as u32,
+    //     key: mr_a.get_key(),
+    // };
 
     // // read text from b to a.
-    let ctx = dev_a
-        .read(
-            dpqn,
-            &mr_buffer_b[1024] as *const u8 as u64,
-            mr_b.get_key(),
-            MemAccessTypeFlag::IbvAccessNoFlags,
-            sge_read,
-        )
-        .unwrap();
-    ctx.wait();
-    eprintln!("Read req sent");
+    // let ctx2 = dev_a
+    //     .read(
+    //         dpqn,
+    //         &mr_buffer_b[1024] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         MemAccessTypeFlag::IbvAccessNoFlags,
+    //         sge_read,
+    //     )
+    //     .unwrap();
+    // ctx1.wait();
+    // ctx2.wait();
 
-    assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024 + SEND_CNT]);
-
-    for item in mr_buffer_a.iter_mut() {
-        *item = 0;
-    }
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
-
-    let sge_read = Sge {
-        addr: &mr_buffer_a[0] as *const u8 as u64,
-        len: SEND_CNT as u32,
-        key: mr_a.get_key(),
-    };
-
-    // read text from b to a.
-    let ctx = dev_a
-        .read(
-            dpqn,
-            &mr_buffer_b[1024] as *const u8 as u64,
-            mr_b.get_key(),
-            MemAccessTypeFlag::IbvAccessNoFlags,
-            sge_read,
-        )
-        .unwrap();
-    ctx.wait();
     eprintln!("Read req sent");
     // dev_a.dereg_mr(mr_a).unwrap();
     // dev_b.dereg_mr(mr_b).unwrap();

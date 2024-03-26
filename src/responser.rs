@@ -330,7 +330,8 @@ bitfield! {
     _padding_0,_ : 0;                     // 1bits
     get_aeth_code,set_aeth_code: 2, 1;    // 2bits
     get_aeth_value,set_aeth_value: 7, 3;  // 5bits
-    get_msn,set_msn: 31, 8;               // 24bits
+    _padding_1,_ :   15,8;               // 8bits
+    get_msn,set_msn: 31,16;               // 16bits
 }
 
 bitfield! {
