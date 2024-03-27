@@ -1,2 +1,2 @@
-mod ctrl;
-pub mod work;
+pub(crate) mod ctrl;
+pub(crate) mod work;

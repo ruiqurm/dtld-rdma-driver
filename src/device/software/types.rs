@@ -250,7 +250,7 @@ impl RdmaGeneralMeta {
         Ok(RdmaGeneralMeta {
             common_meta: RdmaMessageMetaCommon::try_from(bth)?,
             reth: RethHeader::from(reth),
-            imm: imm.map(|imm| imm.get_immediate()),
+            imm: imm.map(|v| v.get_immediate()),
             secondary_reth: secondary_reth.map(RethHeader::from),
         })
     }
@@ -280,11 +280,12 @@ impl RdmaGeneralMeta {
 
     pub fn needed_permissions(&self) -> MemAccessTypeFlag {
         if self.has_payload() {
-            return MemAccessTypeFlag::IbvAccessRemoteWrite;
+            MemAccessTypeFlag::IbvAccessRemoteWrite
         } else if self.is_read_request() {
-            return MemAccessTypeFlag::IbvAccessRemoteRead;
+            MemAccessTypeFlag::IbvAccessRemoteRead
+        } else {
+            MemAccessTypeFlag::IbvAccessNoFlags
         }
-        MemAccessTypeFlag::IbvAccessNoFlags
     }
 }
 #[derive(Debug, Clone)]
@@ -380,12 +381,12 @@ impl SGList {
     ) -> Self {
         let sge0 = SGListElementWithKey::from(sge0);
         let mut counter = 1;
-        let (sge1, i) = Self::get_sge_from_option(sge1);
-        counter += i;
-        let (sge2, i) = Self::get_sge_from_option(sge2);
-        counter += i;
-        let (sge3, i) = Self::get_sge_from_option(sge3);
-        counter += i;
+        let (sge1, sge1_counter) = Self::get_sge_from_option(sge1);
+        counter += sge1_counter;
+        let (sge2, sge2_counter) = Self::get_sge_from_option(sge2);
+        counter += sge2_counter;
+        let (sge3, sge3_counter) = Self::get_sge_from_option(sge3);
+        counter += sge3_counter;
         SGList {
             data: [sge0, sge1, sge2, sge3],
             cur_level: 0,
@@ -404,35 +405,23 @@ impl SGList {
     ) {
         use crate::types::Key;
 
-        let sge1 = if self.len > 1 {
-            Some(ToCardCtrlRbDescSge {
-                addr: self.data[1].addr,
-                len: self.data[1].len,
-                key: Key::new(u32::from_be_bytes(self.data[1].key.get())),
-            })
-        } else {
-            None
-        };
+        let sge1 = (self.len > 1).then(|| ToCardCtrlRbDescSge {
+            addr: self.data[1].addr,
+            len: self.data[1].len,
+            key: Key::new(u32::from_be_bytes(self.data[1].key.get())),
+        });
 
-        let sge2 = if self.len > 2 {
-            Some(ToCardCtrlRbDescSge {
-                addr: self.data[2].addr,
-                len: self.data[2].len,
-                key: Key::new(u32::from_be_bytes(self.data[2].key.get())),
-            })
-        } else {
-            None
-        };
+        let sge2 = (self.len > 2).then(|| ToCardCtrlRbDescSge {
+            addr: self.data[2].addr,
+            len: self.data[2].len,
+            key: Key::new(u32::from_be_bytes(self.data[2].key.get())),
+        });
 
-        let sge3 = if self.len > 3 {
-            Some(ToCardCtrlRbDescSge {
-                addr: self.data[3].addr,
-                len: self.data[3].len,
-                key: Key::new(u32::from_be_bytes(self.data[3].key.get())),
-            })
-        } else {
-            None
-        };
+        let sge3 = (self.len > 3).then(|| ToCardCtrlRbDescSge {
+            addr: self.data[3].addr,
+            len: self.data[3].len,
+            key: Key::new(u32::from_be_bytes(self.data[3].key.get())),
+        });
         (
             ToCardCtrlRbDescSge {
                 addr: self.data[0].addr,

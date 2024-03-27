@@ -1,5 +1,5 @@
 use std::{
-    mem::{size_of, size_of_val},
+    mem::size_of,
     net::Ipv4Addr,
 };
 
@@ -88,69 +88,58 @@ impl PacketProcessor {
         match message.meta_data.get_opcode() {
             ToHostWorkRbDescOpcode::RdmaWriteFirst => {
                 let header = RdmaWriteFirstHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaWriteMiddle => {
                 let header = RdmaWriteMiddleHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaWriteLast => {
                 let header = RdmaWriteLastHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate => {
                 let header = RdmaWriteLastWithImmediateHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaWriteOnly => {
                 let header = RdmaWriteOnlyHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
                 let header = RdmaWriteOnlyWithImmediateHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaReadRequest => {
                 let header = RdmaReadRequestHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
                 let header = RdmaReadResponseFirstHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
                 let header = RdmaReadResponseMiddleHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
                 let header = RdmaReadResponseLastHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                 let header = RdmaReadResponseOnlyHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
-                header.set_from_rdma_message(message)?;
-                Ok(size_of_val(header))
+                Ok(header.set_from_rdma_message(message)?)
             }
             _ => Err(PacketError::InvalidOpcode),
         }
     }
 }
 
+#[allow(variant_size_differences)]
 #[derive(Error, Debug)]
 pub(crate) enum PacketProcessorError {
     #[error("missing packet_type")]
@@ -169,8 +158,8 @@ pub(crate) enum PacketProcessorError {
     MissingMessage,
     #[error("missing ip identification")]
     MissingIpId,
-    #[error("Needs a buffer of at least {0} bytes, but got {1} bytes")]
-    BufferNotLargeEnough(u32, u32),
+    #[error("Needs a buffer of at least {0} bytes")]
+    BufferNotLargeEnough(u32),
     #[error("packet error")]
     PacketError(#[from] PacketError),
 }
@@ -349,8 +338,7 @@ impl<'buf, 'payloadinfo, 'message> PacketWriter<'buf, 'payloadinfo, 'message> {
 pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     if data.len() < size_of::<CommonPacketHeader>() {
         return Err(PacketProcessorError::BufferNotLargeEnough(
-            size_of::<CommonPacketHeader>() as u32,
-            data.len() as u32,
+            size_of::<CommonPacketHeader>() as u32
         ));
     }
 
@@ -363,7 +351,6 @@ pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     if data.len() != length as usize {
         return Err(PacketProcessorError::BufferNotLargeEnough(
             length as u32,
-            data.len() as u32,
         ));
     }
     common_hdr.net_header.ip_header.dscp_ecn = 0xff;
@@ -425,7 +412,7 @@ pub(crate) fn is_icrc_valid(received_data : &[u8]) -> Result<bool,PacketProcesso
     // chcek the icrc
     let icrc_array: [u8; 4] = match received_data[length - ICRC_SIZE..length].try_into() {
         Ok(arr) => arr,
-        Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE as u32, length as u32)),
+        Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE as u32)),
     };
     let origin_icrc = u32::from_be_bytes(icrc_array);
     let our_icrc = compute_icrc(received_data);

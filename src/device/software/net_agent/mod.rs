@@ -45,4 +45,6 @@ pub enum NetAgentError {
     PacketProcess(#[from] PacketProcessorError),
     #[error("setsockopt failed, errno: {0}")]
     SetSockOptFailed(i32),
+    #[error("Expected {0} bytes, but sended {1} bytes")]
+    WrongBytesSending(usize,usize),
 }

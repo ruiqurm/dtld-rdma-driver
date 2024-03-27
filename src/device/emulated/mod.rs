@@ -1,13 +1,17 @@
+use log::debug;
 
 use self::rpc_cli::{
     RpcClient, ToCardCtrlRbCsrProxy, ToCardWorkRbCsrProxy, ToHostCtrlRbCsrProxy,
     ToHostWorkRbCsrProxy,
 };
 use super::{
-    constants, ringbuf::Ringbuf, DeviceAdaptor, Overflowed, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc
+    constants, ringbuf::Ringbuf, DeviceAdaptor, Overflowed, ToCardCtrlRbDesc, ToCardRb,
+    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
 };
 use std::{
-    error::Error, net::SocketAddr, sync::{Arc, Mutex}
+    error::Error,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
 };
 
 mod rpc_cli;
@@ -78,44 +82,44 @@ impl EmulatedDevice {
             rpc_cli,
         });
 
-        let pa_of_ringbuf = dev.get_phys_addr(to_card_ctrl_rb_addr);
+        let pa_of_to_card_ctrl_rb_addr = dev.get_phys_addr(to_card_ctrl_rb_addr);
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_REQ_QUEUE_ADDR_LOW,
-            (pa_of_ringbuf & 0xFFFFFFFF) as u32,
+            (pa_of_to_card_ctrl_rb_addr & 0xFFFF_FFFF) as u32,
         );
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_REQ_QUEUE_ADDR_HIGH,
-            (pa_of_ringbuf >> 32) as u32,
+            (pa_of_to_card_ctrl_rb_addr >> 32) as u32,
         );
 
-        let pa_of_ringbuf = dev.get_phys_addr(to_host_ctrl_rb_addr);
+        let pa_of_to_host_ctrl_rb_addr = dev.get_phys_addr(to_host_ctrl_rb_addr);
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_RESP_QUEUE_ADDR_LOW,
-            (pa_of_ringbuf & 0xFFFFFFFF) as u32,
+            (pa_of_to_host_ctrl_rb_addr & 0xFFFFFFFF) as u32,
         );
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_RESP_QUEUE_ADDR_HIGH,
-            (pa_of_ringbuf >> 32) as u32,
+            (pa_of_to_host_ctrl_rb_addr >> 32) as u32,
         );
 
-        let pa_of_ringbuf = dev.get_phys_addr(to_card_work_rb_addr);
+        let pa_of_to_card_work_rb_addr = dev.get_phys_addr(to_card_work_rb_addr);
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_SEND_QUEUE_ADDR_LOW,
-            (pa_of_ringbuf & 0xFFFFFFFF) as u32,
+            (pa_of_to_card_work_rb_addr & 0xFFFFFFFF) as u32,
         );
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_SEND_QUEUE_ADDR_HIGH,
-            (pa_of_ringbuf >> 32) as u32,
+            (pa_of_to_card_work_rb_addr >> 32) as u32,
         );
 
-        let pa_of_ringbuf = dev.get_phys_addr(to_host_work_rb_addr);
+        let pa_of_to_host_work_rb_addr = dev.get_phys_addr(to_host_work_rb_addr);
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_META_REPORT_QUEUE_ADDR_LOW,
-            (pa_of_ringbuf & 0xFFFFFFFF) as u32,
+            (pa_of_to_host_work_rb_addr & 0xFFFFFFFF) as u32,
         );
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_META_REPORT_QUEUE_ADDR_HIGH,
-            (pa_of_ringbuf >> 32) as u32,
+            (pa_of_to_host_work_rb_addr >> 32) as u32,
         );
 
         Ok(dev)
@@ -124,19 +128,19 @@ impl EmulatedDevice {
 
 impl DeviceAdaptor for Arc<EmulatedDevice> {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
-        self.clone()
+        Arc::<EmulatedDevice>::clone(self)
     }
 
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>> {
-        self.clone()
+        Arc::<EmulatedDevice>::clone(self)
     }
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
-        self.clone()
+        Arc::<EmulatedDevice>::clone(self)
     }
 
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>> {
-        self.clone()
+        Arc::<EmulatedDevice>::clone(self)
     }
 
     fn read_csr(&self, addr: usize) -> u32 {
@@ -158,7 +162,7 @@ impl ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice {
         let mut writer = guard.write();
 
         let mem = writer.next().unwrap();
-        eprintln!("{:?}",desc);
+        debug!("{:?}", desc);
         desc.write(mem);
 
         Ok(())
@@ -170,15 +174,15 @@ impl ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice {
         let mut guard = self.to_host_ctrl_rb.lock().unwrap();
         let mut reader = guard.read();
         let mem = reader.next().unwrap();
-        let a = ToHostCtrlRbDesc::read(mem);
-        eprintln!("{:?}",a);
-        a
+        let desc = ToHostCtrlRbDesc::read(mem);
+        debug!("{:?}", &desc);
+        desc
     }
 }
 
 impl ToCardRb<ToCardWorkRbDesc> for EmulatedDevice {
     fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), Overflowed> {
-        eprintln!("{:?}",desc);
+        debug!("{:?}", desc);
         let desc_cnt = desc.serialized_desc_cnt();
         // TODO: the card might not be able to handle "part of the desc"
         // So me might need to ensure we have enough space to write the whole desc before writing
@@ -196,7 +200,6 @@ impl ToCardRb<ToCardWorkRbDesc> for EmulatedDevice {
     }
 }
 
-// TODO: refactor the mechanism to handle ringbuf. It's a kind of complex
 impl ToHostRb<ToHostWorkRbDesc> for EmulatedDevice {
     fn pop(&self) -> ToHostWorkRbDesc {
         let mut guard = self.to_host_work_rb.lock().unwrap();
@@ -208,9 +211,9 @@ impl ToHostRb<ToHostWorkRbDesc> for EmulatedDevice {
         loop {
             match read_res {
                 Ok(desc) => break desc,
-                Err(desc) => {
-                    let mem = reader.next().unwrap();
-                    read_res = desc.read(mem);
+                Err(incomplete_desc) => {
+                    let next_mem = reader.next().unwrap();
+                    read_res = incomplete_desc.read(next_mem);
                     match read_res {
                         Ok(desc) => break desc,
                         Err(_) => {

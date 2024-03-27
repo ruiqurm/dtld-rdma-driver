@@ -214,6 +214,7 @@ pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) psn: Psn,
     pub(crate) addr: u64,
     pub(crate) len: u32,
+    #[allow(unused)]
     pub(crate) key: Key,
 }
 
@@ -461,7 +462,7 @@ impl ToCardCtrlRbDesc {
             seg0.set_pd_handler(desc.pd_hdl.into());
             seg0.set_qp_type(desc.qp_type as u64);
             seg0.set_rq_access_flags(desc.rq_acc_flags.bits().into());
-            seg0.set_pmtu(desc.pmtu.clone() as u64);
+            seg0.set_pmtu(desc.pmtu as u64);
         }
 
         fn write_set_network_param(dst: &mut [u8], desc: &ToCardCtrlRbDescSetNetworkParam) {
@@ -611,8 +612,7 @@ impl ToCardWorkRbDesc {
         //     SendQueueDescCommonHead     commonHeader;     // 64 bits
         // } SendQueueReqDescSeg0 deriving(Bits, FShow);
         // let mut seg0 = SendQueueReqDescSeg0(&mut dst[8..]);
-        let dst = &mut head.0;
-        let mut head = SendQueueReqDescSeg0(dst);
+        let mut head = SendQueueReqDescSeg0(&mut head.0);
         head.set_raddr(common.raddr);
         head.set_rkey(common.rkey.get().into());
         head.set_dqp_ip(u8_slice_to_u64(&common.dqp_ip.octets()));
@@ -670,7 +670,7 @@ impl ToCardWorkRbDesc {
             ),
         };
         let mut desc_common = SendQueueReqDescSeg1(dst);
-        desc_common.set_pmtu(common.pmtu.clone() as u64);
+        desc_common.set_pmtu(common.pmtu as u64);
         desc_common.set_flags(common.flags.bits() as u64);
         desc_common.set_qp_type(common.qp_type as u64);
         desc_common.set_seg_cnt(sge_cnt.into());
@@ -704,17 +704,17 @@ impl ToCardWorkRbDesc {
             ToCardWorkRbDesc::WriteWithImm(desc) => (&desc.sge0, desc.sge1.as_ref()),
             ToCardWorkRbDesc::ReadResp(desc) => (&desc.sge0, desc.sge1.as_ref()),
         };
-
+        // Note that the order of the sges is reversed in the struct
         let mut frag_sge = SendQueueReqDescFragSGE(&mut dst[16..32]);
         frag_sge.set_laddr(sge0.addr);
         frag_sge.set_len(sge0.len.into());
         frag_sge.set_lkey(sge0.key.get().into());
 
-        let mut frag_sge = SendQueueReqDescFragSGE(&mut dst[0..16]);
+        let mut frag_sge2 = SendQueueReqDescFragSGE(&mut dst[0..16]);
         if let Some(sge1) = sge1 {
-            frag_sge.set_laddr(sge1.addr);
-            frag_sge.set_len(sge1.len.into());
-            frag_sge.set_lkey(sge1.key.get().into());
+            frag_sge2.set_laddr(sge1.addr);
+            frag_sge2.set_len(sge1.len.into());
+            frag_sge2.set_lkey(sge1.key.get().into());
         } else {
             dst[0..16].copy_from_slice(&[0; 16]);
         }
@@ -750,15 +750,15 @@ impl ToCardWorkRbDesc {
             frag_sge.set_laddr(0);
         }
 
-        let mut frag_sge = SendQueueReqDescFragSGE(&mut dst[16..32]);
+        let mut frag_sge2 = SendQueueReqDescFragSGE(&mut dst[16..32]);
         if let Some(sge2) = sge2 {
-            frag_sge.set_lkey(sge2.key.get().into());
-            frag_sge.set_len(sge2.len.into());
-            frag_sge.set_laddr(sge2.addr);
+            frag_sge2.set_lkey(sge2.key.get().into());
+            frag_sge2.set_len(sge2.len.into());
+            frag_sge2.set_laddr(sge2.addr);
         } else {
-            frag_sge.set_lkey(0);
-            frag_sge.set_len(0);
-            frag_sge.set_laddr(0);
+            frag_sge2.set_lkey(0);
+            frag_sge2.set_len(0);
+            frag_sge2.set_laddr(0);
         }
     }
 
@@ -1041,13 +1041,13 @@ impl ToHostWorkRbDesc {
                 })
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn, value, code) = read_aeth(src);
+                let (last_psn, msn_in_ack, value, code) = read_aeth(src);
 
                 match code {
                     ToHostWorkRbDescAethCode::Ack => {
                         Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                             common,
-                            msn,
+                            msn : msn_in_ack,
                             value,
                             psn,
                         }))
@@ -1055,7 +1055,7 @@ impl ToHostWorkRbDesc {
                     ToHostWorkRbDescAethCode::Nak => {
                         Ok(ToHostWorkRbDesc::Nack(ToHostWorkRbDescNack {
                             common,
-                            msn,
+                            msn : msn_in_ack,
                             value,
                             lost_psn: psn..last_psn,
                         }))

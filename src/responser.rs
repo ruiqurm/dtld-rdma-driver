@@ -4,12 +4,12 @@ use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 
 use bitfield::bitfield;
 use lockfree::queue::Queue;
+use log::error;
 
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 
 use crate::utils::calculate_packet_cnt;
-use crate::Sge;
 use crate::{
     device::{
         ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
@@ -17,10 +17,7 @@ use crate::{
     },
     Error,
 };
-/// A interface that allows DescResponser to push the work descriptor to the device
-pub trait WorkDescriptorSender: Send + Sync {
-    fn send_work_desc(&self, desc_builder: ToCardWorkRbDescBuilder) -> Result<(), Error>;
-}
+use crate::{Sge, WorkDescriptorSender};
 
 /// Command about ACK and NACK
 /// Typically, the message is sent by checker thread, which is responsible for checking the packet ordering.
@@ -104,7 +101,7 @@ impl DescResponser {
                                 dqp_ip: dst_ip,
                                 dqpn: ack.dpqn,
                                 mac_addr: qp.dqp_mac_addr,
-                                pmtu: qp.pmtu.clone(),
+                                pmtu: qp.pmtu,
                                 flags: MemAccessTypeFlag::IbvAccessNoFlags,
                                 qp_type: QpType::RawPacket,
                                 psn: Psn::default(),
@@ -113,7 +110,7 @@ impl DescResponser {
                             (src_ip, dst_ip, common)
                         }
                         None => {
-                            eprintln!("Failed to get QP from QP table: {:?}", ack.dpqn);
+                            error!("Failed to get QP from QP table: {:?}", ack.dpqn);
                             continue;
                         }
                     };
@@ -128,16 +125,25 @@ impl DescResponser {
                         ack.psn,
                         last_retry_psn,
                     ) {
-                        eprintln!("Failed to write ack/nack packet: {:?}", e);
+                        error!("Failed to write ack/nack packet: {:?}", e);
                         continue;
                     }
                     let sge = ack_buffers.convert_buf_into_sge(&ack_buf, ACKPACKET_SIZE as u32);
-                    let desc_builder = ToCardWorkRbDescBuilder::new_write()
+                    let desc = ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)
-                        .with_sge(sge);
-                    if let Err(e) = device.send_work_desc(desc_builder) {
-                        eprintln!("Failed to push ack/nack packet: {:?}", e);
+                        .with_sge(sge)
+                        .build();
+                    match desc {
+                        Ok(desc) => {
+                            if let Err(e) = device.send_work_desc(desc) {
+                                error!("Failed to push ack/nack packet: {:?}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to create descripotr: {:?}", e);
+                        }
                     }
+
                     ack_buffers.free(ack_buf);
                 }
                 Ok(RespCommand::ReadResponse(resp)) => {
@@ -152,17 +158,14 @@ impl DescResponser {
                                 dqp_ip: qp.dqp_ip,
                                 dqpn: dpqn,
                                 mac_addr: qp.dqp_mac_addr,
-                                pmtu: qp.pmtu.clone(),
+                                pmtu: qp.pmtu,
                                 flags: MemAccessTypeFlag::IbvAccessNoFlags,
                                 qp_type: qp.qp_type,
                                 psn: Psn::default(),
                                 msn: resp.desc.common.msn,
                             };
-                            let packet_cnt = calculate_packet_cnt(
-                                qp.pmtu.clone(),
-                                resp.desc.raddr,
-                                resp.desc.len,
-                            );
+                            let packet_cnt =
+                                calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
                             let first_pkt_psn = {
                                 let mut send_psn = qp.sending_psn.lock().unwrap();
                                 let first_pkt_psn = *send_psn;
@@ -173,7 +176,7 @@ impl DescResponser {
                             common
                         }
                         None => {
-                            eprintln!("Failed to get QP from QP table: {:?}", dpqn);
+                            error!("Failed to get QP from QP table: {:?}", dpqn);
                             continue;
                         }
                     };
@@ -183,11 +186,19 @@ impl DescResponser {
                         len: resp.desc.len,
                         key: resp.desc.lkey,
                     };
-                    let desc_builder = ToCardWorkRbDescBuilder::new_read_resp()
+                    let desc = ToCardWorkRbDescBuilder::new_read_resp()
                         .with_common(common)
-                        .with_sge(sge);
-                    if let Err(e) = device.send_work_desc(desc_builder) {
-                        eprintln!("Failed to push read response: {:?}", e);
+                        .with_sge(sge)
+                        .build();
+                    match desc {
+                        Ok(desc) => {
+                            if let Err(e) = device.send_work_desc(desc) {
+                                error!("Failed to push read response: {:?}", e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to create descripotr: {:?}", e);
+                        }
                     }
                 }
                 Err(_) => {
@@ -370,16 +381,17 @@ fn write_packet(
     ip_header.set_checksum(0);
     let checksum = calculate_ipv4_checksum(ip_header.0).to_be();
     ip_header.set_checksum(checksum.into());
-    let buf = ip_header.0;
 
-    let mut udp_header = Udp(&mut buf[IPV4_HEADER_SIZE..]);
+    let udp_buf = &mut ip_header.0[IPV4_HEADER_SIZE..];
+    let mut udp_header = Udp(udp_buf);
     udp_header.set_src_port(RDMA_DEFAULT_PORT.to_be());
     udp_header.set_dst_port(RDMA_DEFAULT_PORT.to_be());
     udp_header.set_length((ACKPACKET_WITHOUT_IPV4_HEADER_SIZE as u16).to_be());
     // It might redundant to calculate checksum, as the ICRC will calculate the another checksum
     udp_header.set_checksum(0);
 
-    let mut bth_header = Bth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..]);
+    let bth_hdr_buf = &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..];
+    let mut bth_header = Bth(bth_hdr_buf);
     bth_header.set_opcode(ToHostWorkRbDescOpcode::Acknowledge as u32);
     bth_header.set_pad_count(0);
     bth_header.set_pkey(0);
@@ -389,8 +401,8 @@ fn write_packet(
     bth_header.set_psn(psn.into_be());
 
     let is_nak = last_retry_psn.is_some();
-
-    let mut aeth_header = Aeth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE..]);
+    let aeth_hdr_buf = &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE..];
+    let mut aeth_header = Aeth(aeth_hdr_buf);
     if is_nak {
         aeth_header.set_aeth_code(ToHostWorkRbDescAethCode::Nak as u32);
     } else {
@@ -399,8 +411,9 @@ fn write_packet(
     aeth_header.set_aeth_value(0);
     aeth_header.set_msn(msn.into_be().into());
 
-    let mut nreth_header =
-        NReth(&mut buf[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..]);
+    let mut nreth_header = NReth(
+        &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..],
+    );
     if is_nak {
         let last_retry_psn = last_retry_psn.unwrap().into_be();
         nreth_header.set_last_retry_psn(last_retry_psn);
@@ -408,7 +421,7 @@ fn write_packet(
         nreth_header.set_last_retry_psn(0);
     }
     // calculate the ICRC
-    calculate_icrc(buf)?;
+    calculate_icrc(ip_header.0)?;
     Ok(())
 }
 
@@ -486,12 +499,16 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv4Addr, sync::Mutex, thread::sleep};
+    use std::{
+        net::Ipv4Addr,
+        sync::{Arc, Mutex},
+        thread::sleep,
+    };
 
     use eui48::MacAddress;
 
     use crate::{
-        device::{ToCardWorkRbDescBuilder, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
+        device::{ToCardWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
         qp::QpContext,
         responser::{calculate_ipv4_checksum, ACKPACKET_SIZE},
         types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, Qpn},
@@ -556,13 +573,10 @@ mod tests {
         let buffer = Box::leak(buffer);
         let ack_buffers =
             super::AcknowledgeBuffer::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
-        struct Dummy(Mutex<Vec<ToCardWorkRbDescBuilder>>);
+        struct Dummy(Mutex<Vec<ToCardWorkRbDesc>>);
         impl super::WorkDescriptorSender for Dummy {
-            fn send_work_desc(
-                &self,
-                desc_builder: ToCardWorkRbDescBuilder,
-            ) -> Result<(), crate::Error> {
-                self.0.lock().unwrap().push(desc_builder);
+            fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), crate::Error> {
+                self.0.lock().unwrap().push(desc);
                 Ok(())
             }
         }
@@ -584,7 +598,8 @@ mod tests {
                 sending_psn: Mutex::new(Psn::new(0)),
             },
         );
-        let _ = super::DescResponser::new(dummy.clone(), receiver, ack_buffers, qp_table);
+        let _ =
+            super::DescResponser::new(Arc::<Dummy>::clone(&dummy), receiver, ack_buffers, qp_table);
         sender
             .send(super::RespCommand::Acknowledge(super::RespAckCommand {
                 dpqn: Qpn::new(3),
@@ -598,7 +613,7 @@ mod tests {
                 dpqn: Qpn::new(3),
                 msn: Msn::new(0),
                 psn: Psn::new(0),
-                last_retry_psn: Option::Some(Psn::new(12)),
+                last_retry_psn: Some(Psn::new(12)),
             }))
             .unwrap();
         sender
@@ -628,8 +643,7 @@ mod tests {
         sleep(std::time::Duration::from_millis(10));
         let mut v = dummy.0.lock().unwrap();
         assert_eq!(v.len(), 3);
-        let builder = v.pop().unwrap();
-        let desc = builder.build().unwrap();
+        let desc = v.pop().unwrap();
         match desc {
             crate::device::ToCardWorkRbDesc::ReadResp(desc) => {
                 assert_eq!(desc.common.dqpn.get(), 3);
@@ -645,13 +659,14 @@ mod tests {
                 assert_eq!(desc.sge0.len, 10_u32);
                 assert_eq!(desc.sge0.key.get(), 10);
             }
-            _ => {
+            crate::device::ToCardWorkRbDesc::Read(_)
+            | crate::device::ToCardWorkRbDesc::Write(_)
+            | crate::device::ToCardWorkRbDesc::WriteWithImm(_) => {
                 panic!("Unexpected desc type");
             }
         }
-        let builder = v.pop().unwrap();
+        let desc = v.pop().unwrap();
         // NACK
-        let desc = builder.build().unwrap();
         match desc {
             crate::device::ToCardWorkRbDesc::Write(desc) => {
                 assert_eq!(desc.common.dqpn.get(), 3);
@@ -670,14 +685,15 @@ mod tests {
                 assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
                 assert_eq!(desc.sge0.key.get(), 0x1000);
             }
-            _ => {
+            crate::device::ToCardWorkRbDesc::Read(_)
+            | crate::device::ToCardWorkRbDesc::WriteWithImm(_)
+            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
                 panic!("Unexpected desc type");
             }
         }
 
         // ACK
-        let builder = v.pop().unwrap();
-        let desc = builder.build().unwrap();
+        let desc = v.pop().unwrap();
         match desc {
             crate::device::ToCardWorkRbDesc::Write(desc) => {
                 assert_eq!(desc.common.dqpn.get(), 3);
@@ -696,7 +712,9 @@ mod tests {
                 assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
                 assert_eq!(desc.sge0.key.get(), 0x1000);
             }
-            _ => {
+            crate::device::ToCardWorkRbDesc::Read(_)
+            | crate::device::ToCardWorkRbDesc::WriteWithImm(_)
+            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
                 panic!("Unexpected desc type");
             }
         }

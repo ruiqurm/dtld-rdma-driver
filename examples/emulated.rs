@@ -8,6 +8,7 @@ use open_rdma_driver::{
 };
 use std::slice::from_raw_parts_mut;
 use std::{ffi::c_void, net::Ipv4Addr};
+use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -53,6 +54,27 @@ fn init_global_allocator() {
 
 fn get_phys_addr(addr: usize) -> usize {
     addr - unsafe { HEAP_START_ADDR }
+}
+
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if self.enabled(record.metadata()) {
+            println!("{} - {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+pub fn init_logging() -> Result<(), SetLoggerError> {
+    log::set_boxed_logger(Box::new(SimpleLogger))
+        .map(|()| log::set_max_level(LevelFilter::Info))
 }
 
 #[allow(clippy::slow_vector_initialization)]
@@ -108,7 +130,7 @@ fn create_and_init_card(
         | MemAccessTypeFlag::IbvAccessLocalWrite;
     let mr = dev
         .reg_mr(
-            pd.clone(),
+            pd,
             mr_buffer.as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
@@ -116,17 +138,15 @@ fn create_and_init_card(
         )
         .unwrap();
     eprintln!("[{}] MR registered", card_id);
-    let qp = Qp {
-        pd: pd.clone(),
+    let qp = Qp::new(
+        pd,
         qpn,
-        qp_type: QpType::Rc,
-        rq_acc_flags: access_flag,
-        pmtu: Pmtu::Mtu4096,
-        dqp_ip: remote_network.ipaddr,
-        dqp_mac: remote_network.macaddr,
-        local_ip: local_network.ipaddr,
-        local_mac: local_network.macaddr,
-    };
+        QpType::Rc,
+        access_flag,
+        Pmtu::Mtu4096,
+        remote_network.ipaddr,
+        remote_network.macaddr,
+    );
     dev.create_qp(&qp).unwrap();
     eprintln!("[{}] QP created", card_id);
 
@@ -134,23 +154,24 @@ fn create_and_init_card(
 }
 fn main() {
     const SEND_CNT: usize = 8192;
+    init_logging().unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
-    let a_network = RdmaDeviceNetwork {
-        gateway: Ipv4Addr::new(192, 168, 0, 0x1),
-        netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ipaddr: Ipv4Addr::new(192, 168, 0, 2),
-        macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]),
-    };
-    let b_network = RdmaDeviceNetwork {
-        gateway: Ipv4Addr::new(192, 168, 0, 0x1),
-        netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ipaddr: Ipv4Addr::new(192, 168, 0, 3),
-        macaddr: MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
-    };
+    let a_network = RdmaDeviceNetwork::new(
+        Ipv4Addr::new(192, 168, 0, 0x1),
+        Ipv4Addr::new(255, 255, 255, 0),
+        Ipv4Addr::new(192, 168, 0, 2),
+        MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]),
+    );
+    let b_network = RdmaDeviceNetwork::new(
+        Ipv4Addr::new(192, 168, 0, 0x1),
+        Ipv4Addr::new(255, 255, 255, 0),
+        Ipv4Addr::new(192, 168, 0, 3),
+        MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
+    );
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-    let (dev_b, _pd_b, mr_b, mut mr_buffer_b) =
+    let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
     let dpqn = qpn;
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
@@ -160,17 +181,17 @@ fn main() {
         *item = 0
     }
 
-    let sge0 = Sge {
-        addr: &mr_buffer_a[0] as *const u8 as u64,
-        len: 1024*8,
-        key: mr_a.get_key(),
-    };
+    let sge0 = Sge::new(
+        &mr_buffer_a[0] as *const u8 as u64,
+        1024 * 8,
+        mr_a.get_key(),
+    );
 
-    let sge1 = Sge {
-        addr: &mr_buffer_a[1024*8] as *const u8 as u64,
-        len: 1024*8,
-        key: mr_a.get_key(),
-    };
+    let sge1 = Sge::new(
+        &mr_buffer_a[1024 * 8] as *const u8 as u64,
+        1024 * 8,
+        mr_a.get_key(),
+    );
 
     // let sge2 = Sge {
     //     addr: &mr_buffer_a[2] as *const u8 as u64,
@@ -202,7 +223,7 @@ fn main() {
     let ctx2 = dev_a
         .write(
             &dpqn,
-            &mr_buffer_b[1024*8] as *const u8 as u64,
+            &mr_buffer_b[1024 * 8] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::IbvAccessRemoteRead
                 | MemAccessTypeFlag::IbvAccessRemoteWrite

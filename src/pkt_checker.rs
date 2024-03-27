@@ -10,6 +10,7 @@ use crate::{
     types::{Msn, Psn},
 };
 
+use log::{error, info};
 pub(crate) struct PacketChecker {
     _thread: std::thread::JoinHandle<()>,
 }
@@ -49,7 +50,7 @@ impl PacketCheckerContext {
             match ctx.check_pkt_map() {
                 ThreadFlag::Running => {}
                 ThreadFlag::Stopped(reason) => {
-                    eprintln!("PacketChecker stopped: {}", reason);
+                    error!("PacketChecker stopped: {}", reason);
                     break;
                 }
             }
@@ -77,22 +78,19 @@ impl PacketCheckerContext {
             };
             // send ack
             if is_complete {
-                println!("Complete: {:?}", &msn);
+                info!("Complete: {:?}", &msn);
                 if !is_read_resp {
                     // If we are not in read response, we should send ack
-                    let command = RespCommand::Acknowledge(RespAckCommand::new_ack(
-                        dqpn,
-                        msn,
-                        end_psn,
-                    ));
+                    let command =
+                        RespCommand::Acknowledge(RespAckCommand::new_ack(dqpn, msn, end_psn));
                     if self.send_queue.send(command).is_err() {
-                        eprintln!("Failed to send ack command");
+                        error!("Failed to send ack command");
                         return ThreadFlag::Stopped("Send queue is broken");
                     }
-                }else if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
+                } else if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
                     ctx.set_result(());
-                }else{
-                    eprintln!("No read op ctx found for {:?}", msn);
+                } else {
+                    error!("No read op ctx found for {:?}", msn);
                 }
                 remove_list.push_back(msn);
             } else if is_out_of_order {
@@ -104,20 +102,20 @@ impl PacketCheckerContext {
                     Psn::default(),
                 ));
                 if self.send_queue.send(command).is_err() {
-                    eprintln!("Failed to send nack command");
+                    error!("Failed to send nack command");
                     return ThreadFlag::Stopped("Send queue is broken");
                 }
                 panic!("send nack command")
+            } else {
+                // everthing is fine, do nothing
             }
-
-            // everthing is fine, do nothing
         }
 
         // remove the completed recv_pkt_map
         if !remove_list.is_empty() {
             let mut guard = self.recv_pkt_map.write().unwrap();
             remove_list.iter().for_each(|dqpn| {
-                guard.remove(dqpn);
+                let _ = guard.remove(dqpn);
             });
         }
         ThreadFlag::Running
@@ -127,12 +125,14 @@ impl PacketCheckerContext {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{mpsc, Mutex},
+        collections::HashMap,
+        sync::{mpsc, Arc, Mutex, RwLock},
         thread::sleep,
         time::Duration,
     };
 
     use crate::{
+        op_ctx::ReadOpCtx,
         recv_pkt_map::RecvPktMap,
         types::{Msn, Psn, Qpn},
     };
@@ -142,12 +142,13 @@ mod tests {
     #[test]
     fn test_packet_checker() {
         let (send_queue, recv_queue) = mpsc::channel();
-        let recv_pkt_map =
-            std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        let read_op_ctx_map =
-            std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        let _packet_checker =
-            PacketChecker::new(send_queue, recv_pkt_map.clone(), read_op_ctx_map.clone());
+        let recv_pkt_map = Arc::new(RwLock::new(HashMap::<Msn, Arc<Mutex<RecvPktMap>>>::new()));
+        let read_op_ctx_map = Arc::new(RwLock::new(HashMap::<Msn, ReadOpCtx>::new()));
+        let _packet_checker = PacketChecker::new(
+            send_queue,
+            Arc::<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>::clone(&recv_pkt_map),
+            Arc::<RwLock<HashMap<Msn, ReadOpCtx>>>::clone(&read_op_ctx_map),
+        );
         let key = Msn::new(1);
         recv_pkt_map.write().unwrap().insert(
             key,

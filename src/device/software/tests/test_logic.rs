@@ -52,7 +52,7 @@ unsafe impl Sync for DummpyProxy {}
 #[test]
 fn test_logic_send() {
     let agent = Arc::new(DummpyProxy::new());
-    let logic = BlueRDMALogic::new(agent.clone());
+    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
 
     // expect write_only
     {
@@ -325,7 +325,7 @@ fn test_logic_send() {
 #[test]
 fn test_logic_send_raw() {
     let agent = Arc::new(DummpyProxy::new());
-    let logic = BlueRDMALogic::new(agent.clone());
+    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
     {
         let desc = ToCardWorkRbDescBuilder::default()
             .with_qp_type(QpType::RawPacket)

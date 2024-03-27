@@ -25,6 +25,7 @@ pub struct UDPReceiveAgent {
 }
 
 /// A udp client that sends messages to the corresponding address and port.
+#[derive(Debug)]
 pub struct UDPSendAgent {
     sender: Socket,
     sending_id_counter: AtomicU16,
@@ -36,11 +37,12 @@ impl UDPSendAgent {
         let fd = sender.as_raw_fd();
         unsafe {
             let on = 1i32;
+            let on_ref = &on as *const i32 as *const libc::c_void;
             let ret = libc::setsockopt(
                 fd,
                 libc::IPPROTO_IP,
                 libc::IP_HDRINCL,
-                &on as *const _ as *const libc::c_void,
+                on_ref,
                 std::mem::size_of_val(&on) as libc::socklen_t,
             );
             if ret != 0 {
@@ -74,7 +76,7 @@ impl UDPReceiveAgent {
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
     pub fn start(&mut self) -> Result<(), NetAgentError> {
-        let receiver = self.receiver.clone();
+        let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let addr = SocketAddrV4::new(self.receiver.get_recv_addr(), self.receiver.get_recv_port());
         socket.bind(&addr.into())?;
@@ -129,10 +131,13 @@ impl NetSendAgent for UDPSendAgent {
             .message(message)
             .write()?;
 
-        self.sender.send_to(
+        let sended_size = self.sender.send_to(
             &buf[0..total_length],
             &SocketAddrV4::new(dest_addr, dest_port).into(),
         )?;
+        if total_length != sended_size {
+            return Err(NetAgentError::WrongBytesSending(total_length, sended_size));
+        }
         Ok(())
     }
 
@@ -159,10 +164,13 @@ impl NetSendAgent for UDPSendAgent {
             .payload(payload)
             .write()?;
 
-        self.sender.send_to(
+        let sended_size = self.sender.send_to(
             &buf[0..total_length],
             &SocketAddrV4::new(dest_addr, dest_port).into(),
         )?;
+        if total_length != sended_size {
+            return Err(NetAgentError::WrongBytesSending(total_length, sended_size));
+        }
         Ok(())
     }
 

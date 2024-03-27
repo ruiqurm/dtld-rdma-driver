@@ -32,31 +32,31 @@ pub struct QpContext {
     pub(crate) sending_psn: Mutex<Psn>,
 }
 
-impl From<&Qp> for QpContext {
-    fn from(qp: &Qp) -> QpContext {
-        QpContext {
-            pd: qp.pd.clone(),
+impl QpContext {
+    pub fn new(qp : &Qp,local_ip: Ipv4Addr,local_mac : MacAddress) -> Self{
+        Self{
+            pd: qp.pd,
             qpn: qp.qpn,
             qp_type: qp.qp_type,
             rq_acc_flags: qp.rq_acc_flags,
-            pmtu: qp.pmtu.clone(),
-            local_ip: qp.local_ip,
-            local_mac_addr: qp.local_mac,
+            pmtu: qp.pmtu,
+            local_ip,
+            local_mac_addr: local_mac,
             dqp_ip: qp.dqp_ip,
             dqp_mac_addr: qp.dqp_mac,
             sending_psn: Mutex::new(Psn::new(0)),
         }
     }
 }
+
 impl Device {
-    #[allow(clippy::too_many_arguments)]
     pub fn create_qp(&self, qp: &Qp) -> Result<(), Error> {
         let mut qp_pool = self.0.qp_table.write().unwrap();
         let mut pd_pool = self.0.pd.lock().unwrap();
         let pd = &qp.pd;
         let pd_ctx = pd_pool.get_mut(pd).ok_or(Error::InvalidPd)?;
 
-        let qpc = QpContext::from(qp);
+        let qpc = QpContext::new(qp,self.0.local_network.ipaddr,self.0.local_network.macaddr);
         let op_id = self.get_ctrl_op_id();
 
         let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {
@@ -66,7 +66,7 @@ impl Device {
             pd_hdl: qp.pd.handle,
             qp_type: qp.qp_type,
             rq_acc_flags: qp.rq_acc_flags,
-            pmtu: qp.pmtu.clone(),
+            pmtu: qp.pmtu,
         });
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
@@ -101,7 +101,7 @@ impl Device {
                 pd_hdl: 0,
                 qp_type: qp_ctx.qp_type,
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessNoFlags,
-                pmtu: qp_ctx.pmtu.clone(),
+                pmtu: qp_ctx.pmtu,
             });
             (pd_ctx, desc)
         } else {
@@ -116,8 +116,8 @@ impl Device {
             return Err(Error::DeviceReturnFailed);
         }
 
-        pd_ctx.qp.remove(&qp);
-        qp_pool.remove(&qp);
+        let _ = pd_ctx.qp.remove(&qp);
+        let _ = qp_pool.remove(&qp);
 
         Ok(())
     }

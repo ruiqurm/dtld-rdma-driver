@@ -1,6 +1,7 @@
 use std::{collections::LinkedList, sync::Arc, thread::spawn};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use log::error;
 
 use super::{ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
 
@@ -68,7 +69,7 @@ impl Default for SGList {
 impl DescriptorScheduler {
     pub fn new(strat: Arc<dyn SchedulerStrategy>) -> Self {
         let (sender, receiver) = crossbeam_channel::unbounded();
-        let strategy: Arc<dyn SchedulerStrategy> = strat.clone();
+        let strategy: Arc<dyn SchedulerStrategy> = Arc::<dyn SchedulerStrategy>::clone(&strat);
         let thread_receiver = receiver.clone();
         let thread_handler = spawn(move || loop {
             let desc = match thread_receiver.try_recv() {
@@ -94,7 +95,7 @@ impl DescriptorScheduler {
         match self.sender.send(desc) {
             Ok(_) => {}
             Err(e) => {
-                eprintln!("Error when sending descriptor: {:?}", e);
+                error!("Error when sending descriptor: {:?}", e);
                 panic!();
             }
         }

@@ -1,4 +1,5 @@
 use core::panic;
+use log::{debug, error};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -22,11 +23,11 @@ pub struct WorkDescPoller {
 }
 
 pub(crate) struct WorkDescPollerContext {
-    work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-    recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
-    qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
-    sending_queue: std::sync::mpsc::Sender<RespCommand>,
-    write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
+    pub(crate) work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
+    pub(crate) recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
+    pub(crate) qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+    pub(crate) sending_queue: std::sync::mpsc::Sender<RespCommand>,
+    pub(crate) write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
 }
 
 unsafe impl Send for WorkDescPollerContext {}
@@ -37,22 +38,8 @@ enum ThreadFlag {
 }
 
 impl WorkDescPoller {
-    pub(crate) fn new(
-        work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-        recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
-        qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
-        sending_queue: std::sync::mpsc::Sender<RespCommand>,
-        write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
-    ) -> Self {
-        let ctx = WorkDescPollerContext {
-            work_rb,
-            recv_pkt_map,
-            qp_table,
-            sending_queue,
-            write_op_ctx_map,
-        };
+    pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
         let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(ctx));
-
         Self { _thread: thread }
     }
 }
@@ -62,9 +49,9 @@ impl WorkDescPollerContext {
         loop {
             let desc = ctx.work_rb.pop();
 
-            eprintln!("{:?}", desc);
+            debug!("{:?}", desc);
             if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
-                eprintln!("desc status is {:?}", desc.status());
+                error!("desc status is {:?}", desc.status());
                 continue;
             }
 
@@ -77,7 +64,7 @@ impl WorkDescPollerContext {
             };
             match flag {
                 ThreadFlag::Stopped(reason) => {
-                    eprintln!("poll_work_rb stopped: {}", reason);
+                    error!("poll_work_rb stopped: {}", reason);
                     return;
                 }
                 ThreadFlag::Running => {}
@@ -107,9 +94,9 @@ impl WorkDescPollerContext {
             let pmtu = {
                 let guard = self.qp_table.read().unwrap();
                 if let Some(qp_ctx) = guard.get(&desc.common.dqpn) {
-                    qp_ctx.pmtu.clone()
+                    qp_ctx.pmtu
                 } else {
-                    eprintln!("{:?} not found", desc.common.dqpn.get());
+                    error!("{:?} not found", desc.common.dqpn.get());
                     return ThreadFlag::Running;
                 }
             };
@@ -131,14 +118,22 @@ impl WorkDescPollerContext {
             );
             pkt_map.insert(desc.psn);
             let mut recv_pkt_map_guard = self.recv_pkt_map.write().unwrap();
-            recv_pkt_map_guard.insert(msn, Mutex::new(pkt_map).into());
+            if recv_pkt_map_guard
+                .insert(msn, Mutex::new(pkt_map).into())
+                .is_some()
+            {
+                error!(
+                    "msn={:?} already exists in recv_pkt_map_guard",
+                    desc.common.msn
+                );
+            }
         } else {
             let guard = self.recv_pkt_map.read().unwrap();
             if let Some(recv_pkt_map) = guard.get(&msn) {
                 let mut recv_pkt_map = recv_pkt_map.lock().unwrap();
                 recv_pkt_map.insert(desc.psn);
             } else {
-                eprintln!("recv_pkt_map not found for {:?}", msn);
+                error!("recv_pkt_map not found for {:?}", msn);
             }
         }
         ThreadFlag::Running
@@ -149,15 +144,12 @@ impl WorkDescPollerContext {
     }
 
     fn handle_work_desc_ack(&self, desc: ToHostWorkRbDescAck) -> ThreadFlag {
-        eprintln!("in handle_work_desc_ack");
         let guard = self.write_op_ctx_map.read().unwrap();
         let key = desc.msn;
-        eprintln!("key: {:?}", key);
         if let Some(op_ctx) = guard.get(&key) {
             op_ctx.set_result(());
         } else {
-            eprintln!("receive ack, but op_ctx not found for {:?}", key);
-            eprintln!("{:?}", guard);
+            error!("receive ack, but op_ctx not found for {:?}", key);
         }
 
         ThreadFlag::Running
@@ -320,13 +312,14 @@ mod tests {
         let key = Msn::default();
         let ctx = WriteOpCtx::new_running();
         write_op_ctx_map.write().unwrap().insert(key, ctx.clone());
-        let _poller = WorkDescPoller::new(
+        let work_ctx = super::WorkDescPollerContext {
             work_rb,
             recv_pkt_map,
             qp_table,
             sending_queue,
             write_op_ctx_map,
-        );
+        };
+        let _poller = WorkDescPoller::new(work_ctx);
         ctx.wait();
         let item = recv_queue.recv().unwrap();
         match item {

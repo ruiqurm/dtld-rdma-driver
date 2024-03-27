@@ -17,7 +17,7 @@ const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
 const ACKNOWLEDGE_BUFFER_SIZE: usize =
     ACKNOWLEDGE_BUFFER_SLOT_CNT * AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Mr {
     pub(crate) key: Key,
 }
@@ -93,19 +93,24 @@ impl Device {
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 
-        let op_id = self.get_ctrl_op_id();
-        let desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
-            common: ToCardCtrlRbDescCommon { op_id },
-            start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64 + pgt_offset as u64*8,
+        let update_pgt_op_id = self.get_ctrl_op_id();
+        let update_pgt_desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
+            common: ToCardCtrlRbDescCommon {
+                op_id: update_pgt_op_id,
+            },
+            start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64
+                + pgt_offset as u64 * 8,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
         });
 
-        let ctx = self.do_ctrl_op(op_id, desc)?;
+        let update_pgt_ctx = self.do_ctrl_op(update_pgt_op_id, update_pgt_desc)?;
 
-        let res = ctx.wait_result().ok_or(Error::DeviceReturnFailed)?;
+        let update_pgt_result = update_pgt_ctx
+            .wait_result()
+            .ok_or(Error::DeviceReturnFailed)?;
 
-        if !res {
+        if !update_pgt_result {
             mr_pgt.dealloc(pgt_offset, pgte_cnt);
             return Err(Error::DeviceReturnFailed);
         }
@@ -125,10 +130,12 @@ impl Device {
             pg_size,
         };
 
-        let op_id = self.get_ctrl_op_id();
+        let update_mr_op_id = self.get_ctrl_op_id();
 
-        let desc = ToCardCtrlRbDesc::UpdateMrTable(ToCardCtrlRbDescUpdateMrTable {
-            common: ToCardCtrlRbDescCommon { op_id },
+        let update_mr_desc = ToCardCtrlRbDesc::UpdateMrTable(ToCardCtrlRbDescUpdateMrTable {
+            common: ToCardCtrlRbDescCommon {
+                op_id: update_mr_op_id,
+            },
             addr,
             len,
             key,
@@ -137,17 +144,17 @@ impl Device {
             pgt_offset: pgt_offset as u32,
         });
 
-        let ctx = self.do_ctrl_op(op_id, desc)?;
+        let update_mr_ctx = self.do_ctrl_op(update_mr_op_id, update_mr_desc)?;
 
-        let res = ctx.wait_result().unwrap();
+        let update_mr_result = update_mr_ctx.wait_result().unwrap();
 
-        if !res {
+        if !update_mr_result {
             return Err(Error::DeviceReturnFailed);
         }
 
         mr_table[mr_idx] = Some(mr_ctx);
 
-        let pd_res = pd_ctx.mr.insert(mr.clone());
+        let pd_res = pd_ctx.mr.insert(mr);
         assert!(pd_res);
 
         Ok(mr)
@@ -155,7 +162,7 @@ impl Device {
 
     pub(crate) fn init_ack_buf(&self) -> Result<AcknowledgeBuffer, Error> {
         let buffer = Box::leak(Box::new([0u8; ACKNOWLEDGE_BUFFER_SIZE + PAGE_SIZE]));
-        let buffer_addr  = (buffer.as_mut_ptr() as usize+ PAGE_SIZE -1)& !(PAGE_SIZE -1);
+        let buffer_addr = (buffer.as_mut_ptr() as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let pd = self.alloc_pd()?;
         let mr = self.reg_mr(
             pd,
@@ -166,11 +173,7 @@ impl Device {
                 | MemAccessTypeFlag::IbvAccessRemoteRead
                 | MemAccessTypeFlag::IbvAccessRemoteWrite,
         )?;
-        let ack_buf = AcknowledgeBuffer::new(
-            buffer_addr,
-            ACKNOWLEDGE_BUFFER_SIZE,
-            mr.get_key(),
-        );
+        let ack_buf = AcknowledgeBuffer::new(buffer_addr, ACKNOWLEDGE_BUFFER_SIZE, mr.get_key());
         Ok(ack_buf)
     }
 
@@ -213,7 +216,7 @@ impl Device {
             mr_ctx.len.div_ceil(mr_ctx.pg_size) as usize,
         );
 
-        pd_ctx.mr.remove(&mr);
+        let _ = pd_ctx.mr.remove(&mr);
         mr_table[mr_idx as usize] = None;
 
         Ok(())
@@ -230,7 +233,7 @@ impl MrPgt {
         }));
 
         Self {
-            table:[0u64; crate::MR_PGT_SIZE],
+            table: [0u64; crate::MR_PGT_SIZE],
             free_blk_list: free_blk,
         }
     }

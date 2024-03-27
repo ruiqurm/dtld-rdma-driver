@@ -26,6 +26,7 @@ use std::{
 };
 
 #[allow(dead_code)]
+#[derive(Debug)]
 struct QueuePairInner {
     pmtu: Pmtu,
     qp_type: QpType,
@@ -34,6 +35,7 @@ struct QueuePairInner {
 }
 
 /// The hardware queue pair context
+#[derive(Debug)]
 struct QueuePair {
     inner: RwLock<QueuePairInner>,
     // recv: RecvRingbuf,
@@ -41,6 +43,7 @@ struct QueuePair {
 
 /// The hardware memory region context
 #[allow(dead_code)]
+#[derive(Debug)]
 struct MemoryRegion {
     lkey: Key,
     rkey: Key,
@@ -104,13 +107,13 @@ impl BlueRDMALogic {
 
     /// Get the queue that contains the received meta descriptor
     pub fn get_to_host_descriptor_queue(&self) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
-        self.to_host_data_descriptor_queue.clone()
+        Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(&self.to_host_data_descriptor_queue)
     }
 
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
     /// TODO: remove the `#[allow(unreachable_patterns)]`
     /// TODO: the function is too long. Try to split it.
-    #[allow(unreachable_patterns)]
+    #[allow(clippy::shadow_unrelated)]
     pub fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
         let mut req = ToCardDescriptor::from(desc);
         // if it's a raw packet, send it directly
@@ -289,9 +292,6 @@ impl BlueRDMALogic {
 
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
             }
-            ToCardWorkRbDescOpcode::ReadResp => {
-                unimplemented!()
-            }
         }
         Ok(())
     }
@@ -316,7 +316,8 @@ impl BlueRDMALogic {
                     let qp = Arc::new(QueuePair {
                         inner: RwLock::new(qp_inner),
                     });
-                    qp_table.insert(qpn, qp);
+                    // we have ensured that the qpn is not exists.
+                    let _ = qp_table.insert(qpn, qp);
                 }
                 Ok(())
             }
@@ -337,7 +338,8 @@ impl BlueRDMALogic {
                     *guard = mr;
                 } else {
                     let mr = Arc::new(RwLock::new(mr));
-                    mr_table.insert(rkey, mr);
+                    // we have ensured that the qpn is not exists.
+                    let _ = mr_table.insert(rkey, mr);
                 }
                 Ok(())
             }
@@ -409,7 +411,6 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
 
                 // Copy the payload to the memory
                 if status.is_ok() && header.has_payload() {
-                    let va = header.reth.va as usize;
                     message.payload.copy_to(va as *mut u8);
                 }
 
@@ -432,7 +433,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                         Some(ToHostWorkRbDescWriteType::Only)
                     }
-                    _ => None,
+                    ToHostWorkRbDescOpcode::RdmaReadRequest | ToHostWorkRbDescOpcode::Acknowledge => None,
                 };
 
                 common.status = status;
@@ -509,7 +510,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     //         lost_psn : Range::new(header.common_meta.psn.get(), header.common_meta.psn.get()),
                     //     })
                     // }
-                    _ => {
+                    ToHostWorkRbDescAethCode::Rnr | ToHostWorkRbDescAethCode::Rsvd | ToHostWorkRbDescAethCode::Nak => {
                         unimplemented!()
                     }
                 }
@@ -705,6 +706,7 @@ mod tests {
     // test update mr table, qp table
     #[test]
     fn test_logic_update() {
+        #[derive(Debug)]
         struct DummpyProxy;
 
         impl NetSendAgent for DummpyProxy {
@@ -735,7 +737,7 @@ mod tests {
             }
         }
         let agent = Arc::new(DummpyProxy);
-        let logic = BlueRDMALogic::new(agent.clone());
+        let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
         // test updating qp
         {
             let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {

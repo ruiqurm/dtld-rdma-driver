@@ -5,7 +5,7 @@ use eui48::MacAddress;
 use serde::ser::StdError;
 use thiserror::Error;
 
-use crate::{Pd, PoisonErrorWrapper};
+use crate::Pd;
 
 pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
 
@@ -37,7 +37,7 @@ impl From<u32> for Imm {
 }
 
 /// Message Sequence Number
-#[derive(Debug, Clone, Copy, Hash,PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Msn(u16);
 impl Msn {
     pub fn new(msn: u16) -> Self {
@@ -93,8 +93,6 @@ impl From<u32> for Key {
         Self::new(key)
     }
 }
-
-
 
 /// Packet Sequence Number
 pub type Psn = ThreeBytesStruct;
@@ -180,6 +178,8 @@ bitflags! {
     }
 }
 
+
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum QpType {
     Rc = 2,
@@ -190,7 +190,9 @@ pub enum QpType {
     XrcRecv = 10,
 }
 
-#[derive(Debug, Clone)]
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
 pub enum Pmtu {
     Mtu256 = 1,
     Mtu512 = 2,
@@ -223,12 +225,17 @@ impl From<&Pmtu> for u32 {
     }
 }
 
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
 pub struct Sge {
     pub addr: u64,
     pub len: u32,
     pub key: Key,
 }
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
 pub struct RdmaDeviceNetwork {
     pub gateway: Ipv4Addr,
     pub netmask: Ipv4Addr,
@@ -239,9 +246,9 @@ pub struct RdmaDeviceNetwork {
 impl RdmaDeviceNetwork {
     pub fn new(
         ipaddr: Ipv4Addr,
-        macaddr: MacAddress,
         netmask: Ipv4Addr,
         gateway: Ipv4Addr,
+        macaddr: MacAddress,
     ) -> Self {
         Self {
             ipaddr,
@@ -252,7 +259,8 @@ impl RdmaDeviceNetwork {
     }
 }
 
-#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
 pub struct Qp {
     #[allow(unused)]
     pub pd: Pd,
@@ -263,10 +271,31 @@ pub struct Qp {
     pub pmtu: Pmtu,
     pub dqp_ip: Ipv4Addr,
     pub dqp_mac: MacAddress,
-    pub local_ip: Ipv4Addr,
-    pub local_mac: MacAddress,
 }
 
+impl Qp {
+    pub fn new(
+        pd: Pd,
+        qpn: Qpn,
+        qp_type: QpType,
+        rq_acc_flags: MemAccessTypeFlag,
+        pmtu: Pmtu,
+        dqp_ip: Ipv4Addr,
+        dqp_mac: MacAddress,
+    ) -> Self {
+        Self {
+            pd,
+            qpn,
+            qp_type,
+            rq_acc_flags,
+            pmtu,
+            dqp_ip,
+            dqp_mac,
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -303,10 +332,14 @@ pub enum Error {
     BuildDescFailed(&'static str),
     #[error("In ctrl, set network param failed")]
     SetNetworkParamFailed,
-    #[error("Mutex lock poisoned")]
-    LockPoisoned(#[from] PoisonErrorWrapper),
+    #[error("Mutex lock {0} poisoned")]
+    LockPoisoned(&'static str),
     #[error("Address of {0} is not aligned,which is {1:x}")]
     AddressNotAlign(&'static str, usize),
+    #[error("MSN exist, create operation context failed")]
+    CreateOpCtxFailed,
+    #[error("Set context result failed")]
+    SetCtxResultFailed,
 }
 
 #[cfg(test)]

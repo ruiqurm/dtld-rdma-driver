@@ -6,7 +6,7 @@ use std::{
 };
 
 // TODO: PD will be shared by multi function call. Use reference counter?
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,Copy)]
 pub struct Pd {
     pub(crate) handle: u32,
 }
@@ -25,7 +25,7 @@ impl Device {
         };
 
         let res = pool.insert(
-            pd.clone(),
+            pd,
             PdCtx {
                 mr: HashSet::new(),
                 qp: HashSet::new(),
@@ -49,7 +49,7 @@ impl Device {
             return Err(Error::QpInUse);
         }
 
-        pool.remove(&pd);
+        let _ = pool.remove(&pd);
 
         Ok(())
     }

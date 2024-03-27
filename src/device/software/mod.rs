@@ -67,11 +67,11 @@ impl SoftwareDevice {
         let scheduler = DescriptorScheduler::new(round_robin);
         let scheduler = Arc::new(scheduler);
         let to_host_queue = device.get_to_host_descriptor_queue();
-        let mut recv_agent = UDPReceiveAgent::new(device.clone())?;
+        let mut recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device))?;
         recv_agent.start()?;
 
-        let this_scheduler = scheduler.clone();
-        let this_device = device.clone();
+        let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
+        let this_device = Arc::<BlueRDMALogic>::clone(&device);
         let polling_thread = spawn(move || loop {
             if let Some(to_card_ctrl_rb_desc) = this_scheduler.pop() {
                 let _ = this_device.send(to_card_ctrl_rb_desc);

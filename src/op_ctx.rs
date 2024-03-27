@@ -3,8 +3,11 @@ use std::{
     thread::{self, Thread},
 };
 
+use log::error;
+
 /// The status of operations.
-#[derive(Debug, Clone)]
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
 /// The status of operations.
 pub enum CtxStatus {
     /// The operation is invalid.
@@ -17,7 +20,7 @@ pub enum CtxStatus {
     Finished,
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct OpCtx<Payload>(Arc<OpCtxWrapper<Payload>>);
 
 #[derive(Debug)]
@@ -60,7 +63,7 @@ impl<Payload> OpCtx<Payload> {
 
     pub(crate) fn set_result(&self, result: Payload) {
         if self.0.payload.set(result).is_err() {
-            eprintln!("set_result failed");
+            error!("set_result failed");
             return;
         }
         // set only once
@@ -72,7 +75,7 @@ impl<Payload> OpCtx<Payload> {
     }
 
     pub fn get_status(&self) -> CtxStatus {
-        self.0.inner.lock().unwrap().status.clone()
+        self.0.inner.lock().unwrap().status
     }
 
     pub fn get_result(&self) -> Option<&Payload> {

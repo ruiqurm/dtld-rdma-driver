@@ -157,7 +157,7 @@ impl ToCardWorkRbDescBuilder {
             raddr: self.raddr.unwrap(),
             rkey: crate::types::Key::new(self.rkey.unwrap()),
             dqpn: crate::types::Qpn::new(self.dqpn.unwrap()),
-            pmtu: self.pmtu.clone().unwrap(),
+            pmtu: self.pmtu.unwrap(),
             qp_type: self.qp_type.unwrap(),
             psn: crate::types::Psn::new(self.psn.unwrap()),
             flags: self.flags.unwrap(),
@@ -320,7 +320,7 @@ impl ToCardCtrlRbDescBuilder {
                     pd_hdl: self.pd_hdl.unwrap(),
                     qp_type: self.qp_type.unwrap(),
                     rq_acc_flags: self.rq_acc_flags.unwrap(),
-                    pmtu: self.pmtu.clone().unwrap(),
+                    pmtu: self.pmtu.unwrap(),
                 })
             }
         }

@@ -154,13 +154,11 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
 }
 
 impl<
-        'a,
-        'proxy,
         T: CsrWriterProxy,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
-    > RingbufWriter<'a, 'proxy, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+    > RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn advance(&mut self) {
         let head = *self.head;
@@ -174,12 +172,11 @@ impl<
 
 impl<
         'a,
-        'proxy,
         T: CsrWriterProxy,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
-    > Iterator for RingbufWriter<'a, 'proxy, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+    > Iterator for RingbufWriter<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     type Item = &'a mut [u8];
 
@@ -213,13 +210,11 @@ impl<
 
 /// Drop the writer to update the head pointer.
 impl<
-        'a,
-        'proxy,
         T: CsrWriterProxy,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
-    > Drop for RingbufWriter<'a, 'proxy, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+    > Drop for RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
         self.advance();
@@ -228,12 +223,11 @@ impl<
 
 impl<
         'a,
-        'proxy,
         T: CsrReaderProxy,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
-    > Iterator for RingbufReader<'a, 'proxy, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+    > Iterator for RingbufReader<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     type Item = &'a [u8];
 
@@ -260,13 +254,11 @@ impl<
 
 /// Drop the reader to update the tail pointer.
 impl<
-        'a,
-        'proxy,
         T: CsrReaderProxy,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
-    > Drop for RingbufReader<'a, 'proxy, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+    > Drop for RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
         *self.tail += self.read_cnt;
@@ -382,7 +374,7 @@ mod test {
         let mut reader = ringbuf.read();
 
         let finish_flag = Arc::new(AtomicBool::new(false));
-        let finish_flag_clone = finish_flag.clone();
+        let finish_flag_clone = Arc::<AtomicBool>::clone(&finish_flag);
         let checker = spawn(move || {
             sleep(std::time::Duration::from_millis(60));
             if finish_flag_clone.load(Ordering::Relaxed) {

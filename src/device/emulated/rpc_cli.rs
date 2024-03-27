@@ -39,7 +39,7 @@ impl RpcClient {
         };
 
         let send_buf = serde_json::to_vec(&msg).unwrap();
-        self.0.send(&send_buf).unwrap();
+        let _ = self.0.send(&send_buf).unwrap();
 
         let mut recv_buf = [0; 128];
         let recv_cnt = self.0.recv(&mut recv_buf).unwrap();
@@ -57,7 +57,7 @@ impl RpcClient {
         };
 
         let send_buf = serde_json::to_vec(&msg).unwrap();
-        self.0.send(&send_buf).unwrap();
+        let _ = self.0.send(&send_buf).unwrap();
     }
 }
 
