@@ -107,7 +107,9 @@ impl BlueRDMALogic {
 
     /// Get the queue that contains the received meta descriptor
     pub fn get_to_host_descriptor_queue(&self) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
-        Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(&self.to_host_data_descriptor_queue)
+        Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(
+            &self.to_host_data_descriptor_queue,
+        )
     }
 
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
@@ -266,7 +268,6 @@ impl BlueRDMALogic {
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
             }
             ToCardWorkRbDescOpcode::Read => {
-                assert!(req.sg_list.len == 1);
                 let local_sa = &req.sg_list.data[0];
                 common_meta.opcode = ToHostWorkRbDescOpcode::RdmaReadRequest;
                 common_meta.tran_type =
@@ -317,7 +318,7 @@ impl BlueRDMALogic {
                         inner: RwLock::new(qp_inner),
                     });
                     // we have ensured that the qpn is not exists.
-                    let _ = qp_table.insert(qpn, qp);
+                    let _: Option<Arc<QueuePair>> = qp_table.insert(qpn, qp);
                 }
                 Ok(())
             }
@@ -339,7 +340,7 @@ impl BlueRDMALogic {
                 } else {
                     let mr = Arc::new(RwLock::new(mr));
                     // we have ensured that the qpn is not exists.
-                    let _ = mr_table.insert(rkey, mr);
+                    let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(rkey, mr);
                 }
                 Ok(())
             }
@@ -433,7 +434,8 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                         Some(ToHostWorkRbDescWriteType::Only)
                     }
-                    ToHostWorkRbDescOpcode::RdmaReadRequest | ToHostWorkRbDescOpcode::Acknowledge => None,
+                    ToHostWorkRbDescOpcode::RdmaReadRequest
+                    | ToHostWorkRbDescOpcode::Acknowledge => None,
                 };
 
                 common.status = status;
@@ -510,7 +512,9 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     //         lost_psn : Range::new(header.common_meta.psn.get(), header.common_meta.psn.get()),
                     //     })
                     // }
-                    ToHostWorkRbDescAethCode::Rnr | ToHostWorkRbDescAethCode::Rsvd | ToHostWorkRbDescAethCode::Nak => {
+                    ToHostWorkRbDescAethCode::Rnr
+                    | ToHostWorkRbDescAethCode::Rsvd
+                    | ToHostWorkRbDescAethCode::Nak => {
                         unimplemented!()
                     }
                 }

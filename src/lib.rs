@@ -13,6 +13,7 @@
     missing_copy_implementations,
     // missing_debug_implementations, 
     // must_not_suspend, unstable
+    // missing_docs, // TODO:
     non_ascii_idents,
     // non_exhaustive_omitted_patterns, unstable
     noop_method_call,
@@ -24,7 +25,7 @@
     single_use_lifetimes,
     // trivial_casts, // We allow trivial_casts for casting a pointer
     trivial_numeric_casts,
-    // unreachable_pub, TODO:
+    // unreachable_pub, // TODO:
     // unsafe_code, // we need unsafe when managing memory
     unsafe_op_in_unsafe_fn,
     unstable_features,
@@ -81,28 +82,45 @@
     // clippy::unimplemented, // We still have some unimplemented functions
     clippy::unnecessary_self_imports,
     clippy::unneeded_field_pattern,
-    // clippy::unreachable, allow unreachable panic, which is out of expectation
-    // clippy::unwrap_in_result, // TODO:
-    // clippy::unwrap_used, // TODO:
+    // clippy::unreachable, // TODO:
+    // clippy::unwrap_in_result,
+    // clippy::unwrap_used, 
     // clippy::use_debug, debug is allow for debug log
     clippy::verbose_file_reads,
     clippy::wildcard_enum_match_arm,
 
     // // The followings are selected lints from 1.61.0 to 1.67.1
-    // clippy::as_ptr_cast_mut,
-    // clippy::derive_partial_eq_without_eq,
-    // clippy::empty_drop,
-    // clippy::empty_structs_with_brackets,
-    // clippy::format_push_string,
-    // clippy::iter_on_empty_collections,
-    // clippy::iter_on_single_items,
-    // clippy::large_include_file,
-    // clippy::manual_clamp,
-    // clippy::suspicious_xor_used_as_pow,
-    // clippy::unnecessary_safety_comment,
-    // clippy::unnecessary_safety_doc,
-    // clippy::unused_peekable,
-    // clippy::unused_rounding,    
+    clippy::as_ptr_cast_mut,
+    clippy::derive_partial_eq_without_eq,
+    clippy::empty_drop,
+    clippy::empty_structs_with_brackets,
+    clippy::format_push_string,
+    clippy::iter_on_empty_collections,
+    clippy::iter_on_single_items,
+    clippy::large_include_file,
+    clippy::manual_clamp,
+    clippy::suspicious_xor_used_as_pow,
+    clippy::unnecessary_safety_comment,
+    clippy::unnecessary_safety_doc,
+    clippy::unused_peekable,
+    clippy::unused_rounding,    
+
+    // The followings are selected restriction lints from rust 1.68.0 to 1.71.0
+    // clippy::allow_attributes, still unstable
+    clippy::impl_trait_in_params,
+    clippy::let_underscore_untyped,
+    clippy::missing_assert_message,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::semicolon_inside_block,
+    // clippy::semicolon_outside_block, already used `semicolon_inside_block`
+    clippy::tests_outside_test_module,
+    // 1.71.0
+    clippy::default_constructed_unit_structs,
+    clippy::items_after_test_module,
+    clippy::manual_next_back,
+    clippy::manual_while_let_some,
+    clippy::needless_bool_assign,
+    clippy::non_minimal_cfg,
 )]
 
 #![cfg_attr(
@@ -270,7 +288,7 @@ impl Device {
     ) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let adaptor =
-            EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr).map_err(Error::Device)?;
+            EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr).map_err(|e| Error::Device(Box::new(e)))?;
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
@@ -418,9 +436,10 @@ impl Device {
             let mut ctx = self.0.ctrl_op_ctx_map.write().unwrap();
             let ctrl_ctx = CtrlOpCtx::new_running();
 
-            let old = ctx.insert(id, ctrl_ctx.clone());
+            if ctx.insert(id, ctrl_ctx.clone()).is_some() {
+                return Err(Error::OpIdUsed(id));
+            }
 
-            assert!(old.is_none());
             ctrl_ctx
         };
 

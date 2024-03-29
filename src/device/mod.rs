@@ -24,20 +24,20 @@ pub(crate) trait DeviceAdaptor: Send + Sync {
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>>;
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>>;
 
-    fn read_csr(&self, addr: usize) -> u32;
-    fn write_csr(&self, addr: usize, data: u32);
+    fn read_csr(&self, addr: usize) -> Result<u32,DeviceError>;
+    fn write_csr(&self, addr: usize, data: u32) -> Result<(),DeviceError>;
 
-    fn get_phys_addr(&self, virt_addr: usize) -> usize;
+    fn get_phys_addr(&self, virt_addr: usize) -> Result<usize,DeviceError>;
 }
 
 /// Generic interface for a to-card ring buffer.
 pub(crate) trait ToCardRb<D> {
-    fn push(&self, desc: D) -> Result<(), Overflowed>;
+    fn push(&self, desc: D) -> Result<(), DeviceError>;
 }
 
 /// Generic interface for a to-host ring buffer.
 pub(crate) trait ToHostRb<D> {
-    fn pop(&self) -> D;
+    fn pop(&self) -> Result<D,DeviceError>;
 }
 
 /// An error indicating that a ring buffer overflowed.

@@ -2,11 +2,14 @@
 Base and extended transport header
 */
 
-use std::{mem::size_of, net::Ipv4Addr};
+use std::{
+    mem::{size_of, transmute},
+    net::Ipv4Addr,
+};
 
 use thiserror::Error;
 
-use crate::device::{ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType, ToHostWorkRbDescAethCode};
+use crate::device::{ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType};
 
 use super::types::{
     AethHeader, Metadata, PayloadInfo, RdmaGeneralMeta, RdmaMessage, RdmaMessageMetaCommon,
@@ -49,8 +52,9 @@ pub(crate) struct BTH {
 
 impl BTH {
     /// SAFETY: we assmue the buffer is a valid BTH
+    #[allow(clippy::transmute_ptr_to_ref)]
     pub fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 
     pub fn get_transaction_type(&self) -> u8 {
@@ -95,7 +99,11 @@ impl BTH {
         u32::from_be_bytes([0, self.psn[1], self.psn[2], self.psn[3]])
     }
 
-    pub fn set_opcode_and_type(&mut self, opcode: ToHostWorkRbDescOpcode, tran_type: ToHostWorkRbDescTransType) {
+    pub fn set_opcode_and_type(
+        &mut self,
+        opcode: ToHostWorkRbDescOpcode,
+        tran_type: ToHostWorkRbDescTransType,
+    ) {
         self.tran_type_and_opcode =
             (tran_type as u8) << BTH_TRANSACTION_TYPE_SHIFT | (opcode as u8);
     }
@@ -109,7 +117,8 @@ impl BTH {
     }
 
     pub fn set_pad_cnt(&mut self, pad_cnt: usize) {
-        self.flags = (self.flags & !BTH_FLAGS_PAD_CNT_MASK) | ((pad_cnt as u8) << BTH_FLAGS_PAD_CNT_SHIFT);
+        self.flags =
+            (self.flags & !BTH_FLAGS_PAD_CNT_MASK) | ((pad_cnt as u8) << BTH_FLAGS_PAD_CNT_SHIFT);
     }
 
     pub fn set_pkey(&mut self, pkey: u16) {
@@ -140,11 +149,7 @@ impl BTH {
     }
 
     /// convert the &RdmaMessageMetaCommon to BTH
-    pub fn set_from_common_meta(
-        &mut self,
-        common_meta: &RdmaMessageMetaCommon,
-        pad_cnt: usize,
-    ) {
+    pub fn set_from_common_meta(&mut self, common_meta: &RdmaMessageMetaCommon, pad_cnt: usize) {
         self.set_opcode_and_type(common_meta.opcode.clone(), common_meta.tran_type.clone());
         self.set_flags_solicited(common_meta.solicited);
         self.set_pad_cnt(pad_cnt);
@@ -167,8 +172,9 @@ pub(crate) struct RETH {
 impl RETH {
     /// SAFETY: we assmue the buffer is a valid RETH
     #[cfg(test)]
+    #[allow(clippy::transmute_ptr_to_ref)]
     pub fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 
     pub fn get_va(&self) -> u64 {
@@ -215,8 +221,9 @@ pub(crate) struct AETH {
 impl AETH {
     /// SAFETY: we assmue the buffer is a valid AETH
     #[cfg(test)]
+    #[allow(clippy::transmute_ptr_to_ref)]
     pub fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 
     pub fn get_aeth_code(&self) -> u8 {
@@ -268,10 +275,11 @@ pub trait RdmaPacketHeader: Sized {
     }
 
     /// Get a reference to the packet header
-    /// 
+    ///
     /// SAFETY: User should ensure the buffer is large enough to hold the packet header
+    #[allow(clippy::transmute_ptr_to_ref)]
     fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 
     /// Convert the packet header to RdmaMessage
@@ -522,9 +530,9 @@ pub struct IpUdpHeaders {
 }
 
 impl IpUdpHeaders {
+    #[allow(clippy::transmute_ptr_to_ref)]
     pub fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        assert!(bytes.len() >= size_of::<Self>());
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 }
 
@@ -538,9 +546,9 @@ pub struct CommonPacketHeader {
 }
 
 impl CommonPacketHeader {
+    #[allow(clippy::transmute_ptr_to_ref)]
     pub fn from_bytes(bytes: &[u8]) -> &'static mut Self {
-        assert!(bytes.len() >= size_of::<Self>());
-        unsafe { &mut *(bytes.as_ptr() as *mut Self) }
+        unsafe { transmute(bytes.as_ptr()) }
     }
 }
 

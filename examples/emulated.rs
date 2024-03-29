@@ -83,11 +83,6 @@ fn allocate_aligned_buf(size: usize) -> Box<[u8]> {
     vec.resize(size + PAGE_SIZE, 0u8);
     let buffer = Box::leak(vec.into_boxed_slice());
     let buffer_padding = get_phys_addr(buffer.as_ptr() as usize) & (PAGE_SIZE - 1);
-    println!(
-        "phy_start : {:x} ,buffer_padding: {}",
-        get_phys_addr(buffer.as_ptr() as usize),
-        buffer_padding
-    );
     unsafe {
         Box::from_raw(from_raw_parts_mut(
             &buffer[buffer_padding] as *const _ as *mut u8,

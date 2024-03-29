@@ -51,11 +51,11 @@ impl UDPSendAgent {
         }
 
         // We can use the `rand` crate as well.
-        let rand_val = unsafe {
-            // get a random number as the identification
-            libc::srand(libc::time(std::ptr::null_mut()) as u32);
-            libc::rand()
-        };
+        let time_in_number = unsafe { libc::time(std::ptr::null_mut()) as u32 };
+        unsafe {
+            libc::srand(time_in_number);
+        }
+        let rand_val = unsafe { libc::rand() };
         // it may truncation here.
         let sending_id = AtomicU16::new(rand_val as u16);
         Ok(Self {

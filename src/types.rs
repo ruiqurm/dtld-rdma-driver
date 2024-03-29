@@ -137,6 +137,7 @@ impl ThreeBytesStruct {
     }
 
     pub fn wrapping_sub(&self, rhs: u32) -> Self {
+        let rhs = rhs % Self::MAX;
         if self.0 > rhs {
             Self(self.0 - rhs)
         } else {
@@ -304,12 +305,6 @@ pub enum Error {
     DeviceBusy,
     #[error("device return failed")]
     DeviceReturnFailed,
-    #[error("ongoing ctrl cmd ctx lost")]
-    CtrlCtxLost,
-    #[error("ongoing read ctx lost")]
-    ReadCtxLost,
-    #[error("ongoing write ctx lost")]
-    WriteCtxLost,
     #[error("QP busy")]
     QpBusy,
     #[error("invalid PD handle")]
@@ -322,6 +317,8 @@ pub enum Error {
     PdInUse,
     #[error("QP in use")]
     QpInUse,
+    #[error("MR has been in PD")]
+    MrAlreadyInPd,
     #[error("no available QP")]
     NoAvailableQp,
     #[error("no available MR")]
@@ -340,6 +337,10 @@ pub enum Error {
     CreateOpCtxFailed,
     #[error("Set context result failed")]
     SetCtxResultFailed,
+    #[error("Context op id {0} have been used")]
+    OpIdUsed(u32),
+    #[error("Get physical address failed:{0}")]
+    GetPhysAddrFailed(String),
 }
 
 #[cfg(test)]
@@ -383,5 +384,10 @@ mod tests {
 
         let psn = psn.wrapping_abs(psn2);
         assert_eq!(psn, 1);
+
+        // psn greater than 2**24
+        let psn = Psn::new(0x123456);
+        let psn2 = psn.wrapping_sub(0x12345678);
+        assert_eq!(psn2.get(), psn.wrapping_sub(0x345678).get());
     }
 }

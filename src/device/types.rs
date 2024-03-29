@@ -191,7 +191,7 @@ pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) dqpn: Qpn,
     #[allow(unused)]
     pub(crate) pad_cnt: u8,
-    pub(crate) msn : Msn,
+    pub(crate) msn: Msn,
     #[allow(unused)]
     pub(crate) expected_psn: Psn,
 }
@@ -529,10 +529,14 @@ impl ToHostCtrlRbDesc {
         let head = CmdQueueDescCommonHead(src);
 
         let valid = head.get_valid();
-        assert!(valid);
+        assert!(valid, "Invalid CmdQueueDescCommonHead");
 
         let extra_segment_cnt = head.get_extra_segment_cnt();
-        assert!(extra_segment_cnt == 0);
+        assert!(
+            extra_segment_cnt == 0,
+            "extra_segment_cnt: {}",
+            extra_segment_cnt
+        );
 
         let is_success = head.get_is_success_or_need_signal_cplt();
         let opcode = CtrlRbDescOpcode::try_from(head.get_op_code() as u8).unwrap();
@@ -863,7 +867,7 @@ impl ToHostWorkRbDesc {
             dqpn,
             pad_cnt,
             msn,
-            expected_psn
+            expected_psn,
         };
         let is_read_resp = matches!(
             opcode,
@@ -1047,7 +1051,7 @@ impl ToHostWorkRbDesc {
                     ToHostWorkRbDescAethCode::Ack => {
                         Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                             common,
-                            msn : msn_in_ack,
+                            msn: msn_in_ack,
                             value,
                             psn,
                         }))
@@ -1055,7 +1059,7 @@ impl ToHostWorkRbDesc {
                     ToHostWorkRbDescAethCode::Nak => {
                         Ok(ToHostWorkRbDesc::Nack(ToHostWorkRbDescNack {
                             common,
-                            msn : msn_in_ack,
+                            msn: msn_in_ack,
                             value,
                             lost_psn: psn..last_psn,
                         }))
@@ -1426,4 +1430,14 @@ impl ToCardWorkRbDescBuilder {
             }
         }
     }
+}
+
+#[derive(Debug, Error)]
+pub enum DeviceError {
+    #[error("device error : {0}")]
+    Device(String),
+    #[error("Overflow")]
+    Overflow,
+    #[error("Lock poisoned : {0}")]
+    LockPoisoned(String),
 }

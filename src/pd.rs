@@ -32,7 +32,9 @@ impl Device {
             },
         );
 
-        assert!(res.is_none());
+        if res.is_some() {
+            return Err(Error::InvalidPd);
+        }
 
         Ok(pd)
     }
@@ -49,7 +51,7 @@ impl Device {
             return Err(Error::QpInUse);
         }
 
-        let _ = pool.remove(&pd);
+        let _ : Option<PdCtx> = pool.remove(&pd);
 
         Ok(())
     }

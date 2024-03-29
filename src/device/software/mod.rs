@@ -7,13 +7,13 @@ use std::{
 use crossbeam_queue::SegQueue;
 
 use self::{
-    logic::BlueRDMALogic,
+    logic::{BlueRDMALogic, BlueRdmaLogicError},
     net_agent::udp_agent::{UDPReceiveAgent, UDPSendAgent},
 };
 
 use super::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler},
-    DeviceAdaptor, Overflowed, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
+    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
     ToHostRb, ToHostWorkRbDesc,
 };
 
@@ -27,7 +27,7 @@ mod types;
 mod utils;
 
 /// An software device implementation of the device.
-/// 
+///
 /// # Examples:
 /// ```
 /// let device = SoftwareDevice::init().unwrap();
@@ -74,7 +74,7 @@ impl SoftwareDevice {
         let this_device = Arc::<BlueRDMALogic>::clone(&device);
         let polling_thread = spawn(move || loop {
             if let Some(to_card_ctrl_rb_desc) = this_scheduler.pop() {
-                let _ = this_device.send(to_card_ctrl_rb_desc);
+                let _: Result<(), BlueRdmaLogicError> = this_device.send(to_card_ctrl_rb_desc);
             }
         });
         let to_card_work_rb = ToCardWorkRb(scheduler);
@@ -106,40 +106,42 @@ impl DeviceAdaptor for SoftwareDevice {
         Arc::new(self.to_host_work_rb.clone())
     }
 
-    fn read_csr(&self, _addr: usize) -> u32 {
+    fn read_csr(&self, _addr: usize) -> Result<u32, DeviceError> {
         todo!()
     }
 
-    fn write_csr(&self, _addr: usize, _data: u32) {
+    fn write_csr(&self, _addr: usize, _data: u32) -> Result<(), DeviceError> {
         todo!()
     }
 
-    fn get_phys_addr(&self, virt_addr: usize) -> usize {
-        virt_addr
+    fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError> {
+        Ok(virt_addr)
     }
 }
 
 impl ToCardRb<ToCardCtrlRbDesc> for ToCardCtrlRb {
-    fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), Overflowed> {
+    fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         self.0.update(desc).unwrap();
         Ok(())
     }
 }
 
 impl ToHostRb<ToHostCtrlRbDesc> for ToHostCtrlRb {
-    fn pop(&self) -> ToHostCtrlRbDesc {
+    fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
         todo!()
     }
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
-    fn pop(&self) -> ToHostWorkRbDesc {
-        self.0.pop().unwrap()
+    fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
+        self.0.pop().ok_or(DeviceError::Device(
+            "Failed to read from ringbuf".to_owned(),
+        ))
     }
 }
 
 impl ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb {
-    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), Overflowed> {
+    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
         self.0.push(desc);
         Ok(())
     }

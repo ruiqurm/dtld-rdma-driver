@@ -33,8 +33,8 @@ pub struct QpContext {
 }
 
 impl QpContext {
-    pub fn new(qp : &Qp,local_ip: Ipv4Addr,local_mac : MacAddress) -> Self{
-        Self{
+    pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
+        Self {
             pd: qp.pd,
             qpn: qp.qpn,
             qp_type: qp.qp_type,
@@ -56,7 +56,11 @@ impl Device {
         let pd = &qp.pd;
         let pd_ctx = pd_pool.get_mut(pd).ok_or(Error::InvalidPd)?;
 
-        let qpc = QpContext::new(qp,self.0.local_network.ipaddr,self.0.local_network.macaddr);
+        let qpc = QpContext::new(
+            qp,
+            self.0.local_network.ipaddr,
+            self.0.local_network.macaddr,
+        );
         let op_id = self.get_ctrl_op_id();
 
         let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {
@@ -80,8 +84,8 @@ impl Device {
         let pd_res = pd_ctx.qp.insert(qp.qpn);
         let qp_res = qp_pool.insert(qp.qpn, qpc);
 
-        assert!(pd_res);
-        assert!(qp_res.is_none());
+        assert!(pd_res, "pd insert failed");
+        assert!(qp_res.is_none(), "qp insert failed");
 
         Ok(())
     }
@@ -116,8 +120,8 @@ impl Device {
             return Err(Error::DeviceReturnFailed);
         }
 
-        let _ = pd_ctx.qp.remove(&qp);
-        let _ = qp_pool.remove(&qp);
+        let _: bool = pd_ctx.qp.remove(&qp);
+        let _: Option<QpContext> = qp_pool.remove(&qp);
 
         Ok(())
     }
@@ -156,11 +160,13 @@ impl QpManager {
     }
 
     pub fn alloc(&self) -> Result<Qpn, Error> {
-        self
-            .qp_availability
+        self.qp_availability
             .iter()
             .enumerate()
-            .find_map(|(idx, n)| n.swap(false, Ordering::AcqRel).then_some(Qpn::new(idx as u32)))
+            .find_map(|(idx, n)| {
+                n.swap(false, Ordering::AcqRel)
+                    .then_some(Qpn::new(idx as u32))
+            })
             .ok_or_else(|| Error::NoAvailableQp)
     }
 

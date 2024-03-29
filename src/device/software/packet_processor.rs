@@ -1,7 +1,4 @@
-use std::{
-    mem::size_of,
-    net::Ipv4Addr,
-};
+use std::{mem::size_of, net::Ipv4Addr};
 
 use thiserror::Error;
 
@@ -18,7 +15,6 @@ use super::{
     },
     types::{PayloadInfo, RdmaMessage},
 };
-
 
 pub(crate) struct PacketProcessor;
 
@@ -167,7 +163,7 @@ pub(crate) enum PacketProcessorError {
 /// The type of packet to write. Used by `PacketWriter`
 pub(crate) enum PacketWriterType {
     /// Raw packet
-    Raw, 
+    Raw,
     /// RDMA packet
     Rdma,
 }
@@ -338,7 +334,7 @@ impl<'buf, 'payloadinfo, 'message> PacketWriter<'buf, 'payloadinfo, 'message> {
 pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     if data.len() < size_of::<CommonPacketHeader>() {
         return Err(PacketProcessorError::BufferNotLargeEnough(
-            size_of::<CommonPacketHeader>() as u32
+            size_of::<CommonPacketHeader>() as u32,
         ));
     }
 
@@ -349,9 +345,7 @@ pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     let mut common_hdr = *CommonPacketHeader::from_bytes(data);
     let length = common_hdr.net_header.ip_header.get_pad_cnt();
     if data.len() != length as usize {
-        return Err(PacketProcessorError::BufferNotLargeEnough(
-            length as u32,
-        ));
+        return Err(PacketProcessorError::BufferNotLargeEnough(length as u32));
     }
     common_hdr.net_header.ip_header.dscp_ecn = 0xff;
     common_hdr.net_header.ip_header.ttl = 0xff;
@@ -375,7 +369,7 @@ pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
 }
 
 /// Write the ip and udp header to the buffer
-/// 
+///
 /// # Panic
 /// the buffer should be large enough to hold the ip and udp header
 pub(crate) fn write_ip_udp_header(
@@ -406,8 +400,8 @@ pub(crate) fn write_ip_udp_header(
 
 /// Assume the buffer is a packet, check if the icrc is valid
 /// Return a bool if the icrc is valid
-/// 
-pub(crate) fn is_icrc_valid(received_data : &[u8]) -> Result<bool,PacketProcessorError>{
+///
+pub(crate) fn is_icrc_valid(received_data: &[u8]) -> Result<bool, PacketProcessorError> {
     let length = received_data.len();
     // chcek the icrc
     let icrc_array: [u8; 4] = match received_data[length - ICRC_SIZE..length].try_into() {
@@ -419,23 +413,28 @@ pub(crate) fn is_icrc_valid(received_data : &[u8]) -> Result<bool,PacketProcesso
     Ok(!(our_icrc.is_err() || our_icrc.unwrap() != origin_icrc))
 }
 
-#[test]
-fn test_computing_icrc() {
-    // The buffer is a packet in hex format:
-    // IP(id=54321, frag=0,protocol= \
-    //     ttl=128, dst="127.0.0.1", src="127.0.0.1", len=108)/ \
-    //     UDP(sport=49152, dport=4791, len=88)/ \
-    //     BTH(opcode='RC_RDMA_WRITE_MIDDLE',pkey=0x1, dqpn=3, psn=0)/ \
-    //     Raw(bytes([0]*64))
-    let buf: [u8; 108] = [
-        0x45, 0x0, 0x0, 0x6c, 0xd4, 0x31, 0x0, 0x0, 0x80, 0x11, 0x68, 0x4d, 0x7f, 0x0, 0x0, 0x1,
-        0x7f, 0x0, 0x0, 0x1, 0x30, 0x39, 0x12, 0xb7, 0x0, 0x58, 0x9, 0xdc, 0x7, 0x0, 0x0, 0x1, 0x0,
-        0x0, 0x0, 0x3, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
-        0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x00,
-        0x00, 0x00, 0x00,
-    ];
-    let icrc = compute_icrc(&buf).unwrap();
-    assert!(icrc == 0xbff3abb9, "icrc: {:x}", icrc);
+#[cfg(test)]
+mod tests {
+    use crate::device::software::packet_processor::compute_icrc;
+
+    #[test]
+    fn test_computing_icrc() {
+        // The buffer is a packet in hex format:
+        // IP(id=54321, frag=0,protocol= \
+        //     ttl=128, dst="127.0.0.1", src="127.0.0.1", len=108)/ \
+        //     UDP(sport=49152, dport=4791, len=88)/ \
+        //     BTH(opcode='RC_RDMA_WRITE_MIDDLE',pkey=0x1, dqpn=3, psn=0)/ \
+        //     Raw(bytes([0]*64))
+        let buf: [u8; 108] = [
+            0x45, 0x0, 0x0, 0x6c, 0xd4, 0x31, 0x0, 0x0, 0x80, 0x11, 0x68, 0x4d, 0x7f, 0x0, 0x0,
+            0x1, 0x7f, 0x0, 0x0, 0x1, 0x30, 0x39, 0x12, 0xb7, 0x0, 0x58, 0x9, 0xdc, 0x7, 0x0, 0x0,
+            0x1, 0x0, 0x0, 0x0, 0x3, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+            0x0, 0x0, 0x0, 0x0, 0x0, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let icrc = compute_icrc(&buf).unwrap();
+        assert!(icrc == 0xbff3abb9, "icrc: {:x}", icrc);
+    }
 }

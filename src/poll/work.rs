@@ -47,7 +47,7 @@ impl WorkDescPoller {
 impl WorkDescPollerContext {
     pub(crate) fn poll_working_thread(ctx: Self) {
         loop {
-            let desc = ctx.work_rb.pop();
+            let desc = ctx.work_rb.pop().unwrap();
 
             debug!("{:?}", desc);
             if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
@@ -173,7 +173,7 @@ mod tests {
 
     use crate::{
         device::{
-            ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
+            DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
             ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
             ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         },
@@ -195,12 +195,12 @@ mod tests {
         }
     }
     impl ToHostRb<ToHostWorkRbDesc> for MockToHostRb {
-        fn pop(&self) -> ToHostWorkRbDesc {
+        fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
             let is_empty = self.rb.lock().unwrap().is_empty();
             if is_empty {
                 sleep(std::time::Duration::from_secs(10))
             }
-            self.rb.lock().unwrap().pop().unwrap()
+            Ok(self.rb.lock().unwrap().pop().unwrap())
         }
     }
     #[test]

@@ -29,7 +29,7 @@ impl ControlPoller{
 impl ControlPollerContext {
     pub(crate) fn poll_ctrl_thread(ctx : Self) {
         loop {
-            let desc = ctx.to_host_ctrl_rb.pop();
+            let desc = ctx.to_host_ctrl_rb.pop().unwrap();
             
             match desc {
                 ToHostCtrlRbDesc::UpdateMrTable(desc) => {

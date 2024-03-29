@@ -385,7 +385,7 @@ fn test_software_device() {
         let to_host_work_rb = device.to_host_work_rb();
         // sync the sending packet
         sleep(Duration::from_millis(time_to_wait_in_mill));
-        let q1 = to_host_work_rb.pop();
+        let q1 = to_host_work_rb.pop().unwrap();
         match q1 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -396,7 +396,7 @@ fn test_software_device() {
             | ToHostWorkRbDesc::Ack(_)
             | ToHostWorkRbDesc::Nack(_) => panic!("unexpected descriptor"),
         }
-        let q2 = to_host_work_rb.pop();
+        let q2 = to_host_work_rb.pop().unwrap();
         match q2 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -450,7 +450,7 @@ fn test_software_device() {
         to_card_work_rb.push(desc).unwrap();
         // sync the sending packet
         sleep(Duration::from_millis(time_to_wait_in_mill));
-        let q1 = to_host_work_rb.pop();
+        let q1 = to_host_work_rb.pop().unwrap();
         match q1 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -462,7 +462,7 @@ fn test_software_device() {
             | ToHostWorkRbDesc::Ack(_)
             | ToHostWorkRbDesc::Nack(_) => panic!("unexpected descriptor"),
         }
-        let q2 = to_host_work_rb.pop();
+        let q2 = to_host_work_rb.pop().unwrap();
         match q2 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -474,7 +474,7 @@ fn test_software_device() {
             | ToHostWorkRbDesc::Ack(_)
             | ToHostWorkRbDesc::Nack(_) => panic!("unexpected descriptor"),
         }
-        let q3 = to_host_work_rb.pop();
+        let q3 = to_host_work_rb.pop().unwrap();
         match q3 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);

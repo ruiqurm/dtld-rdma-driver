@@ -115,7 +115,7 @@ impl PacketCheckerContext {
         if !remove_list.is_empty() {
             let mut guard = self.recv_pkt_map.write().unwrap();
             remove_list.iter().for_each(|dqpn| {
-                let _ = guard.remove(dqpn);
+                let _ : Option<Arc<Mutex<RecvPktMap>>> = guard.remove(dqpn);
             });
         }
         ThreadFlag::Running

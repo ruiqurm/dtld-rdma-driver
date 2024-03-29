@@ -82,7 +82,11 @@ impl Device {
         let pgt_offset = mr_pgt.alloc(pgte_cnt)?;
         for pgt_idx in 0..pgte_cnt {
             let va = addr + (pg_size as usize * pgt_idx) as u64;
-            let pa = self.0.adaptor.get_phys_addr(va as usize);
+            let pa = self
+                .0
+                .adaptor
+                .get_phys_addr(va as usize)
+                .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?;
             // we must make sure va and pa are all allign to pg_size
             if va as usize & (PAGE_SIZE - 1) != 0 {
                 return Err(Error::AddressNotAlign("va", va as usize));
@@ -98,7 +102,12 @@ impl Device {
             common: ToCardCtrlRbDescCommon {
                 op_id: update_pgt_op_id,
             },
-            start_addr: self.0.adaptor.get_phys_addr(mr_pgt.table.as_ptr() as usize) as u64
+            start_addr: self
+                .0
+                .adaptor
+                .get_phys_addr(mr_pgt.table.as_ptr() as usize)
+                .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?
+                as u64
                 + pgt_offset as u64 * 8,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
@@ -154,8 +163,9 @@ impl Device {
 
         mr_table[mr_idx] = Some(mr_ctx);
 
-        let pd_res = pd_ctx.mr.insert(mr);
-        assert!(pd_res);
+        if !pd_ctx.mr.insert(mr) {
+            return Err(Error::MrAlreadyInPd);
+        }
 
         Ok(mr)
     }
@@ -216,7 +226,9 @@ impl Device {
             mr_ctx.len.div_ceil(mr_ctx.pg_size) as usize,
         );
 
-        let _ = pd_ctx.mr.remove(&mr);
+        if !pd_ctx.mr.remove(&mr) {
+            return Err(Error::InvalidMr);
+        }
         mr_table[mr_idx as usize] = None;
 
         Ok(())
@@ -242,7 +254,8 @@ impl MrPgt {
         let mut ptr = self.free_blk_list;
 
         while !ptr.is_null() {
-            let blk = unsafe { ptr.as_mut().unwrap_unchecked() };
+            let blk = unsafe { ptr.as_mut() };
+            let blk = unsafe { blk.unwrap_unchecked() };
 
             if blk.len >= len {
                 let idx = blk.idx;
@@ -252,14 +265,16 @@ impl MrPgt {
 
                 if blk.len == 0 {
                     if !blk.prev.is_null() {
-                        let prev = unsafe { blk.prev.as_mut().unwrap_unchecked() };
+                        let prev = unsafe { blk.prev.as_mut() };
+                        let prev = unsafe { prev.unwrap_unchecked() };
                         prev.next = blk.next;
                     } else {
                         self.free_blk_list = blk.next;
                     }
 
                     if !blk.next.is_null() {
-                        let next = unsafe { blk.next.as_mut().unwrap_unchecked() };
+                        let next = unsafe { blk.next.as_mut() };
+                        let next = unsafe { next.unwrap_unchecked() };
                         next.prev = blk.prev;
                     }
 
@@ -280,7 +295,8 @@ impl MrPgt {
         let mut ptr = self.free_blk_list;
 
         while !ptr.is_null() {
-            let blk = unsafe { ptr.as_mut().unwrap_unchecked() };
+            let blk = unsafe { ptr.as_mut() };
+            let blk = unsafe { blk.unwrap_unchecked() };
 
             if blk.len > len {
                 break;
@@ -297,22 +313,26 @@ impl MrPgt {
             next: ptr,
         }));
 
-        let new = unsafe { new_ptr.as_mut().unwrap_unchecked() };
+        let new = unsafe { new_ptr.as_mut() };
+        let new = unsafe { new.unwrap_unchecked() };
 
         if !new.prev.is_null() {
-            let new_prev = unsafe { new.prev.as_mut().unwrap_unchecked() };
+            let new_prev = unsafe { new.prev.as_mut() };
+            let new_prev = unsafe { new_prev.unwrap_unchecked() };
             new_prev.next = new_ptr;
         } else {
             self.free_blk_list = new_ptr;
         }
 
         if !new.next.is_null() {
-            let new_next = unsafe { new.next.as_mut().unwrap_unchecked() };
+            let new_next = unsafe { new.next.as_mut() };
+            let new_next = unsafe { new_next.unwrap_unchecked() };
             new_next.prev = new_ptr;
         }
 
         while !new.prev.is_null() {
-            let new_prev = unsafe { new.prev.as_mut().unwrap_unchecked() };
+            let new_prev = unsafe { new.prev.as_mut() };
+            let new_prev = unsafe { new_prev.unwrap_unchecked() };
 
             if new_prev.idx + new_prev.len != new.len {
                 break;
@@ -325,7 +345,8 @@ impl MrPgt {
             drop(unsafe { Box::from_raw(new.prev) });
 
             if !new_prev_prev_ptr.is_null() {
-                let new_prev_prev = unsafe { new_prev_prev_ptr.as_mut().unwrap_unchecked() };
+                let new_prev_prev = unsafe { new_prev_prev_ptr.as_mut() };
+                let new_prev_prev = unsafe { new_prev_prev.unwrap_unchecked() };
                 new_prev_prev.next = new_ptr;
             } else {
                 self.free_blk_list = new_ptr;
@@ -335,7 +356,8 @@ impl MrPgt {
         }
 
         while !new.next.is_null() {
-            let new_next = unsafe { new.next.as_mut().unwrap_unchecked() };
+            let new_next = unsafe { new.next.as_mut() };
+            let new_next = unsafe { new_next.unwrap_unchecked() };
 
             if new_next.idx != new.idx + new.len {
                 break;
@@ -347,7 +369,8 @@ impl MrPgt {
             drop(unsafe { Box::from_raw(new.next) });
 
             if !new_next_next_ptr.is_null() {
-                let new_next_next = unsafe { new_next_next_ptr.as_mut().unwrap_unchecked() };
+                let new_next_next = unsafe { new_next_next_ptr.as_mut() };
+                let new_next_next = unsafe { new_next_next.unwrap_unchecked() };
                 new_next_next.prev = new_ptr;
             }
 

@@ -177,6 +177,8 @@ impl PayloadInfo {
         for i in 0..self.sg_list.len() {
             unsafe {
                 std::ptr::copy_nonoverlapping(self.sg_list[i].data, dst, self.sg_list[i].len);
+            }
+            unsafe {
                 dst = dst.add(self.sg_list[i].len);
             }
         }
@@ -189,7 +191,7 @@ pub struct RdmaMessage {
     pub payload: PayloadInfo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RethHeader {
     pub va: u64,
     pub rkey: Key,

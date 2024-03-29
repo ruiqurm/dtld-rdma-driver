@@ -3,24 +3,20 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+use super::DeviceError;
+
 pub(super) trait CsrWriterProxy {
-    fn write_head(&self, data: u32);
-    fn read_tail(&self) -> u32;
+    fn write_head(&self, data: u32) -> Result<(), DeviceError>;
+    fn read_tail(&self) -> Result<u32, DeviceError>;
 }
 
 pub(super) trait CsrReaderProxy {
-    fn write_tail(&self, data: u32);
-    fn read_head(&self) -> u32;
+    fn write_tail(&self, data: u32) -> Result<(), DeviceError>;
+    fn read_head(&self) -> Result<u32, DeviceError>;
 }
 
-
 /// The Ringbuf is a circular buffer used comunicate between the host and the card.
-pub(super) struct Ringbuf<
-    T,
-    const DEPTH: usize,
-    const ELEM_SIZE: usize,
-    const PAGE_SIZE: usize,
-> {
+pub(super) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
     buf: Mutex<&'static mut [u8]>,
     buf_padding: usize,
     head: usize,
@@ -145,38 +141,29 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
 {
     fn drop(&mut self) {
         let buf = self.buf.get_mut().unwrap().as_mut_ptr();
-        let raw_buf = unsafe {
-            slice::from_raw_parts_mut(buf.sub(self.buf_padding), DEPTH * ELEM_SIZE + PAGE_SIZE)
-        };
+        let buf_start = unsafe { buf.sub(self.buf_padding) };
+        let raw_buf =
+            unsafe { slice::from_raw_parts_mut(buf_start, DEPTH * ELEM_SIZE + PAGE_SIZE) };
 
         drop(unsafe { Box::from_raw(raw_buf) });
     }
 }
 
-impl<
-        T: CsrWriterProxy,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
+    RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn advance(&mut self) {
         let head = *self.head;
         let new_head =
             Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(head, self.written_cnt);
         *self.head = new_head;
-        self.proxy.write_head(new_head as u32);
+        self.proxy.write_head(new_head as u32).unwrap();
         self.written_cnt = 0;
     }
 }
 
-impl<
-        'a,
-        T: CsrWriterProxy,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Iterator for RingbufWriter<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
+    Iterator for RingbufWriter<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     type Item = &'a mut [u8];
 
@@ -192,9 +179,20 @@ impl<
             self.advance();
             loop {
                 let new_tail = self.proxy.read_tail();
-                if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(idx, new_tail as usize) {
-                    *self.tail = new_tail as usize;
-                    break;
+                match new_tail {
+                    Ok(new_tail) => {
+                        if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(
+                            idx,
+                            new_tail as usize,
+                        ) {
+                            *self.tail = new_tail as usize;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("failed to read tail pointer: {:?}", e);
+                        return None;
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -209,25 +207,16 @@ impl<
 }
 
 /// Drop the writer to update the head pointer.
-impl<
-        T: CsrWriterProxy,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Drop for RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
+    for RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
         self.advance();
     }
 }
 
-impl<
-        'a,
-        T: CsrReaderProxy,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Iterator for RingbufReader<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
+    Iterator for RingbufReader<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     type Item = &'a [u8];
 
@@ -237,9 +226,20 @@ impl<
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(*self.head, idx) {
             loop {
                 let new_head = self.proxy.read_head();
-                if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(new_head as usize, idx) {
-                    *self.head = new_head as usize;
-                    break;
+                match new_head {
+                    Ok(new_head) => {
+                        if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(
+                            new_head as usize,
+                            idx,
+                        ) {
+                            *self.head = new_head as usize;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("failed to read head pointer: {:?}", e);
+                        return None;
+                    }
                 }
             }
         }
@@ -253,16 +253,12 @@ impl<
 }
 
 /// Drop the reader to update the tail pointer.
-impl<
-        T: CsrReaderProxy,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Drop for RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
+    for RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
         *self.tail += self.read_cnt;
-        self.proxy.write_tail(self.read_cnt as u32);
+        self.proxy.write_tail(self.read_cnt as u32).unwrap();
     }
 }
 
@@ -275,6 +271,8 @@ mod test {
         },
         thread::{sleep, spawn},
     };
+
+    use crate::device::DeviceError;
 
     use super::Ringbuf;
 
@@ -301,19 +299,21 @@ mod test {
         }
     }
     impl super::CsrWriterProxy for Proxy {
-        fn write_head(&self, data: u32){
+        fn write_head(&self, data: u32) -> Result<(), DeviceError> {
             self.0.head.store(data, Ordering::Release);
+            Ok(())
         }
-        fn read_tail(&self) -> u32 {
-            self.0.tail.load(Ordering::Acquire)
+        fn read_tail(&self) -> Result<u32, DeviceError> {
+            Ok(self.0.tail.load(Ordering::Acquire))
         }
     }
     impl super::CsrReaderProxy for Proxy {
-        fn write_tail(&self, data: u32){
+        fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
             self.0.tail.store(data, Ordering::Release);
+            Ok(())
         }
-        fn read_head(&self) -> u32 {
-            self.0.head.load(Ordering::Acquire)
+        fn read_head(&self) -> Result<u32, DeviceError> {
+            Ok(self.0.head.load(Ordering::Acquire))
         }
     }
     #[test]

@@ -229,7 +229,7 @@ impl AcknowledgeBuffer {
     pub const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
     /// Create a new acknowledge buffer
     pub fn new(start_va: usize, length: usize, lkey: Key) -> Self {
-        assert!(length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0);
+        assert!(length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0, "The length should be multiple of 64");
         let free_list = Queue::new();
         let mut va = start_va;
         let slots: usize = length / Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
@@ -279,7 +279,8 @@ impl AcknowledgeBuffer {
         let buf_start = buf.as_ptr();
         let buf_end = buf_start.wrapping_add(AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
         assert!(
-            buf_start >= start && buf_end <= end && buf.len() == Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE
+            buf_start >= start && buf_end <= end && buf.len() == Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE,
+            "The buffer is out of range"
         );
         self.free_list.push(Some(buf));
     }
