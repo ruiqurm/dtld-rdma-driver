@@ -24,7 +24,6 @@ mod packet_processor;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;
-mod utils;
 
 /// An software device implementation of the device.
 ///
@@ -142,7 +141,6 @@ impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
 
 impl ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb {
     fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
-        self.0.push(desc);
-        Ok(())
+        self.0.push(desc)
     }
 }

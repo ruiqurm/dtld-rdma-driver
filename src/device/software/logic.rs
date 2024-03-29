@@ -8,7 +8,7 @@ use crate::{
         ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         ToHostWorkRbDescWriteWithImm,
     },
-    types::{MemAccessTypeFlag, Msn, Pmtu, QpType},
+    types::{MemAccessTypeFlag, Msn, Pmtu, QpType}, utils::get_first_packet_max_length,
 };
 
 use super::{
@@ -17,7 +17,6 @@ use super::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
         RdmaMessageMetaCommon, RethHeader, SGList, ToCardDescriptor,
     },
-    utils::{get_first_packet_length, get_pmtu},
 };
 use std::{
     collections::HashMap,
@@ -113,7 +112,6 @@ impl BlueRDMALogic {
     }
 
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
-    /// TODO: remove the `#[allow(unreachable_patterns)]`
     /// TODO: the function is too long. Try to split it.
     #[allow(clippy::shadow_unrelated)]
     pub fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
@@ -121,7 +119,7 @@ impl BlueRDMALogic {
         // if it's a raw packet, send it directly
         if matches!(req.common.qp_type, QpType::RawPacket) {
             let total_length = req.common.total_len;
-            let pmtu = get_pmtu(&req.common.pmtu);
+            let pmtu = u32::from(&req.common.pmtu);
             if total_length > pmtu {
                 return Err(BlueRdmaLogicError::RawPacketLengthTooLong(
                     pmtu,
@@ -139,7 +137,8 @@ impl BlueRDMALogic {
             tran_type: ToHostWorkRbDescTransType::Rc,
             opcode: ToHostWorkRbDescOpcode::RdmaWriteOnly,
             solicited: false,
-            pkey: PKey::new(1),
+            // We use the pkey to store msn
+            pkey: PKey::new(req.common.msn.get()),
             dqpn: Qpn::new(req.common.dqpn.get()),
             ack_req: false,
             psn: Psn::new(req.common.psn.get()),
@@ -151,8 +150,8 @@ impl BlueRDMALogic {
             | ToCardWorkRbDescOpcode::ReadResp => {
                 let is_read_resp = matches!(req.opcode, ToCardWorkRbDescOpcode::ReadResp);
                 let total_len = req.common.total_len;
-                let pmtu = get_pmtu(&req.common.pmtu);
-                let first_packet_length = get_first_packet_length(req.common.raddr, pmtu);
+                let pmtu = u32::from(&req.common.pmtu);
+                let first_packet_max_length = get_first_packet_max_length(req.common.raddr, pmtu);
                 common_meta.tran_type =
                     ToHostWorkRbDescTransType::try_from(req.common.qp_type as u8).unwrap();
 
@@ -168,7 +167,7 @@ impl BlueRDMALogic {
                     secondary_reth: None,
                 };
 
-                if total_len <= first_packet_length {
+                if total_len <= first_packet_max_length {
                     // RdmaWriteOnly or RdmaWriteOnlyWithImmediate
                     let mut payload = PayloadInfo::new();
                     cut_sgl_all_levels(&mut req.sg_list, &mut payload);
@@ -204,6 +203,10 @@ impl BlueRDMALogic {
                 let mut cur_va = req.common.raddr;
                 let mut cur_len = total_len;
                 let mut psn: u32 = req.common.psn.get();
+
+                // since the packet size is larger than first_packet_max_length, first_packet_length should equals
+                // to first_packet_max_length
+                let first_packet_length = first_packet_max_length;
 
                 let mut payload = PayloadInfo::new();
                 cut_from_sgl(first_packet_length, &mut req.sg_list, &mut payload);

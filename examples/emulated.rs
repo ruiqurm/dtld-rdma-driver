@@ -8,7 +8,7 @@ use open_rdma_driver::{
 };
 use std::slice::from_raw_parts_mut;
 use std::{ffi::c_void, net::Ipv4Addr};
-use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use log::{info, Level, LevelFilter, Metadata, Record, SetLoggerError};
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -20,7 +20,8 @@ extern crate ctor;
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
-
+const BUFFER_LENGTH : usize = 1024 * 128;
+const SEND_CNT: usize = 1024*64;
 static mut HEAP_START_ADDR: usize = 0;
 
 #[ctor]
@@ -60,7 +61,7 @@ struct SimpleLogger;
 
 impl log::Log for SimpleLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info
+        metadata.level() <= Level::Debug
     }
 
     fn log(&self, record: &Record) {
@@ -74,7 +75,7 @@ impl log::Log for SimpleLogger {
 
 pub fn init_logging() -> Result<(), SetLoggerError> {
     log::set_boxed_logger(Box::new(SimpleLogger))
-        .map(|()| log::set_max_level(LevelFilter::Info))
+        .map(|()| log::set_max_level(LevelFilter::Debug))
 }
 
 #[allow(clippy::slow_vector_initialization)]
@@ -105,12 +106,12 @@ fn create_and_init_card(
         local_network,
     )
     .unwrap();
-    eprintln!("[{}] Device created", card_id);
+    info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
-    eprintln!("[{}] PD allocated", card_id);
+    info!("[{}] PD allocated", card_id);
 
-    let mut mr_buffer = allocate_aligned_buf(32768);
+    let mut mr_buffer = allocate_aligned_buf(BUFFER_LENGTH);
 
     unsafe {
         println!(
@@ -132,7 +133,7 @@ fn create_and_init_card(
             access_flag,
         )
         .unwrap();
-    eprintln!("[{}] MR registered", card_id);
+    info!("[{}] MR registered", card_id);
     let qp = Qp::new(
         pd,
         qpn,
@@ -143,12 +144,11 @@ fn create_and_init_card(
         remote_network.macaddr,
     );
     dev.create_qp(&qp).unwrap();
-    eprintln!("[{}] QP created", card_id);
+    info!("[{}] QP created", card_id);
 
     (dev, pd, mr, mr_buffer)
 }
 fn main() {
-    const SEND_CNT: usize = 8192;
     init_logging().unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
@@ -178,15 +178,15 @@ fn main() {
 
     let sge0 = Sge::new(
         &mr_buffer_a[0] as *const u8 as u64,
-        1024 * 8,
+        SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
 
-    let sge1 = Sge::new(
-        &mr_buffer_a[1024 * 8] as *const u8 as u64,
-        1024 * 8,
-        mr_a.get_key(),
-    );
+    // let sge1 = Sge::new(
+    //     &mr_buffer_a[1024 * 8] as *const u8 as u64,
+    //     1024 * 8,
+    //     mr_a.get_key(),
+    // );
 
     // let sge2 = Sge {
     //     addr: &mr_buffer_a[2] as *const u8 as u64,
@@ -205,9 +205,7 @@ fn main() {
             &dpqn,
             &mr_buffer_b[0] as *const u8 as u64,
             mr_b.get_key(),
-            MemAccessTypeFlag::IbvAccessRemoteRead
-                | MemAccessTypeFlag::IbvAccessRemoteWrite
-                | MemAccessTypeFlag::IbvAccessLocalWrite,
+            MemAccessTypeFlag::empty(),
             sge0,
             None,
             None,
@@ -215,22 +213,22 @@ fn main() {
         )
         .unwrap();
 
-    let ctx2 = dev_a
-        .write(
-            &dpqn,
-            &mr_buffer_b[1024 * 8] as *const u8 as u64,
-            mr_b.get_key(),
-            MemAccessTypeFlag::IbvAccessRemoteRead
-                | MemAccessTypeFlag::IbvAccessRemoteWrite
-                | MemAccessTypeFlag::IbvAccessLocalWrite,
-            sge1,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+    // let ctx2 = dev_a
+    //     .write(
+    //         &dpqn,
+    //         &mr_buffer_b[1024 * 8] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         MemAccessTypeFlag::IbvAccessRemoteRead
+    //             | MemAccessTypeFlag::IbvAccessRemoteWrite
+    //             | MemAccessTypeFlag::IbvAccessLocalWrite,
+    //         sge1,
+    //         None,
+    //         None,
+    //         None,
+    //     )
+    //     .unwrap();
     ctx1.wait();
-    ctx2.wait();
+    // ctx2.wait();
     assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
 
     // for item in mr_buffer_a.iter_mut() {
@@ -258,7 +256,7 @@ fn main() {
     //         sge_read,
     //     )
     //     .unwrap();
-    // eprintln!("Read req sent");
+    // info!("Read req sent");
 
     // // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024 + SEND_CNT]);
 
@@ -288,8 +286,8 @@ fn main() {
     // ctx1.wait();
     // ctx2.wait();
 
-    eprintln!("Read req sent");
+    info!("Read req sent");
     // dev_a.dereg_mr(mr_a).unwrap();
     // dev_b.dereg_mr(mr_b).unwrap();
-    // eprintln!("MR deregistered");
+    // info!("MR deregistered");
 }

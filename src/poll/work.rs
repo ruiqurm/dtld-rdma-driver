@@ -82,8 +82,6 @@ impl WorkDescPollerContext {
     }
 
     fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWriteOrReadResp) -> ThreadFlag {
-        // TODO: since we don't have the MSN currently, we use qpn+key as index.
-        // But it's just a temporary solution.
         let msn = desc.common.msn;
 
         if matches!(

@@ -1,13 +1,13 @@
 use std::{collections::LinkedList, sync::Arc, thread::spawn};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
-use log::error;
 
-use super::{ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
+use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
 
-use crate::types::{Key, Pmtu, Qpn};
+use crate::{types::{Pmtu, Psn, Qpn}, utils::get_first_packet_max_length};
 
-const SCHEDULER_SIZE: usize = 1024 * 32; // 32KB
+const SCHEDULER_SIZE: usize = 1024 * 32; // 32KB\
+const MAX_SGL_LENGTH: usize = 1;
 
 pub mod bench;
 pub mod round_robin;
@@ -30,36 +30,27 @@ pub trait SchedulerStrategy: Send + Sync {
 }
 
 struct SGList {
-    pub data: [ToCardCtrlRbDescSge; 4],
+    pub data: [ToCardCtrlRbDescSge; MAX_SGL_LENGTH],
     pub cur_level: u32,
     pub len: u32,
+}
+
+impl SGList {
+    pub fn new_from_sge(sge: ToCardCtrlRbDescSge) -> Self {
+        let mut sge_list = Self {
+            data: [ToCardCtrlRbDescSge::default(); MAX_SGL_LENGTH],
+            cur_level: 0,
+            len: 1,
+        };
+        sge_list.data[0] = sge;
+        sge_list
+    }
 }
 
 impl Default for SGList {
     fn default() -> Self {
         Self {
-            data: [
-                ToCardCtrlRbDescSge {
-                    addr: 0,
-                    len: 0,
-                    key: Key::default(),
-                },
-                ToCardCtrlRbDescSge {
-                    addr: 0,
-                    len: 0,
-                    key: Key::default(),
-                },
-                ToCardCtrlRbDescSge {
-                    addr: 0,
-                    len: 0,
-                    key: Key::default(),
-                },
-                ToCardCtrlRbDescSge {
-                    addr: 0,
-                    len: 0,
-                    key: Key::default(),
-                },
-            ],
+            data: [ToCardCtrlRbDescSge::default(); MAX_SGL_LENGTH],
             cur_level: 0,
             len: 0,
         }
@@ -91,29 +82,22 @@ impl DescriptorScheduler {
         }
     }
 
-    pub fn push(self: &Arc<Self>, desc: ToCardWorkRbDesc) {
-        match self.sender.send(desc) {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Error when sending descriptor: {:?}", e);
-                panic!();
-            }
-        }
-    }
-
     pub fn pop(self: &Arc<Self>) -> Option<ToCardWorkRbDesc> {
         self.strategy.pop()
     }
 }
 
-#[allow(dead_code)]
+impl ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler {
+    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
+        self.sender
+            .send(desc)
+            .map_err(|e| DeviceError::Scheduler(e.to_string()))
+    }
+}
+
 fn get_first_schedule_segment_length(va: u64) -> u32 {
     let offset = va % SCHEDULER_SIZE as u64;
-    if offset == 0 {
-        SCHEDULER_SIZE as u32
-    } else {
-        (SCHEDULER_SIZE as u32) - offset as u32
-    }
+    (SCHEDULER_SIZE as u32) - offset as u32
 }
 
 fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
@@ -125,7 +109,6 @@ fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
     }
 }
 
-#[allow(dead_code)]
 fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
     let mut current_level = origin_sgl.cur_level as usize;
     let mut new_sgl = SGList::default();
@@ -164,47 +147,116 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
 }
 
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
-pub fn split_descriptor(_desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
-    todo!()
-    // match desc {
-    //     ToCardWorkRbDesc::Request(mut req) => {
-    //         if (req.common_header.total_len as usize) < SCHEDULER_SIZE {
-    //             let mut list = LinkedList::new();
-    //             list.push_back(ToCardWorkRbDesc::Request(req));
-    //             return list;
-    //         }
-    //         let mut descs = LinkedList::new();
-    //         let mut this_length = get_first_schedule_segment_length(req.raddr);
-    //         let mut remain_data_length = req.common_header.total_len;
-    //         let mut current_sgl_level = 0;
-    //         let mut current_va = req.raddr;
-    //         let mut base_psn: u32 = req.psn;
-    //         while remain_data_length > 0 {
-    //             let mut new_desc = req.clone();
-    //             let new_sgl = cut_from_sgl(this_length, &mut req.sgl, &mut current_sgl_level);
-    //             new_desc.sgl = new_sgl;
-    //             new_desc.common_header.total_len = this_length;
-    //             new_desc.raddr = current_va;
-    //             new_desc.psn = base_psn;
-    //             base_psn = recalculate_psn(&new_desc, base_psn);
-    //             descs.push_back(ToCardWorkRbDesc::Request(new_desc));
+pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
+    let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
+    let total_len = match &desc {
+        ToCardWorkRbDesc::Read(req) => req.common.total_len,
+        ToCardWorkRbDesc::Write(req) => req.common.total_len,
+        ToCardWorkRbDesc::WriteWithImm(req) => req.common.total_len,
+        ToCardWorkRbDesc::ReadResp(req) => req.common.total_len,
+    };
 
-    //             current_va += this_length as u64;
-    //             remain_data_length -= this_length;
-    //             this_length = if remain_data_length > SCHEDULER_SIZE as u32 {
-    //                 SCHEDULER_SIZE as u32
-    //             } else {
-    //                 remain_data_length
-    //             };
-    //         }
-    //         // The above code guarantee there at least 2 descriptors in the list
-    //         let ToCardWorkRbDesc::Request(req) = descs.front_mut().unwrap();
-    //         req.common_header.is_first = true;
-    //         let ToCardWorkRbDesc::Request(req) = descs.back_mut().unwrap();
-    //         req.common_header.is_last = true;
-    //         descs
-    //     }
-    // }
+    if is_read || total_len < SCHEDULER_SIZE.try_into().unwrap() {
+        let mut list = LinkedList::new();
+        list.push_back(desc);
+        return list;
+    }
+
+    let (raddr, pmtu, psn, sge) = match &desc {
+        ToCardWorkRbDesc::Read(_) => unreachable!(),
+        ToCardWorkRbDesc::Write(req) => {
+            (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
+        }
+        ToCardWorkRbDesc::WriteWithImm(req) => {
+            (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
+        }
+        ToCardWorkRbDesc::ReadResp(req) => {
+            (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
+        }
+    };
+
+    let mut sgl = SGList::new_from_sge(sge);
+
+    let mut descs = LinkedList::new();
+    let mut this_length = get_first_schedule_segment_length(raddr);
+    let mut remain_data_length = total_len;
+    let mut current_va = raddr;
+    let mut base_psn = psn;
+    while remain_data_length > 0 {
+        let mut new_desc = desc.clone();
+        let new_sge = cut_from_sgl(this_length, &mut sgl).data[0];
+        match &mut new_desc {
+            ToCardWorkRbDesc::Read(_) => unreachable!(),
+            ToCardWorkRbDesc::Write(ref mut req) => {
+                req.sge0 = new_sge;
+                req.common.total_len = this_length;
+                req.common.raddr = current_va;
+                req.common.psn = base_psn;
+                req.is_first = false;
+                req.is_last = false;
+            }
+            ToCardWorkRbDesc::WriteWithImm(ref mut req) => {
+                req.sge0 = new_sge;
+                req.common.total_len = this_length;
+                req.common.raddr = current_va;
+                req.common.psn = base_psn;
+                req.is_first = false;
+                req.is_last = false;
+            }
+            ToCardWorkRbDesc::ReadResp(ref mut req) => {
+                req.sge0 = new_sge;
+                req.common.total_len = this_length;
+                req.common.raddr = current_va;
+                req.common.psn = base_psn;
+                req.is_first = false;
+                req.is_last = false;
+            }
+        }
+        base_psn = recalculate_psn(current_va, &pmtu, this_length, base_psn);
+        descs.push_back(new_desc);
+        current_va += this_length as u64;
+        remain_data_length -= this_length;
+        this_length = if remain_data_length > SCHEDULER_SIZE as u32 {
+            SCHEDULER_SIZE as u32
+        } else {
+            remain_data_length
+        };
+    }
+    // The above code guarantee there at least 2 descriptors in the list
+    if let Some(req) = descs.front_mut() {
+        match req {
+            ToCardWorkRbDesc::Read(_) => unreachable!(),
+            ToCardWorkRbDesc::Write(req) => {
+                req.is_first = true;
+                req.common.total_len = total_len;
+            }
+            ToCardWorkRbDesc::WriteWithImm(req) => {
+                req.is_first = true;
+                req.common.total_len = total_len;
+            }
+            ToCardWorkRbDesc::ReadResp(req) => {
+                req.is_first = true;
+                req.common.total_len = total_len;
+            }
+        }
+    }
+
+    if let Some(req) = descs.back_mut() {
+        match req {
+            ToCardWorkRbDesc::Read(_) => unreachable!(),
+            ToCardWorkRbDesc::Write(req) => {
+                req.is_last = true;
+            }
+            ToCardWorkRbDesc::WriteWithImm(req) => {
+                req.is_last = true;
+            }
+            ToCardWorkRbDesc::ReadResp(req) => {
+                req.is_last = true;
+            }
+        }
+    }
+
+    descs
 }
 
 /// Recalculate the PSN of the descriptor
@@ -219,54 +271,33 @@ pub fn split_descriptor(_desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc>
 /// then the psn = 0 + ceil((4096 * 4 - first_packet_length),4096) = 4
 /// That means we will send 5 packets in total(psn=0,1,2,3,4)
 /// And the next psn will be 5
-#[allow(dead_code)]
-fn recalculate_psn(desc: &ToCardWorkRbDesc, base_psn: u32) -> u32 {
-    let common = get_to_card_desc_common(desc);
-    let pmtu = get_pmtu(&common.pmtu);
-    let total_len = common.total_len;
-    let first_packet_length = get_first_packet_length(common.raddr, pmtu);
+fn recalculate_psn(raddr: u64, pmtu: &Pmtu, total_len: u32, base_psn: Psn) -> Psn {
+    let pmtu = u32::from(pmtu);
+    let first_packet_length = get_first_packet_max_length(raddr, pmtu);
+    let first_packet_length = total_len.min(first_packet_length);
     // first packet psn = base_psn
     // so the total psn = base_psn + (desc.common_header.total_len - first_packet_length) / pmtu + 1
-    let last_packet_psn = base_psn + (total_len - first_packet_length).div_ceil(pmtu);
-    last_packet_psn + 1
+    let last_packet_psn = base_psn.wrapping_add((total_len - first_packet_length).div_ceil(pmtu));
+    last_packet_psn.wrapping_add(1)
 }
 
-/// Get the length of the first packet.
-///
-/// A buffer will be divided into multiple packets if any slice is crossed the boundary of pmtu
-/// For example, if pmtu = 256 and va = 254, then the first packet can be at most 2 bytes.
-/// If pmtu = 256 and va = 256, then the first packet can be at most 256 bytes.
-#[inline]
-pub fn get_first_packet_length(va: u64, pmtu: u32) -> u32 {
-    let offset = va % pmtu as u64;
-    if offset == 0 {
-        pmtu
-    } else {
-        pmtu - offset as u32
-    }
-}
-
-/// Convert Pmtu enumeration to u32
-#[inline]
-fn get_pmtu(pmtu: &Pmtu) -> u32 {
-    match pmtu {
-        Pmtu::Mtu256 => 256,
-        Pmtu::Mtu512 => 512,
-        Pmtu::Mtu1024 => 1024,
-        Pmtu::Mtu2048 => 2048,
-        Pmtu::Mtu4096 => 4096,
-    }
-}
 
 #[cfg(test)]
 mod test {
-    use std::collections::LinkedList;
+    use std::net::Ipv4Addr;
+    use std::thread::sleep;
+    use std::{collections::LinkedList, sync::Arc};
 
-    use crate::device::ToCardCtrlRbDescSge;
+    use eui48::MacAddress;
 
-    use crate::types::Key;
+    use crate::device::scheduler::SCHEDULER_SIZE;
+    use crate::device::{
+        ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite
+    };
 
-    use super::SGList;
+    use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn};
+
+    use super::{SGList, MAX_SGL_LENGTH};
 
     pub struct SGListBuilder {
         sg_list: Vec<ToCardCtrlRbDescSge>,
@@ -287,10 +318,10 @@ mod test {
         pub fn build(&self) -> SGList {
             let mut sg_list = SGList::default();
             for sge in self.sg_list.iter() {
-                sg_list.data[sg_list.len as usize] = sge.clone();
+                sg_list.data[sg_list.len as usize] = *sge;
                 sg_list.len += 1;
             }
-            while sg_list.len < 4 {
+            while sg_list.len < MAX_SGL_LENGTH.try_into().unwrap() {
                 sg_list.data[sg_list.len as usize] = ToCardCtrlRbDescSge {
                     addr: 0,
                     len: 0,
@@ -314,22 +345,12 @@ mod test {
     fn test_cut_from_sgl() {
         let mut sgl = SGListBuilder::new()
             .with_sge(0, 1024, Key::default())
-            .with_sge(2000, 1024, Key::default())
             .build();
         let new_sgl = super::cut_from_sgl(512, &mut sgl);
         assert_eq!(new_sgl.len, 1);
         assert_eq!(new_sgl.data[0].len, 512);
         assert_eq!(sgl.data[0].len, 512);
         assert_eq!(sgl.data[0].addr, 512);
-
-        let new_sgl = super::cut_from_sgl(1024, &mut sgl);
-        assert_eq!(new_sgl.len, 2);
-        assert_eq!(new_sgl.data[0].addr, 512);
-        assert_eq!(new_sgl.data[0].len, 512);
-        assert_eq!(new_sgl.data[1].addr, 2000);
-        assert_eq!(new_sgl.data[1].len, 512);
-        assert_eq!(sgl.data[0].len, 0);
-        assert_eq!(sgl.data[1].len, 512);
     }
 
     #[allow(dead_code)]
@@ -341,216 +362,75 @@ mod test {
         vec
     }
 
-    // #[test]
-    // fn test_helper_function_split_descriptor() {
-    //     let mut sgl = SGListBuilder::new()
-    //         .with_sge(0, 1024 * 4, u32::from_be_bytes([1; 4]))
-    //         .with_sge(0x10000, 1024 * 3, u32::from_be_bytes([2; 4]))
-    //         .with_sge(0x20000, 1024 * 35, u32::from_be_bytes([3; 4]))
-    //         .build();
-    //     let base_psn = 1234;
-    //         crate::device::ToCardWorkRbDesc::Request(crate::device::ToCardWorkRbDescRequest {
-    //             common_header: crate::device::ToCardWorkRbDescCommonHeader {
-    //                 total_len: 1024 * 42, // 42K
-    //                 is_first: false,
-    //                 is_last: false,
-    //                 valid: true,
-    //                 opcode: ToCardWorkRbDescOpcode::RdmaWrite,
-    //                 extra_segment_cnt: 0,
-    //                 is_success_or_need_signal_cplt: false,
-    //             },
-    //             dqpn: 0,
-    //             raddr: 29 * 1024,
-    //             sgl,
-    //             rkey: [0; 4],
-    //             dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
-    //             pmtu: crate::device::Pmtu::Mtu4096,
-    //             flags: 0,
-    //             qp_type: crate::device::QpType::Rc,
-    //             sge_cnt: 0,
-    //             psn: base_psn,
-    //             mac_addr: [0; 6],
-    //             imm: [0; 4],
-    //         });
-    //     let split_descs = convert_list_to_vec(split_descriptor(desc));
-    //     assert_eq!(split_descs.len(), 3);
-    //     // test desc 0
-    //     let crate::device::ToCardWorkRbDesc::Request(desc0) = &split_descs[0];
-    //     let desc0_psn = base_psn;
-    //     assert_eq!(desc0.common_header.total_len, 1024 * 3);
-    //     assert_eq!(desc0.raddr, 29 * 1024);
-    //     assert_eq!(desc0.psn, desc0_psn);
-    //     assert!(desc0.common_header.is_first);
-    //     assert!(!desc0.common_header.is_last);
-    //     assert_eq!(desc0.sgl.len, 1);
-    //     assert_eq!(desc0.sgl.data[0].len, 3 * 1024);
-    //     assert_eq!(desc0.sgl.data[0].laddr, 0);
-    //     assert_eq!(desc0.sgl.data[0].lkey, [1; 4]);
+    #[test]
+    fn test_scheduler() {
+        let va = 29 * 1024;
+        let length = 1024 * 36; // should cut into 3 segments: 29k - 32k, 32k - 64k, 64k-65k
+        let strategy = super::round_robin::RoundRobinStrategy::new();
+        let scheduler = Arc::new(super::DescriptorScheduler::new(Arc::new(strategy)));
+        let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+            common: ToCardWorkRbDescCommon {
+                total_len: length,
+                raddr: va,
+                rkey: Key::default(),
+                dqp_ip: Ipv4Addr::LOCALHOST,
+                dqpn: Qpn::new(2),
+                mac_addr: MacAddress::default(),
+                pmtu: crate::types::Pmtu::Mtu4096,
+                flags: MemAccessTypeFlag::empty(),
+                qp_type: crate::types::QpType::Rc,
+                psn: Psn::new(0),
+                msn: Msn::new(0x27),
+            },
+            is_last: true,
+            is_first: true,
+            sge0: ToCardCtrlRbDescSge {
+                addr: 0,
+                len: length,
+                key: Key::new(3),
+            },
+            sge1: None,
+            sge2: None,
+            sge3: None,
+        });
+        scheduler.push(desc).unwrap();
+        // schedule the thread;
+        sleep(std::time::Duration::from_millis(1));
+        let desc1 = scheduler.pop();
+        assert!(desc1.is_some());
+        let desc1 = match desc1.unwrap() {
+            ToCardWorkRbDesc::Write(req) => req,
+            ToCardWorkRbDesc::Read(_)
+            | ToCardWorkRbDesc::WriteWithImm(_)
+            | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
+        };
+        assert_eq!(desc1.common.total_len, length);
+        assert!(desc1.is_first);
+        assert!(!desc1.is_last);
 
-    //     // test desc 1
-    //     let crate::device::ToCardWorkRbDesc::Request(desc1) = &split_descs[1];
-    //     let desc1_psn = recalculate_psn(desc0, base_psn);
-    //     assert_eq!(desc1.common_header.total_len, 1024 * 32);
-    //     assert_eq!(desc1.raddr, 32 * 1024);
-    //     assert_eq!(desc1.psn, desc1_psn);
-    //     assert!(!desc1.common_header.is_first);
-    //     assert!(!desc1.common_header.is_last);
-    //     assert_eq!(desc1.sgl.len, 3);
-    //     assert_eq!(desc1.sgl.data[0].len, 1024);
-    //     assert_eq!(desc1.sgl.data[0].laddr, 3 * 1024);
-    //     assert_eq!(desc1.sgl.data[0].lkey, [1; 4]);
-    //     assert_eq!(desc1.sgl.data[1].len, 3 * 1024);
-    //     assert_eq!(desc1.sgl.data[1].laddr, 0x10000);
-    //     assert_eq!(desc1.sgl.data[1].lkey, [2; 4]);
-    //     assert_eq!(desc1.sgl.data[2].len, 28 * 1024);
-    //     assert_eq!(desc1.sgl.data[2].laddr, 0x20000);
-    //     assert_eq!(desc1.sgl.data[2].lkey, [3; 4]);
+        let desc2 = scheduler.pop();
+        let desc2 = match desc2.unwrap() {
+            ToCardWorkRbDesc::Write(req) => req,
+            ToCardWorkRbDesc::Read(_)
+            | ToCardWorkRbDesc::WriteWithImm(_)
+            | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
+        };
+        assert_eq!(desc2.common.total_len as usize, SCHEDULER_SIZE);
+        assert!(!desc2.is_first);
+        assert!(!desc2.is_last);
 
-    //     // test desc 2
-    //     let crate::device::ToCardWorkRbDesc::Request(desc2) = &split_descs[2];
-    //     let desc2_psn = recalculate_psn(desc1, desc1_psn);
-    //     assert_eq!(desc2.common_header.total_len, 1024 * 7);
-    //     assert_eq!(desc2.raddr, 64 * 1024);
-    //     assert_eq!(desc2.psn, desc2_psn);
-    //     assert!(!desc2.common_header.is_first);
-    //     assert!(desc2.common_header.is_last);
-    //     assert_eq!(desc2.sgl.len, 1);
-    //     assert_eq!(desc2.sgl.data[0].len, 7 * 1024);
-    //     assert_eq!(desc2.sgl.data[0].laddr, 0x20000 + 28 * 1024);
-    //     assert_eq!(desc2.sgl.data[0].lkey, [3; 4]);
-    // }
-
-    // #[test]
-    // fn test_helper_recalculate_psn() {
-    //     // base_psn = 0
-    //     // desc.raddr = 4095
-    //     // pmtu = 4096
-    //     // desc.common_header.total_len = 4096 * 4
-    //     let base_psn = 0;
-    //     let desc = crate::device::ToCardWorkRbDescRequest {
-    //         common_header: crate::device::ToCardWorkRbDescCommonHeader {
-    //             total_len: 4096 * 4,
-    //             is_first: true,
-    //             is_last: true,
-    //             valid: true,
-    //             opcode: ToCardWorkRbDescOpcode::RdmaWrite,
-    //             extra_segment_cnt: 0,
-    //             is_success_or_need_signal_cplt: false,
-    //         },
-    //         dqpn: 0,
-    //         raddr: 4095,
-    //         sgl: crate::device::ScatterGatherList {
-    //             data: [crate::device::ScatterGatherElement {
-    //                 laddr: 0,
-    //                 len: 1024 * 4,
-    //                 lkey: [0; 4],
-    //             }; 4],
-    //             len: 3,
-    //         },
-    //         rkey: [0; 4],
-    //         dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
-    //         pmtu: crate::device::Pmtu::Mtu4096,
-    //         flags: 0,
-    //         qp_type: crate::device::QpType::Rc,
-    //         sge_cnt: 0,
-    //         psn: 0,
-    //         mac_addr: [0; 6],
-    //         imm: [0; 4],
-    //     };
-    //     assert_eq!(recalculate_psn(&desc, base_psn), 5);
-
-    //     // base_psn = 0
-    //     // desc.raddr = 29*1024
-    //     // pmtu = 4096
-    //     // desc.common_header.total_len = 3*1024
-    //     let desc = crate::device::ToCardWorkRbDescRequest {
-    //         common_header: crate::device::ToCardWorkRbDescCommonHeader {
-    //             total_len: 1024 * 3,
-    //             is_first: true,
-    //             is_last: true,
-    //             valid: true,
-    //             opcode: ToCardWorkRbDescOpcode::RdmaWrite,
-    //             extra_segment_cnt: 0,
-    //             is_success_or_need_signal_cplt: false,
-    //         },
-    //         dqpn: 0,
-    //         raddr: 29 * 1024,
-    //         sgl: crate::device::ScatterGatherList {
-    //             data: [crate::device::ScatterGatherElement {
-    //                 laddr: 0,
-    //                 len: 1024 * 4,
-    //                 lkey: [0; 4],
-    //             }; 4],
-    //             len: 3,
-    //         },
-    //         rkey: [0; 4],
-    //         dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
-    //         pmtu: crate::device::Pmtu::Mtu4096,
-    //         flags: 0,
-    //         qp_type: crate::device::QpType::Rc,
-    //         sge_cnt: 0,
-    //         psn: 0,
-    //         mac_addr: [0; 6],
-    //         imm: [0; 4],
-    //     };
-    //     assert_eq!(recalculate_psn(&desc, base_psn), 1);
-    // }
-
-    // #[test]
-    // fn test_scheduler() {
-    //     let va = 29 * 1024;
-    //     let length = 1024 * 32; // should cut into 2 segments: 29k - 32k, 32k - 61k
-    //     let strategy = super::round_robin::RoundRobinStrategy::new();
-    //     let scheduler = Arc::new(super::DescriptorScheduler::new(Arc::new(strategy)));
-    //     let desc = ToCardWorkRbDesc::Request(crate::device::ToCardWorkRbDescRequest {
-    //         common_header: crate::device::ToCardWorkRbDescCommonHeader {
-    //             total_len: length,
-    //             is_first: true,
-    //             is_last: true,
-    //             valid: true,
-    //             opcode: ToCardWorkRbDescOpcode::RdmaWrite,
-    //             extra_segment_cnt: 0,
-    //             is_success_or_need_signal_cplt: false,
-    //         },
-    //         dqpn: 0,
-    //         raddr: va,
-    //         sgl: crate::device::ScatterGatherList {
-    //             data: [crate::device::ScatterGatherElement {
-    //                 laddr: 0,
-    //                 len: length,
-    //                 lkey: [0; 4],
-    //             }; 4],
-    //             len: 1,
-    //         },
-    //         rkey: [0; 4],
-    //         dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
-    //         pmtu: crate::device::Pmtu::Mtu4096,
-    //         flags: 0,
-    //         qp_type: crate::device::QpType::Rc,
-    //         sge_cnt: 0,
-    //         psn: 0,
-    //         mac_addr: [0; 6],
-    //         imm: [0; 4],
-    //     });
-    //     scheduler.push(desc);
-    //     // schedule the thread;
-    //     // yield_now();
-    //     sleep(std::time::Duration::from_millis(1));
-    //     let desc1 = scheduler.pop();
-    //     assert!(desc1.is_some());
-    //     let desc1_length = match desc1.unwrap() {
-    //         ToCardWorkRbDesc::Request(req) => req,
-    //     }
-    //     .common_header
-    //     .total_len;
-    //     assert_eq!(desc1_length, 1024 * 3);
-    //     let desc2 = scheduler.pop();
-    //     let desc2_length = match desc2.unwrap() {
-    //         ToCardWorkRbDesc::Request(req) => req,
-    //     }
-    //     .common_header
-    //     .total_len;
-    //     assert_eq!(desc2_length, 1024 * 29);
-    //     // assert!(scheduler.pop().is_none());
-    // }
+        let desc3 = scheduler.pop();
+        let desc3 = match desc3.unwrap() {
+            ToCardWorkRbDesc::Write(req) => req,
+            ToCardWorkRbDesc::Read(_)
+            | ToCardWorkRbDesc::WriteWithImm(_)
+            | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
+        };
+        assert_eq!(
+            desc3.common.total_len as usize,
+            (length as usize) - (SCHEDULER_SIZE - va as usize) - SCHEDULER_SIZE
+        );
+        assert!(!desc3.is_first);
+        assert!(desc3.is_last);
+    }
 }

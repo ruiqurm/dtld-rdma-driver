@@ -1,7 +1,12 @@
 use crate::types::Pmtu;
 
+/// Get the length of the first packet.
+///
+/// A buffer will be divided into multiple packets if any slice is crossed the boundary of pmtu
+/// For example, if pmtu = 256 and va = 254, then the first packet can be at most 2 bytes.
+/// If pmtu = 256 and va = 256, then the first packet can be at most 256 bytes.
 #[inline]
-fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
+pub(crate) fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
     let offset = va % pmtu as u64;
     pmtu - offset as u32
 }

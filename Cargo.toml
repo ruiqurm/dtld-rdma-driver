@@ -3,6 +3,10 @@ name = "open-rdma-driver"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["scheduler"]
+scheduler = []
+
 [dependencies]
 thiserror = "1.0.56"
 num_enum = "0.7.2"
@@ -19,6 +23,7 @@ bitfield = "0.14.0"
 lockfree = "0.5.1"
 eui48 = "1.1.0"
 log = {version = "0.4",  features = ["std"]}
+serial_test = "3.0.0"
 
 
 [dev-dependencies]

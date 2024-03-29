@@ -248,7 +248,7 @@ pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) lost_psn: Range<Psn>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct ToCardCtrlRbDescSge {
     pub(crate) addr: u64,
     pub(crate) len: u32,
@@ -1297,10 +1297,6 @@ pub(crate) struct ToCardWorkRbDescBuilder {
     type_: ToCardWorkRbDescOpcode,
     common: Option<ToCardWorkRbDescCommon>,
     seg_list: Vec<Sge>,
-    #[allow(dead_code)]
-    is_first: Option<bool>,
-    #[allow(dead_code)]
-    is_last: Option<bool>,
     imm: Option<u32>,
 }
 
@@ -1310,8 +1306,6 @@ impl ToCardWorkRbDescBuilder {
             type_: ToCardWorkRbDescOpcode::Write,
             common: None,
             seg_list: Vec::new(),
-            is_first: None,
-            is_last: None,
             imm: None,
         }
     }
@@ -1321,8 +1315,6 @@ impl ToCardWorkRbDescBuilder {
             type_: ToCardWorkRbDescOpcode::ReadResp,
             common: None,
             seg_list: Vec::new(),
-            is_first: None,
-            is_last: None,
             imm: None,
         }
     }
@@ -1332,8 +1324,6 @@ impl ToCardWorkRbDescBuilder {
             type_: ToCardWorkRbDescOpcode::Read,
             common: None,
             seg_list: Vec::new(),
-            is_first: None,
-            is_last: None,
             imm: None,
         }
     }
@@ -1440,4 +1430,6 @@ pub enum DeviceError {
     Overflow,
     #[error("Lock poisoned : {0}")]
     LockPoisoned(String),
+    #[error("Scheduler : {0}")]
+    Scheduler(String),
 }
