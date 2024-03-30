@@ -98,7 +98,6 @@ impl UDPReceiveAgent {
                     unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, length) };
 
                 if !is_icrc_valid(received_data)? {
-                    eprintln!("cccc");
                     error!("ICRC check failed");
                     continue;
                 }
@@ -139,7 +138,8 @@ impl NetSendAgent for UDPSendAgent {
             .ip_id(ip_id)
             .message(message)
             .write()?;
-
+        // addr and port
+        eprintln!("addr : {:?}, port : {:?}", dest_addr, dest_port);
         let sended_size = self.sender.send_to(
             &buf[0..total_length],
             &SocketAddrV4::new(dest_addr, dest_port).into(),

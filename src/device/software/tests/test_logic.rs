@@ -70,7 +70,7 @@ fn test_logic_send() {
                     .build(),
             )
             .build();
-
+        
         logic.send(desc).unwrap();
         assert_eq!(agent.message.borrow().len(), 1);
         let message = agent.message.borrow_mut().pop_front().unwrap();

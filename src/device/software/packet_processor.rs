@@ -408,7 +408,7 @@ pub(crate) fn is_icrc_valid(received_data: &[u8]) -> Result<bool, PacketProcesso
         Ok(arr) => arr,
         Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE as u32)),
     };
-    let origin_icrc = u32::from_be_bytes(icrc_array);
+    let origin_icrc = u32::from_le_bytes(icrc_array);
     let our_icrc = compute_icrc(received_data);
     Ok(!(our_icrc.is_err() || our_icrc.unwrap() != origin_icrc))
 }

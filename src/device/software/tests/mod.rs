@@ -162,7 +162,7 @@ impl ToCardWorkRbDescBuilder {
             qp_type: self.qp_type.unwrap(),
             psn: crate::types::Psn::new(self.psn.unwrap()),
             flags: self.flags.unwrap(),
-            dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
+            dqp_ip: Ipv4Addr::LOCALHOST,
             mac_addr: MacAddress::default(),
             msn: crate::types::Msn::new(0),
         };
