@@ -9,10 +9,6 @@ pub mod udp_agent;
 
 pub trait NetReceiveLogic<'a>: Send + Sync {
     fn recv(&self, message: &mut RdmaMessage);
-
-    fn get_recv_addr(&self) -> Ipv4Addr;
-
-    fn get_recv_port(&self) -> u16;
 }
 
 pub trait NetSendAgent {

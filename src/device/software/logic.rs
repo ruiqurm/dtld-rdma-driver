@@ -492,14 +492,6 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         // push the descriptor to the ring buffer
         self.to_host_data_descriptor_queue.push(descriptor);
     }
-
-    fn get_recv_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::LOCALHOST
-    }
-
-    fn get_recv_port(&self) -> u16 {
-        4791
-    }
 }
 
 #[cfg(test)]

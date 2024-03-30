@@ -67,21 +67,25 @@ impl UDPSendAgent {
 }
 
 impl UDPReceiveAgent {
-    pub fn new(receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>) -> Result<Self, NetAgentError> {
+    pub fn new(
+        receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
+        addr: Ipv4Addr,
+        port: u16,
+    ) -> Result<Self, NetAgentError> {
         let mut agent = Self {
             receiver,
             listen_thread: None,
         };
-        agent.init()?;
+        agent.init(addr, port)?;
         Ok(agent)
     }
 
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
-    pub fn init(&mut self) -> Result<(), NetAgentError> {
+    pub fn init(&mut self, addr: Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
         let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
-        let addr = SocketAddrV4::new(self.receiver.get_recv_addr(), self.receiver.get_recv_port());
+        let addr = SocketAddrV4::new(addr, port);
         socket.bind(&addr.into())?;
         self.listen_thread = Some(thread::spawn(move || -> Result<(), NetAgentError> {
             let mut buf = [MaybeUninit::<u8>::uninit(); NET_SERVER_BUF_SIZE];
@@ -89,7 +93,6 @@ impl UDPReceiveAgent {
             loop {
                 let (length, _src) = socket.recv_from(&mut buf)?;
                 if length < size_of::<CommonPacketHeader>() + 4 {
-                    eprintln!("bbb");
                     error!("Packet too short");
                     continue;
                 }
@@ -104,7 +107,6 @@ impl UDPReceiveAgent {
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
                 let received_data = &received_data[offset..length - ICRC_SIZE];
-                eprintln!("Received message: {:?}", &buf);
                 if let Ok(mut message) = processor.to_rdma_message(received_data) {
                     info!("Received message: {:?}", message);
                     receiver.recv(&mut message);
@@ -138,8 +140,6 @@ impl NetSendAgent for UDPSendAgent {
             .ip_id(ip_id)
             .message(message)
             .write()?;
-        // addr and port
-        eprintln!("addr : {:?}, port : {:?}", dest_addr, dest_port);
         let sended_size = self.sender.send_to(
             &buf[0..total_length],
             &SocketAddrV4::new(dest_addr, dest_port).into(),
@@ -195,7 +195,6 @@ impl NetSendAgent for UDPSendAgent {
 #[cfg(test)]
 mod tests {
     use std::{
-        net::Ipv4Addr,
         sync::{Arc, Mutex},
     };
 
@@ -210,14 +209,6 @@ mod tests {
         fn recv(&self, msg: &mut RdmaMessage) {
             let new_msg = msg.clone();
             self.packets.lock().unwrap().push(new_msg);
-        }
-
-        fn get_recv_addr(&self) -> Ipv4Addr {
-            Ipv4Addr::LOCALHOST
-        }
-
-        fn get_recv_port(&self) -> u16 {
-            4791
         }
     }
 }

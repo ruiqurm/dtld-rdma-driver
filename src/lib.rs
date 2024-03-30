@@ -156,7 +156,7 @@ use responser::DescResponser;
 
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
@@ -253,9 +253,9 @@ impl Device {
         Ok(dev)
     }
 
-    pub fn new_software(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
+    pub fn new_software(network: &RdmaDeviceNetwork,addr:Ipv4Addr,port : u16) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        let adaptor = SoftwareDevice::init().map_err(Error::Device)?;
+        let adaptor = SoftwareDevice::init(addr,port).map_err(Error::Device)?;
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),

@@ -1,4 +1,5 @@
 use serial_test::serial;
+use std::net::Ipv4Addr;
 use std::{sync::Arc, thread::sleep, time::Duration};
 
 use super::SGListBuilder;
@@ -22,7 +23,12 @@ use super::ToCardCtrlRbDescBuilder;
 fn test_device_read_and_write() {
     let send_agent = UDPSendAgent::new().unwrap();
     let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
-    let _recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device)).unwrap();
+    let _recv_agent = UDPReceiveAgent::new(
+        Arc::<BlueRDMALogic>::clone(&device),
+        Ipv4Addr::LOCALHOST,
+        4791,
+    )
+    .unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;
@@ -90,11 +96,7 @@ fn test_device_read_and_write() {
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
-            .with_sg_list(
-                SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32)
-                    .build(),
-            )
+            .with_sg_list(SGListBuilder::new().with_sge(src_addr, 1024, 0_u32).build())
             .build();
         device.send(desc).unwrap();
         // sync the sending packet
@@ -153,11 +155,7 @@ fn test_device_read_and_write() {
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
-            .with_sg_list(
-                SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32)
-                    .build(),
-            )
+            .with_sg_list(SGListBuilder::new().with_sge(src_addr, 1024, 0_u32).build())
             .build();
 
         device.send(desc).unwrap();
@@ -305,7 +303,7 @@ fn test_device_read_and_write() {
 #[test]
 #[serial]
 fn test_software_device() {
-    let device = SoftwareDevice::init().unwrap();
+    let device = SoftwareDevice::init(Ipv4Addr::LOCALHOST, 4791).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;
@@ -373,11 +371,7 @@ fn test_software_device() {
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
-            .with_sg_list(
-                SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32)
-                    .build(),
-            )
+            .with_sg_list(SGListBuilder::new().with_sge(src_addr, 1024, 0_u32).build())
             .build();
         let to_card_work_rb = device.to_card_work_rb();
         to_card_work_rb.push(desc).unwrap();
@@ -439,11 +433,7 @@ fn test_software_device() {
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
-            .with_sg_list(
-                SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32)
-                    .build(),
-            )
+            .with_sg_list(SGListBuilder::new().with_sge(src_addr, 1024, 0_u32).build())
             .build();
 
         to_card_work_rb.push(desc).unwrap();

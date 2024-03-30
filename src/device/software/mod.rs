@@ -1,5 +1,6 @@
 use std::{
     error::Error,
+    net::Ipv4Addr,
     sync::Arc,
     thread::{spawn, JoinHandle},
 };
@@ -58,7 +59,7 @@ struct ToHostWorkRb(Arc<SegQueue<ToHostWorkRbDesc>>);
 
 impl SoftwareDevice {
     /// Initializing an software device.
-    pub(crate) fn init() -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn init(addr: Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new()?;
         let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
         // The strategy is a global singleton, so we leak it
@@ -66,7 +67,7 @@ impl SoftwareDevice {
         let scheduler = DescriptorScheduler::new(round_robin);
         let scheduler = Arc::new(scheduler);
         let to_host_queue = device.get_to_host_descriptor_queue();
-        let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device))?;
+        let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device), addr, port)?;
 
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
         let this_device = Arc::<BlueRDMALogic>::clone(&device);

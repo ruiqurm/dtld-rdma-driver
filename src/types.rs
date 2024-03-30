@@ -351,13 +351,13 @@ mod tests {
     fn test_wrapping_add() {
         let psn = Psn::new(0xffffff);
         let ret = psn.wrapping_add(1);
-        assert_eq!(psn.get(), ret.get());
+        assert_eq!(0, ret.get());
 
         let ret = psn.wrapping_add(2);
-        assert_eq!(ret.get(), 2);
+        assert_eq!(ret.get(), 1);
 
         let ret = psn.wrapping_add(0xffffff);
-        assert_eq!(ret.get(), 1);
+        assert_eq!(ret.get(), 0xffffff-1);
     }
 
     #[test]
