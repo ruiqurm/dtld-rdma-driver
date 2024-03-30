@@ -66,8 +66,7 @@ impl SoftwareDevice {
         let scheduler = DescriptorScheduler::new(round_robin);
         let scheduler = Arc::new(scheduler);
         let to_host_queue = device.get_to_host_descriptor_queue();
-        let mut recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device))?;
-        recv_agent.start()?;
+        let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device))?;
 
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
         let this_device = Arc::<BlueRDMALogic>::clone(&device);

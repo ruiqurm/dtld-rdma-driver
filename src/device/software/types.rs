@@ -3,10 +3,13 @@ use crate::{
         ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode,
         ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType,
     },
-    types::MemAccessTypeFlag,
+    types::{MemAccessTypeFlag, Psn, QpType},
 };
 
-use super::packet::{Immediate, PacketError, AETH, BTH, RDMA_PAYLOAD_ALIGNMENT, RETH};
+use super::{
+    logic::BlueRdmaLogicError,
+    packet::{Immediate, PacketError, AETH, BTH, RDMA_PAYLOAD_ALIGNMENT, RETH},
+};
 
 /// Queue-pair number
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -15,20 +18,6 @@ pub(crate) struct Qpn(u32);
 impl Qpn {
     pub fn new(qpn: u32) -> Self {
         Qpn(qpn)
-    }
-
-    pub fn get(&self) -> u32 {
-        self.0
-    }
-}
-
-/// Packet Sequence Number
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Psn(u32);
-
-impl Psn {
-    pub fn new(psn: u32) -> Self {
-        Psn(psn)
     }
 
     pub fn get(&self) -> u32 {
@@ -53,15 +42,27 @@ impl PDHandle {
 
 /// The general key type, like RKey, Lkey
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub(crate) struct Key([u8; 4]);
+pub(crate) struct Key(u32);
 
 impl Key {
-    pub fn new(key: [u8; 4]) -> Self {
+    pub fn new(key: u32) -> Self {
         Key(key)
     }
 
-    pub fn get(&self) -> [u8; 4] {
+    pub fn get(&self) -> u32 {
         self.0
+    }
+}
+
+impl From<crate::Key> for Key {
+    fn from(key: crate::Key) -> Self {
+        Key::new(key.get())
+    }
+}
+
+impl From<Key> for crate::Key {
+    fn from(key: Key) -> Self {
+        Self::new(key.get())
     }
 }
 
@@ -223,13 +224,14 @@ impl TryFrom<&BTH> for RdmaMessageMetaCommon {
     type Error = PacketError;
     fn try_from(bth: &BTH) -> Result<Self, PacketError> {
         Ok(Self {
-            tran_type: ToHostWorkRbDescTransType::try_from(bth.get_transaction_type())?,
+            tran_type: ToHostWorkRbDescTransType::try_from(bth.get_transaction_type())
+                .map_err(|_| PacketError::FailedToConvertTransType)?,
             opcode: ToHostWorkRbDescOpcode::try_from(bth.get_opcode())?,
             solicited: bth.get_solicited(),
             pkey: PKey::new(bth.get_pkey()),
             dqpn: Qpn(bth.get_destination_qpn()),
             ack_req: bth.get_ack_req(),
-            psn: Psn(bth.get_psn()),
+            psn: Psn::new(bth.get_psn()),
         })
     }
 }
@@ -325,17 +327,32 @@ impl Default for SGListElementWithKey {
         SGListElementWithKey {
             addr: 0,
             len: 0,
-            key: Key::new([0; 4]),
+            key: Key::new(0),
         }
     }
 }
+
+// impl SGListElementWithKey {
+//     /// Cut a buffer of length from a scatter-gather element
+//     pub(crate) fn cut(&mut self, length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
+//         let mut payload = PayloadInfo::new();
+//         if self.len >= length {
+//             let addr = self.addr as *mut u8;
+//             payload.add(addr, length as usize);
+//             self.addr += length as u64;
+//             self.len -= length;
+//             return Ok(payload);
+//         }
+//         Err(BlueRdmaLogicError::Unreachable)
+//     }
+// }
 
 impl From<ToCardCtrlRbDescSge> for SGListElementWithKey {
     fn from(sge: ToCardCtrlRbDescSge) -> Self {
         SGListElementWithKey {
             addr: sge.addr,
             len: sge.len,
-            key: Key::new(sge.key.get().to_be_bytes()),
+            key: Key::new(sge.key.get()),
         }
     }
 }
@@ -368,6 +385,10 @@ impl SGList {
         }
     }
 
+    pub fn get_total_length(&self) -> u32 {
+        self.data.iter().map(|sge| sge.len).sum()
+    }
+
     fn get_sge_from_option(sge: Option<ToCardCtrlRbDescSge>) -> (SGListElementWithKey, u32) {
         match sge {
             Some(sge) => (SGListElementWithKey::from(sge), 1),
@@ -396,6 +417,48 @@ impl SGList {
         }
     }
 
+    /// Cut a buffer of length from the scatter-gather list
+    ///
+    /// The function iterate from `cur_level` of the scatter-gather list and cut the buffer of `length` from the list.
+    /// If current level is not enough, it will move to the next level.
+    /// All the slice will be added to the `payload`.
+    pub(crate) fn cut(&mut self, mut length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
+        let mut current_level = self.cur_level as usize;
+        let mut payload = PayloadInfo::new();
+        while (current_level as u32) < self.len {
+            if self.data[current_level].len >= length {
+                let addr = self.data[current_level].addr as *mut u8;
+                payload.add(addr, length as usize);
+                self.data[current_level].addr += length as u64;
+                self.data[current_level].len -= length;
+                if self.data[current_level].len == 0 {
+                    current_level += 1;
+                    self.cur_level = current_level as u32;
+                }
+                return Ok(payload);
+            } else {
+                // check next level
+                let addr = self.data[current_level].addr as *mut u8;
+                payload.add(addr, self.data[current_level].len as usize);
+                length -= self.data[current_level].len;
+                self.data[current_level].len = 0;
+                current_level += 1;
+            }
+        }
+        Err(BlueRdmaLogicError::Unreachable)
+    }
+
+    pub(crate) fn cut_all_levels(&mut self) -> PayloadInfo {
+        let mut payload = PayloadInfo::new();
+        for i in 0..self.len as usize {
+            let addr = self.data[i].addr as *mut u8;
+            let length = self.data[i].len as usize;
+            payload.add(addr, length);
+            self.data[i].len = 0;
+        }
+        payload
+    }
+
     #[cfg(test)]
     pub fn into_four_sges(
         self,
@@ -410,25 +473,25 @@ impl SGList {
         let sge1 = (self.len > 1).then(|| ToCardCtrlRbDescSge {
             addr: self.data[1].addr,
             len: self.data[1].len,
-            key: Key::new(u32::from_be_bytes(self.data[1].key.get())),
+            key: Key::new(self.data[1].key.get()),
         });
 
         let sge2 = (self.len > 2).then(|| ToCardCtrlRbDescSge {
             addr: self.data[2].addr,
             len: self.data[2].len,
-            key: Key::new(u32::from_be_bytes(self.data[2].key.get())),
+            key: Key::new(self.data[2].key.get()),
         });
 
         let sge3 = (self.len > 3).then(|| ToCardCtrlRbDescSge {
             addr: self.data[3].addr,
             len: self.data[3].len,
-            key: Key::new(u32::from_be_bytes(self.data[3].key.get())),
+            key: Key::new(self.data[3].key.get()),
         });
         (
             ToCardCtrlRbDescSge {
                 addr: self.data[0].addr,
                 len: self.data[0].len,
-                key: Key::new(u32::from_be_bytes(self.data[0].key.get())),
+                key: Key::new(self.data[0].key.get()),
             },
             sge1,
             sge2,
@@ -437,51 +500,165 @@ impl SGList {
     }
 }
 
+pub(crate) enum ToCardDescriptor {
+    Write(ToCardWriteDescriptor),
+    Read(ToCardReadDescriptor),
+}
+
+impl ToCardDescriptor {
+    pub fn is_raw_packet(&self) -> bool {
+        match self {
+            ToCardDescriptor::Write(desc) => {
+                matches!(desc.opcode, ToCardWorkRbDescOpcode::Write)
+                    && matches!(desc.common.qp_type, QpType::RawPacket)
+            }
+            ToCardDescriptor::Read(_) => false,
+        }
+    }
+
+    pub fn common(&self) -> &ToCardWorkRbDescCommon {
+        match self {
+            ToCardDescriptor::Write(desc) => &desc.common,
+            ToCardDescriptor::Read(desc) => &desc.common,
+        }
+    }
+
+    pub fn first_sge_mut(&mut self) -> &mut SGList {
+        match self {
+            ToCardDescriptor::Write(desc) => &mut desc.sg_list,
+            ToCardDescriptor::Read(desc) => &mut desc.sge,
+        }
+    }
+}
+
 #[allow(dead_code)]
-pub(crate) struct ToCardDescriptor {
+pub(crate) struct ToCardWriteDescriptor {
     pub(crate) opcode: ToCardWorkRbDescOpcode,
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) imm: Option<u32>,
-    pub(crate) is_first: Option<bool>,
-    pub(crate) is_last: Option<bool>,
+    pub(crate) is_first: bool,
+    pub(crate) is_last: bool,
     pub(crate) sg_list: SGList,
+}
+
+impl ToCardWriteDescriptor {
+    pub fn write_only_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+        if self.is_first && self.is_last {
+            // is_first = True and is_last = True, means only one packet
+            match (self.is_resp(), self.has_imm()) {
+                (true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
+                (true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
+                (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate, self.imm),
+                (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteOnly, None),
+            }
+        } else if self.is_first {
+            // self.is_last = False
+            if self.is_resp() {
+                (ToHostWorkRbDescOpcode::RdmaReadResponseFirst, None)
+            } else {
+                (ToHostWorkRbDescOpcode::RdmaWriteFirst, None)
+            }
+        } else {
+            // self.is_last = True
+            match (self.is_resp(), self.has_imm()) {
+                (true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore
+                (true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
+                (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
+                (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
+            }
+        }
+    }
+
+    pub fn write_first_opcode(&self) -> ToHostWorkRbDescOpcode {
+        match (self.is_first, self.is_resp()) {
+            (true, true) => ToHostWorkRbDescOpcode::RdmaReadResponseFirst,
+            (true, false) => ToHostWorkRbDescOpcode::RdmaWriteFirst,
+            (false, true) => ToHostWorkRbDescOpcode::RdmaReadResponseMiddle,
+            (false, false) => ToHostWorkRbDescOpcode::RdmaWriteMiddle,
+        }
+    }
+
+    pub fn write_middle_opcode(&self) -> ToHostWorkRbDescOpcode {
+        if self.is_resp() {
+            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+        } else {
+            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+        }
+    }
+
+    pub fn write_last_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+        match (self.is_last, self.is_resp(), self.has_imm()) {
+            (true, true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore
+            (true, true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
+            (true, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
+            (true, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
+            (false, true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
+            (false, true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
+            (false, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
+            (false, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
+        }
+    }
+
+    pub fn is_resp(&self) -> bool {
+        matches!(self.opcode, ToCardWorkRbDescOpcode::ReadResp)
+    }
+
+    pub fn has_imm(&self) -> bool {
+        self.imm.is_some()
+    }
+}
+
+pub(crate) struct ToCardReadDescriptor {
+    pub(crate) common: ToCardWorkRbDescCommon,
+    pub(crate) sge: SGList,
 }
 
 impl From<ToCardWorkRbDesc> for ToCardDescriptor {
     fn from(desc: ToCardWorkRbDesc) -> Self {
         match desc {
-            ToCardWorkRbDesc::Write(desc) => ToCardDescriptor {
+            ToCardWorkRbDesc::Write(desc) => ToCardDescriptor::Write(ToCardWriteDescriptor {
                 opcode: ToCardWorkRbDescOpcode::Write,
                 common: desc.common,
-                is_first: Some(desc.is_first),
-                is_last: Some(desc.is_last),
+                is_first: desc.is_first,
+                is_last: desc.is_last,
                 imm: None,
                 sg_list: SGList::new_with_sge_list(desc.sge0, desc.sge1, desc.sge2, desc.sge3),
-            },
-            ToCardWorkRbDesc::Read(desc) => ToCardDescriptor {
-                opcode: ToCardWorkRbDescOpcode::Read,
+            }),
+            ToCardWorkRbDesc::Read(desc) => ToCardDescriptor::Read(ToCardReadDescriptor {
                 common: desc.common,
-                is_first: None,
-                is_last: None,
-                imm: None,
-                sg_list: SGList::new_with_sge(desc.sge),
-            },
-            ToCardWorkRbDesc::WriteWithImm(desc) => ToCardDescriptor {
-                opcode: ToCardWorkRbDescOpcode::WriteWithImm,
-                common: desc.common,
-                is_first: Some(desc.is_first),
-                is_last: Some(desc.is_last),
-                imm: Some(desc.imm),
-                sg_list: SGList::new_with_sge_list(desc.sge0, desc.sge1, desc.sge2, desc.sge3),
-            },
-            ToCardWorkRbDesc::ReadResp(desc) => ToCardDescriptor {
+                sge: SGList::new_with_sge(desc.sge),
+            }),
+            ToCardWorkRbDesc::WriteWithImm(desc) => {
+                ToCardDescriptor::Write(ToCardWriteDescriptor {
+                    opcode: ToCardWorkRbDescOpcode::WriteWithImm,
+                    common: desc.common,
+                    is_first: desc.is_first,
+                    is_last: desc.is_last,
+                    imm: Some(desc.imm),
+                    sg_list: SGList::new_with_sge_list(desc.sge0, desc.sge1, desc.sge2, desc.sge3),
+                })
+            }
+            ToCardWorkRbDesc::ReadResp(desc) => ToCardDescriptor::Write(ToCardWriteDescriptor {
                 opcode: ToCardWorkRbDescOpcode::ReadResp,
                 common: desc.common,
-                is_first: Some(desc.is_first),
-                is_last: Some(desc.is_last),
+                is_first: desc.is_first,
+                is_last: desc.is_last,
                 imm: None,
                 sg_list: SGList::new_with_sge_list(desc.sge0, desc.sge1, desc.sge2, desc.sge3),
-            },
+            }),
+        }
+    }
+}
+
+impl From<&QpType> for ToHostWorkRbDescTransType{
+    fn from(value: &QpType) -> Self {
+        match value {
+            QpType::RawPacket => ToHostWorkRbDescTransType::Rc,
+            QpType::Rc => ToHostWorkRbDescTransType::Rc,
+            QpType::Ud => ToHostWorkRbDescTransType::Ud,
+            QpType::Uc => ToHostWorkRbDescTransType::Uc,
+            QpType::XrcRecv => ToHostWorkRbDescTransType::Xrc,
+            QpType::XrcSend => ToHostWorkRbDescTransType::Xrc,
         }
     }
 }

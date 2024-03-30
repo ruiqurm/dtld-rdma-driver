@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 
 use bitflags::bitflags;
 use eui48::MacAddress;
+use num_enum::TryFromPrimitive;
 use serde::ser::StdError;
 use thiserror::Error;
 
@@ -179,9 +180,9 @@ bitflags! {
     }
 }
 
-
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
+#[derive(TryFromPrimitive, Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum QpType {
     Rc = 2,
     Uc = 3,
@@ -190,7 +191,6 @@ pub enum QpType {
     XrcSend = 9,
     XrcRecv = 10,
 }
-
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
@@ -225,7 +225,6 @@ impl From<&Pmtu> for u32 {
         }
     }
 }
-
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]

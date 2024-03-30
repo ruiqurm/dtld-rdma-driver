@@ -65,7 +65,7 @@
     // clippy::arithmetic_side_effects, //TODO:
  
     // clippy::pattern_type_mismatch, // cause some false postive and unneeded copy
-    clippy::print_stderr,
+    // clippy::print_stderr, // TODO:
     clippy::print_stdout,
     clippy::rc_buffer,
     clippy::rc_mutex,

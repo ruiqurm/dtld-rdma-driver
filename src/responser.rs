@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 
-use bitfield::bitfield;
 use lockfree::queue::Queue;
 use log::error;
 
+use crate::device::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 
@@ -292,66 +292,6 @@ impl AcknowledgeBuffer {
             key: self.lkey,
         }
     }
-}
-
-bitfield! {
-    /// IPv4 layout
-    struct Ipv4([u8]);
-    u32;
-    get_version_and_len,set_version_and_len: 7, 0;         // 8bits
-    get_dscp_ecn,set_dscp_ecn: 15, 8;                      // 8bits
-    get_total_length,set_total_length: 31, 16;             // 16bits
-    get_identification,set_identification: 47, 32;         // 16bits
-    get_fragment_offset,set_fragment_offset: 63, 48;       // 16bits
-    get_ttl,set_ttl: 71, 64;                               // 8bits
-    get_protocol,set_protocol: 79, 72;                     // 8bits
-    get_checksum,set_checksum: 95, 80;                     // 16bits
-    get_source,set_source: 127, 96;                        // 32bits
-    get_destination,set_destination: 159, 128;             // 32bits
-}
-
-bitfield! {
-    /// UDP layout
-    struct Udp([u8]);
-    u16;
-    get_src_port,set_src_port: 15, 0;                      // 16bits
-    get_dst_port,set_dst_port: 31, 16;                     // 16bits
-    get_length,set_length: 47, 32;                         // 16bits
-    get_checksum,set_checksum: 63, 48;                     // 16bits
-}
-
-bitfield! {
-    /// BTH layout
-    struct Bth([u8]);
-    u32;
-    get_opcode,set_opcode: 7, 0;         // 8bits
-    _padding_0,_ : 9, 8;                 // 2bits
-    get_pad_count,set_pad_count: 11, 10; // 2bits
-    _padding_1,_ : 15, 12;               // 4bits
-    get_pkey,set_pkey: 31, 16;           // 16bits
-    _,set_ecn_and_resv6: 39, 32;         // 8bits
-    get_dqpn,set_dqpn: 63, 40;           // 24bits
-    _padding_2,_ : 71, 64;               // 8bits
-    get_psn,set_psn: 95, 72;             // 24bits
-}
-
-bitfield! {
-    /// Aeth layout
-    struct Aeth([u8]);
-    u32;
-    _padding_0,_ : 0;                     // 1bits
-    get_aeth_code,set_aeth_code: 2, 1;    // 2bits
-    get_aeth_value,set_aeth_value: 7, 3;  // 5bits
-    _padding_1,_ :   15,8;               // 8bits
-    get_msn,set_msn: 31,16;               // 16bits
-}
-
-bitfield! {
-    /// Nak Retry Eth layout
-    struct NReth([u8]);
-    u32;
-    get_last_retry_psn,set_last_retry_psn: 23, 0; // 24bits
-    _padding_0,_: 31, 24;                         // 8its
 }
 
 /// Write the IP header and UDP header

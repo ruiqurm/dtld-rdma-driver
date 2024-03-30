@@ -320,7 +320,7 @@ impl<'buf, 'payloadinfo, 'message> PacketWriter<'buf, 'payloadinfo, 'message> {
                 );
 
                 // compute icrc
-                let icrc = compute_icrc(&self.buf[..total_length])?.to_be_bytes();
+                let icrc = compute_icrc(&self.buf[..total_length])?.to_le_bytes();
                 self.buf[total_length - ICRC_SIZE..total_length].copy_from_slice(&icrc);
                 Ok(total_length)
             }

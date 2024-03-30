@@ -17,6 +17,7 @@ use super::types::{Key, SGList, SGListElementWithKey};
 mod test_device;
 mod test_logic;
 mod test_packet;
+mod test_utils;
 
 pub struct SGListBuilder {
     sg_list: Vec<SGListElementWithKey>,
@@ -29,7 +30,7 @@ impl SGListBuilder {
         }
     }
 
-    pub fn with_sge(&mut self, addr: u64, len: u32, key: [u8; 4]) -> &mut Self {
+    pub fn with_sge(&mut self, addr: u64, len: u32, key: u32) -> &mut Self {
         self.sg_list.push(SGListElementWithKey {
             addr,
             len,
@@ -46,6 +47,7 @@ impl SGListBuilder {
         }
         while sg_list.len < 4 {
             sg_list.data[sg_list.len as usize] = SGListElementWithKey::default();
+            sg_list.len += 1;
         }
         sg_list
     }
@@ -84,6 +86,15 @@ impl ToCardWorkRbDescBuilder {
             imm: None,
             sg_list: None,
         }
+    }
+    pub fn with_is_first(&mut self, is_first: bool) -> &mut Self {
+        self.is_first = Some(is_first);
+        self
+    }
+
+    pub fn with_is_last(&mut self, is_last: bool) -> &mut Self {
+        self.is_last = Some(is_last);
+        self
     }
 
     pub fn with_opcode(&mut self, opcode: ToCardWorkRbDescOpcode) -> &mut Self {
@@ -131,16 +142,6 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub fn with_is_first(&mut self, is_first: bool) -> &mut Self {
-        self.is_first = Some(is_first);
-        self
-    }
-
-    pub fn with_is_last(&mut self, is_last: bool) -> &mut Self {
-        self.is_last = Some(is_last);
-        self
-    }
-
     pub fn with_imm(&mut self, imm: u32) -> &mut Self {
         self.imm = Some(imm);
         self
@@ -163,7 +164,7 @@ impl ToCardWorkRbDescBuilder {
             flags: self.flags.unwrap(),
             dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
             mac_addr: MacAddress::default(),
-            msn : crate::types::Msn::new(0),
+            msn: crate::types::Msn::new(0),
         };
         let (sge0, sge1, sge2, sge3) = self.sg_list.take().unwrap().into_four_sges();
         match self.opcode.clone().unwrap() {
@@ -191,7 +192,15 @@ impl ToCardWorkRbDescBuilder {
                     sge3,
                 })
             }
-            _ => panic!("unsupported opcode"),
+            ToCardWorkRbDescOpcode::ReadResp => ToCardWorkRbDesc::ReadResp(ToCardWorkRbDescWrite {
+                common,
+                is_first: self.is_first.unwrap(),
+                is_last: self.is_last.unwrap(),
+                sge0,
+                sge1,
+                sge2,
+                sge3,
+            }),
         }
     }
 }
@@ -205,7 +214,7 @@ pub struct ToCardCtrlRbDescBuilder {
     op_id: Option<u32>,
     addr: Option<u64>,
     len: Option<u32>,
-    key: Option<[u8; 4]>,
+    key: Option<u32>,
     pd_hdl: Option<u32>,
     acc_flags: Option<MemAccessTypeFlag>,
     pgt_offset: Option<u32>,
@@ -251,7 +260,7 @@ impl ToCardCtrlRbDescBuilder {
         self
     }
 
-    pub fn with_key(&mut self, key: [u8; 4]) -> &mut Self {
+    pub fn with_key(&mut self, key: u32) -> &mut Self {
         self.key = Some(key);
         self
     }
@@ -306,7 +315,7 @@ impl ToCardCtrlRbDescBuilder {
                     common,
                     addr: self.addr.unwrap(),
                     len: self.len.unwrap(),
-                    key: crate::types::Key::new(u32::from_be_bytes(self.key.unwrap())),
+                    key: crate::types::Key::new(self.key.unwrap()),
                     pd_hdl: self.pd_hdl.unwrap(),
                     acc_flags: self.acc_flags.unwrap(),
                     pgt_offset: self.pgt_offset.unwrap(),

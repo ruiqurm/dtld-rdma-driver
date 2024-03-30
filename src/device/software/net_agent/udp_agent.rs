@@ -6,6 +6,7 @@ use std::{
     thread,
 };
 
+use log::{error, info};
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
@@ -16,7 +17,7 @@ use crate::device::software::{
 
 use super::{NetAgentError, NetReceiveLogic, NetSendAgent};
 
-pub const NET_SERVER_BUF_SIZE: usize = 4096;
+pub const NET_SERVER_BUF_SIZE: usize = 8192;
 
 /// A single thread udp server that listens to the corresponding port and calls the `recv` method of the receiver when a message is received.
 pub struct UDPReceiveAgent {
@@ -67,15 +68,17 @@ impl UDPSendAgent {
 
 impl UDPReceiveAgent {
     pub fn new(receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>) -> Result<Self, NetAgentError> {
-        Ok(Self {
+        let mut agent = Self {
             receiver,
             listen_thread: None,
-        })
+        };
+        agent.init()?;
+        Ok(agent)
     }
 
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
-    pub fn start(&mut self) -> Result<(), NetAgentError> {
+    pub fn init(&mut self) -> Result<(), NetAgentError> {
         let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let addr = SocketAddrV4::new(self.receiver.get_recv_addr(), self.receiver.get_recv_port());
@@ -86,6 +89,8 @@ impl UDPReceiveAgent {
             loop {
                 let (length, _src) = socket.recv_from(&mut buf)?;
                 if length < size_of::<CommonPacketHeader>() + 4 {
+                    eprintln!("bbb");
+                    error!("Packet too short");
                     continue;
                 }
                 // SAFETY: `recv_from` ensures that the buffer is filled with `length` bytes.
@@ -93,12 +98,16 @@ impl UDPReceiveAgent {
                     unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, length) };
 
                 if !is_icrc_valid(received_data)? {
+                    eprintln!("cccc");
+                    error!("ICRC check failed");
                     continue;
                 }
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
                 let received_data = &received_data[offset..length - ICRC_SIZE];
+                eprintln!("Received message: {:?}", &buf);
                 if let Ok(mut message) = processor.to_rdma_message(received_data) {
+                    info!("Received message: {:?}", message);
                     receiver.recv(&mut message);
                 }
             }

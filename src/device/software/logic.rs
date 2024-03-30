@@ -2,20 +2,20 @@ use thiserror::Error;
 
 use crate::{
     device::{
-        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToCardWorkRbDescOpcode, ToHostWorkRbDesc,
-        ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon,
-        ToHostWorkRbDescOpcode, ToHostWorkRbDescRead, ToHostWorkRbDescStatus,
-        ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-        ToHostWorkRbDescWriteWithImm,
+        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostWorkRbDesc, ToHostWorkRbDescAck,
+        ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode,
+        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
+        ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
     },
-    types::{MemAccessTypeFlag, Msn, Pmtu, QpType}, utils::get_first_packet_max_length,
+    types::{MemAccessTypeFlag, Msn, Pmtu, Psn, QpType},
+    utils::get_first_packet_max_length,
 };
 
 use super::{
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
     types::{
-        Key, Metadata, PDHandle, PKey, PayloadInfo, Psn, Qpn, RdmaGeneralMeta, RdmaMessage,
-        RdmaMessageMetaCommon, RethHeader, SGList, ToCardDescriptor,
+        Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
+        RdmaMessageMetaCommon, RethHeader, ToCardDescriptor,
     },
 };
 use std::{
@@ -44,8 +44,7 @@ struct QueuePair {
 #[allow(dead_code)]
 #[derive(Debug)]
 struct MemoryRegion {
-    lkey: Key,
-    rkey: Key,
+    key: Key,
     acc_flags: MemAccessTypeFlag,
     pdkey: PDHandle,
     addr: u64,
@@ -85,6 +84,8 @@ pub enum BlueRdmaLogicError {
     RawPacketLengthTooLong(u32, u32),
     #[error("Poison error")]
     Poison,
+    #[error("Unreachable")]
+    Unreachable,
 }
 
 impl<T> From<PoisonError<T>> for BlueRdmaLogicError {
@@ -111,83 +112,71 @@ impl BlueRDMALogic {
         )
     }
 
+    fn send_raw_packet(&self, mut desc: ToCardDescriptor) -> Result<(), BlueRdmaLogicError> {
+        let common = desc.common();
+        let total_length = common.total_len;
+        let pmtu = u32::from(&common.pmtu);
+        if total_length > pmtu {
+            return Err(BlueRdmaLogicError::RawPacketLengthTooLong(
+                pmtu,
+                total_length,
+            ));
+        }
+        let dqp_ip = common.dqp_ip;
+        let payload = desc.first_sge_mut().cut(total_length)?;
+        self.net_send_agent.send_raw(dqp_ip, 4791, &payload)?;
+        Ok(())
+    }
+
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
     /// TODO: the function is too long. Try to split it.
     #[allow(clippy::shadow_unrelated)]
     pub fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
-        let mut req = ToCardDescriptor::from(desc);
+        let desc = ToCardDescriptor::from(desc);
         // if it's a raw packet, send it directly
-        if matches!(req.common.qp_type, QpType::RawPacket) {
-            let total_length = req.common.total_len;
-            let pmtu = u32::from(&req.common.pmtu);
-            if total_length > pmtu {
-                return Err(BlueRdmaLogicError::RawPacketLengthTooLong(
-                    pmtu,
-                    total_length,
-                ));
-            }
-            let mut payload = PayloadInfo::new();
-            cut_from_sgl(total_length, &mut req.sg_list, &mut payload);
-            self.net_send_agent
-                .send_raw(req.common.dqp_ip, 4791, &payload)?;
-            return Ok(());
+        if desc.is_raw_packet() {
+            return self.send_raw_packet(desc);
         }
 
-        let mut common_meta = RdmaMessageMetaCommon {
-            tran_type: ToHostWorkRbDescTransType::Rc,
-            opcode: ToHostWorkRbDescOpcode::RdmaWriteOnly,
-            solicited: false,
-            // We use the pkey to store msn
-            pkey: PKey::new(req.common.msn.get()),
-            dqpn: Qpn::new(req.common.dqpn.get()),
-            ack_req: false,
-            psn: Psn::new(req.common.psn.get()),
+        let mut common_meta = {
+            let common = desc.common();
+            RdmaMessageMetaCommon {
+                tran_type: desc.common().qp_type.into(),
+                opcode: ToHostWorkRbDescOpcode::RdmaWriteOnly,
+                solicited: false,
+                // We use the pkey to store msn
+                pkey: PKey::new(common.msn.get()),
+                dqpn: Qpn::new(common.dqpn.get()),
+                ack_req: false,
+                psn: Psn::new(common.psn.get()),
+            }
         };
 
-        match req.opcode {
-            ToCardWorkRbDescOpcode::Write
-            | ToCardWorkRbDescOpcode::WriteWithImm
-            | ToCardWorkRbDescOpcode::ReadResp => {
-                let is_read_resp = matches!(req.opcode, ToCardWorkRbDescOpcode::ReadResp);
-                let total_len = req.common.total_len;
+        match desc {
+            ToCardDescriptor::Write(mut req) => {
                 let pmtu = u32::from(&req.common.pmtu);
                 let first_packet_max_length = get_first_packet_max_length(req.common.raddr, pmtu);
-                common_meta.tran_type =
-                    ToHostWorkRbDescTransType::try_from(req.common.qp_type as u8).unwrap();
 
                 // a default metadata. It will be updated later
                 let mut meta_data = RdmaGeneralMeta {
                     common_meta,
                     reth: RethHeader {
                         va: req.common.raddr,
-                        rkey: Key::new(req.common.rkey.get().to_be_bytes()),
+                        rkey: Key::new(req.common.rkey.get()),
                         len: req.common.total_len,
                     },
                     imm: None,
                     secondary_reth: None,
                 };
-
-                if total_len <= first_packet_max_length {
+                let sge_total_length = req.sg_list.get_total_length();
+                if sge_total_length <= first_packet_max_length {
                     // RdmaWriteOnly or RdmaWriteOnlyWithImmediate
-                    let mut payload = PayloadInfo::new();
-                    cut_sgl_all_levels(&mut req.sg_list, &mut payload);
+                    let payload = req.sg_list.cut_all_levels();
 
                     // if it's a RdmaWriteOnlyWithImmediate, add the immediate data
-                    let (opcode, imm) = match req.opcode {
-                        ToCardWorkRbDescOpcode::WriteWithImm => (
-                            ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate,
-                            Some(req.imm),
-                        ),
-                        ToCardWorkRbDescOpcode::Write => {
-                            (ToHostWorkRbDescOpcode::RdmaWriteOnly, None)
-                        }
-                        ToCardWorkRbDescOpcode::ReadResp => {
-                            (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None)
-                        }
-                        _ => unreachable!(),
-                    };
+                    let (opcode, imm) = req.write_only_opcode_with_imm();
                     meta_data.common_meta.opcode = opcode;
-                    meta_data.imm = imm.unwrap();
+                    meta_data.imm = imm;
 
                     let msg = RdmaMessage {
                         meta_data: Metadata::General(meta_data),
@@ -201,68 +190,49 @@ impl BlueRDMALogic {
                 // we specifically handle the first and last packet
                 // The first va might not align to pmtu
                 let mut cur_va = req.common.raddr;
-                let mut cur_len = total_len;
-                let mut psn: u32 = req.common.psn.get();
+                let mut cur_len = sge_total_length;
+                let mut psn = req.common.psn;
 
                 // since the packet size is larger than first_packet_max_length, first_packet_length should equals
                 // to first_packet_max_length
                 let first_packet_length = first_packet_max_length;
 
-                let mut payload = PayloadInfo::new();
-                cut_from_sgl(first_packet_length, &mut req.sg_list, &mut payload);
-                meta_data.common_meta.opcode = if is_read_resp {
-                    ToHostWorkRbDescOpcode::RdmaReadResponseFirst
-                } else {
-                    ToHostWorkRbDescOpcode::RdmaWriteFirst
-                };
+                let payload = req.sg_list.cut(first_packet_length)?;
+                meta_data.common_meta.opcode = req.write_first_opcode();
                 meta_data.reth.va = cur_va;
                 let msg = RdmaMessage {
                     meta_data: Metadata::General(meta_data.clone()),
                     payload,
                 };
                 cur_len -= first_packet_length;
-                psn += 1;
+                psn = psn.wrapping_add(1);
                 cur_va += first_packet_length as u64;
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
 
                 // send the middle packets
                 while cur_len > pmtu {
-                    let mut payload = PayloadInfo::new();
-                    cut_from_sgl(pmtu, &mut req.sg_list, &mut payload);
-                    meta_data.common_meta.opcode = if is_read_resp {
-                        ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
-                    } else {
-                        ToHostWorkRbDescOpcode::RdmaWriteMiddle
-                    };
+                    let payload = req.sg_list.cut(pmtu)?;
+                    meta_data.common_meta.opcode = req.write_middle_opcode();
                     meta_data.reth.va = cur_va;
-                    meta_data.common_meta.psn = Psn::new(psn);
+                    meta_data.common_meta.psn = psn;
                     let msg = RdmaMessage {
                         meta_data: Metadata::General(meta_data.clone()),
                         payload,
                     };
                     cur_len -= pmtu;
-                    psn += 1;
+                    psn = psn.wrapping_add(1);
                     cur_va += pmtu as u64;
                     self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
                 }
+
                 // cur_len <= pmtu, send last packet
-                let mut payload = PayloadInfo::new();
-                cut_from_sgl(cur_len, &mut req.sg_list, &mut payload);
+                let payload = req.sg_list.cut(cur_len)?;
+
                 // The last packet may be with immediate data
-                let (opcode, imm) = match req.opcode {
-                    ToCardWorkRbDescOpcode::WriteWithImm => (
-                        ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate,
-                        Some(req.imm),
-                    ),
-                    ToCardWorkRbDescOpcode::Write => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
-                    ToCardWorkRbDescOpcode::ReadResp => {
-                        (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None)
-                    }
-                    _ => unreachable!(),
-                };
+                let (opcode, imm) = req.write_last_opcode_with_imm();
                 meta_data.common_meta.opcode = opcode;
-                meta_data.common_meta.psn = Psn::new(psn);
-                meta_data.imm = imm.unwrap();
+                meta_data.common_meta.psn = psn;
+                meta_data.imm = imm;
                 meta_data.reth.va = cur_va;
                 let msg = RdmaMessage {
                     meta_data: Metadata::General(meta_data),
@@ -270,18 +240,16 @@ impl BlueRDMALogic {
                 };
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
             }
-            ToCardWorkRbDescOpcode::Read => {
-                let local_sa = &req.sg_list.data[0];
+            ToCardDescriptor::Read(req) => {
+                let local_sa = &req.sge.data[0];
                 common_meta.opcode = ToHostWorkRbDescOpcode::RdmaReadRequest;
-                common_meta.tran_type =
-                    ToHostWorkRbDescTransType::try_from(req.common.qp_type as u8).unwrap();
 
                 let msg = RdmaMessage {
                     meta_data: Metadata::General(RdmaGeneralMeta {
                         common_meta,
                         reth: RethHeader {
                             va: req.common.raddr,
-                            rkey: Key::new(req.common.rkey.get().to_be_bytes()),
+                            rkey: Key::new(req.common.rkey.get()),
                             len: req.common.total_len,
                         },
                         imm: None,
@@ -327,30 +295,29 @@ impl BlueRDMALogic {
             }
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
                 let mut mr_table = self.mr_rkey_table.write()?;
-                let rkey = Key::new(desc.key.get().to_be_bytes());
+                let key = Key::new(desc.key.get());
                 let mr = MemoryRegion {
-                    lkey: Key::new([0; 4]),
-                    rkey,
+                    key,
                     acc_flags: desc.acc_flags,
                     pdkey: PDHandle::new(desc.pd_hdl),
                     addr: desc.addr,
                     len: desc.len as usize,
                     pgt_offset: desc.pgt_offset,
                 };
-                if let Some(mr_context) = mr_table.get(&mr.rkey) {
+                if let Some(mr_context) = mr_table.get(&mr.key) {
                     let mut guard = mr_context.write()?;
                     *guard = mr;
                 } else {
                     let mr = Arc::new(RwLock::new(mr));
                     // we have ensured that the qpn is not exists.
-                    let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(rkey, mr);
+                    let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(key, mr);
                 }
                 Ok(())
             }
             // Userspace types use virtual address directly
-            ToCardCtrlRbDesc::UpdatePageTable(_desc) => unimplemented!(),
-            ToCardCtrlRbDesc::SetNetworkParam(_desc) => unimplemented!(),
-            ToCardCtrlRbDesc::SetRawPacketReceiveMeta(_desc) => unimplemented!(),
+            ToCardCtrlRbDesc::UpdatePageTable(_desc) => Ok(()),
+            ToCardCtrlRbDesc::SetNetworkParam(_desc) => Ok(()),
+            ToCardCtrlRbDesc::SetRawPacketReceiveMeta(_desc) => Ok(()),
         }
     }
 
@@ -396,7 +363,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         let meta = &message.meta_data;
         let mut common = ToHostWorkRbDescCommon {
             status: ToHostWorkRbDescStatus::Unknown,
-            trans: message.meta_data.common_meta().tran_type.clone(),
+            trans: ToHostWorkRbDescTransType::Rc,
             dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
             pad_cnt: message.payload.get_pad_cnt() as u8,
             msn: Msn::default(),
@@ -463,10 +430,10 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             common,
                             is_read_resp,
                             write_type: write_type.unwrap(),
-                            psn: crate::types::Psn::new(header.common_meta.psn.get()),
+                            psn: header.common_meta.psn,
                             addr: header.reth.va,
                             len: header.reth.len,
-                            key: crate::types::Key::new(u32::from_be_bytes(header.reth.rkey.get())),
+                            key: header.reth.rkey.into(),
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
@@ -474,11 +441,11 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         ToHostWorkRbDesc::WriteWithImm(ToHostWorkRbDescWriteWithImm {
                             common,
                             write_type: write_type.unwrap(),
-                            psn: crate::types::Psn::new(header.common_meta.psn.get()),
+                            psn: header.common_meta.psn,
                             imm: header.imm.unwrap(),
                             addr: header.reth.va,
                             len: header.reth.len,
-                            key: crate::types::Key::new(u32::from_be_bytes(header.reth.rkey.get())),
+                            key: header.reth.rkey.into(),
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaReadRequest => {
@@ -487,11 +454,9 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             common,
                             len: header.reth.len,
                             laddr: sec_reth.va,
-                            lkey: crate::types::Key::new(u32::from_be_bytes(sec_reth.rkey.get())),
+                            lkey: sec_reth.rkey.into(),
                             raddr: header.reth.va,
-                            rkey: crate::types::Key::new(u32::from_be_bytes(
-                                header.reth.rkey.get(),
-                            )),
+                            rkey: header.reth.rkey.into(),
                         })
                     }
                     _ => {
@@ -537,48 +502,6 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
     }
 }
 
-/// Cut a buffer of length from the scatter-gather list
-///
-/// The function iterate from `cur_level` of the scatter-gather list and cut the buffer of `length` from the list.
-/// If current level is not enough, it will move to the next level.
-/// All the slice will be added to the `payload`.
-fn cut_from_sgl(mut length: u32, sgl: &mut SGList, payload: &mut PayloadInfo) {
-    let mut current_level = sgl.cur_level as usize;
-    while (current_level as u32) < sgl.len {
-        if sgl.data[current_level].len >= length {
-            let addr = sgl.data[current_level].addr as *mut u8;
-            payload.add(addr, length as usize);
-            sgl.data[current_level].addr += length as u64;
-            sgl.data[current_level].len -= length;
-            if sgl.data[current_level].len == 0 {
-                current_level += 1;
-                sgl.cur_level = current_level as u32;
-            }
-            return;
-        } else {
-            // check next level
-            let addr = sgl.data[current_level].addr as *mut u8;
-            payload.add(addr, sgl.data[current_level].len as usize);
-            length -= sgl.data[current_level].len;
-            sgl.data[current_level].len = 0;
-            current_level += 1;
-        }
-    }
-    if (current_level as u32) == sgl.len {
-        unreachable!("The length is too long");
-    }
-}
-
-/// Cut all the buffer to `payload``
-fn cut_sgl_all_levels(sgl: &mut SGList, payload: &mut PayloadInfo) {
-    for i in 0..sgl.len as usize {
-        let addr = sgl.data[i].addr as *mut u8;
-        let length = sgl.data[i].len as usize;
-        payload.add(addr, length);
-        sgl.data[i].len = 0;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{net::Ipv4Addr, sync::Arc};
@@ -586,9 +509,7 @@ mod tests {
     use crate::{
         device::{
             software::{
-                logic::cut_sgl_all_levels,
                 net_agent::{NetAgentError, NetSendAgent},
-                tests::SGListBuilder,
                 types::{Key, PayloadInfo, Qpn, RdmaMessage},
             },
             ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement,
@@ -597,118 +518,7 @@ mod tests {
         types::{MemAccessTypeFlag, Pmtu, QpType},
     };
 
-    use super::{cut_from_sgl, BlueRDMALogic};
-
-    #[test]
-    fn test_helper_cut_from_sgl() {
-        // Here we don't care the va boundary
-        // test: has [1000,0,0,0], request 1000
-        {
-            let mut sgl = SGListBuilder::new()
-                .with_sge(0x1000, 1000, 0_u32.to_be_bytes())
-                .build();
-            let mut payload = PayloadInfo::new();
-            cut_from_sgl(1000, &mut sgl, &mut payload);
-            assert_eq!(payload.get_length(), 1000);
-            assert_eq!(sgl.data[0].len, 0);
-            assert_eq!(sgl.cur_level, 1);
-        }
-
-        // test has [1000,0,0,0], request 1000
-        {
-            let mut sgl = SGListBuilder::new()
-                .with_sge(0x1000, 1000, 0_u32.to_be_bytes())
-                .build();
-            let mut payload = PayloadInfo::new();
-            cut_from_sgl(900, &mut sgl, &mut payload);
-            assert_eq!(payload.get_length(), 900);
-            assert_eq!(sgl.data[0].len, 100);
-            assert_eq!(sgl.cur_level, 0);
-        }
-
-        // test has [1024,0,0,0], request 512,512
-        {
-            let mut sgl = SGListBuilder::new()
-                .with_sge(0x1000, 1024, 0_u32.to_be_bytes())
-                .build();
-            let mut payload1 = PayloadInfo::new();
-            let mut payload2 = PayloadInfo::new();
-            cut_from_sgl(512, &mut sgl, &mut payload1);
-            cut_from_sgl(512, &mut sgl, &mut payload2);
-            assert_eq!(payload1.get_length(), 512);
-            assert_eq!(payload2.get_length(), 512);
-            assert_eq!(sgl.data[0].len, 0);
-            assert_eq!(sgl.cur_level, 1);
-            assert_eq!(payload1.get_sg_list().first().unwrap().data as u64, 0x1000);
-            assert_eq!(
-                payload2.get_sg_list().first().unwrap().data as u64,
-                0x1000 + 512
-            );
-        }
-
-        // test has [1024,1024,0,0], require 2048
-        {
-            let mut sgl = SGListBuilder::new()
-                .with_sge(0x1000, 1024, 0_u32.to_be_bytes())
-                .with_sge(0x3000, 1024, 0_u32.to_be_bytes())
-                .build();
-            let mut payload = PayloadInfo::new();
-            cut_from_sgl(2048, &mut sgl, &mut payload);
-            assert_eq!(payload.get_length(), 2048);
-            assert_eq!(sgl.data[0].len, 0);
-            assert_eq!(sgl.data[1].len, 0);
-            assert_eq!(sgl.cur_level, 2);
-            assert_eq!(payload.get_sg_list()[0].data as u64, 0x1000);
-            assert_eq!(payload.get_sg_list()[0].len as u64, 1024);
-            assert_eq!(payload.get_sg_list()[1].data as u64, 0x3000);
-            assert_eq!(payload.get_sg_list()[1].len as u64, 1024);
-        }
-
-        // test has [1024,2048,1124,100], require [100,2048,2048,100]
-        {
-            let mut sgl = SGListBuilder::new()
-                .with_sge(0x1000, 1024, 0_u32.to_be_bytes())
-                .with_sge(0x3000, 2048, 0_u32.to_be_bytes())
-                .with_sge(0x6000, 1124, 0_u32.to_be_bytes())
-                .with_sge(0x8000, 100, 0_u32.to_be_bytes())
-                .build();
-            let mut payload = [
-                PayloadInfo::new(),
-                PayloadInfo::new(),
-                PayloadInfo::new(),
-                PayloadInfo::new(),
-            ];
-            cut_from_sgl(100, &mut sgl, &mut payload[0]);
-            cut_from_sgl(2048, &mut sgl, &mut payload[1]);
-            cut_from_sgl(2048, &mut sgl, &mut payload[2]);
-            cut_from_sgl(100, &mut sgl, &mut payload[3]);
-            assert_eq!(payload[0].get_length(), 100);
-            assert_eq!(payload[1].get_length(), 2048);
-            assert_eq!(payload[2].get_length(), 2048);
-            assert_eq!(payload[3].get_length(), 100);
-            assert_eq!(sgl.data[0].len, 0);
-            assert_eq!(sgl.data[1].len, 0);
-            assert_eq!(sgl.data[2].len, 0);
-            assert_eq!(sgl.data[3].len, 0);
-        }
-    }
-
-    #[test]
-    fn test_helper_cut_sgl_all() {
-        let mut sgl = SGListBuilder::new()
-            .with_sge(0x1000, 1024, 0_u32.to_be_bytes())
-            .with_sge(0x2000, 1024, 0_u32.to_be_bytes())
-            .with_sge(0x3000, 1024, 0_u32.to_be_bytes())
-            .with_sge(0x4000, 1024, 0_u32.to_be_bytes())
-            .build();
-        let mut payload = PayloadInfo::new();
-        cut_sgl_all_levels(&mut sgl, &mut payload);
-        assert_eq!(sgl.data[0].len, 0);
-        assert_eq!(sgl.data[1].len, 0);
-        assert_eq!(sgl.data[2].len, 0);
-        assert_eq!(sgl.data[3].len, 0);
-        assert_eq!(payload.get_length(), 4096);
-    }
+    use super::BlueRDMALogic;
 
     // test update mr table, qp table
     #[test]
@@ -805,7 +615,7 @@ mod tests {
             logic.update(desc).unwrap();
             {
                 let guard = logic.mr_rkey_table.read().unwrap();
-                let mr_context = guard.get(&Key::new(1234_u32.to_be_bytes())).unwrap();
+                let mr_context = guard.get(&Key::new(1234_u32)).unwrap();
                 let read_guard = mr_context.read().unwrap();
                 assert_eq!(read_guard.addr, 0x1234567812345678);
                 assert_eq!(read_guard.len, 1024 * 16);
@@ -830,7 +640,7 @@ mod tests {
             logic.update(desc).unwrap();
             {
                 let guard = logic.mr_rkey_table.read().unwrap();
-                let mr_context = guard.get(&Key::new(1234_u32.to_be_bytes())).unwrap();
+                let mr_context = guard.get(&Key::new(1234_u32)).unwrap();
                 let read_guard = mr_context.read().unwrap();
                 assert_eq!(read_guard.addr, 0x1234567812345678);
                 assert_eq!(read_guard.len, 1024 * 24);

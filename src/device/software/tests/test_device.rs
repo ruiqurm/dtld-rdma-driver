@@ -22,8 +22,7 @@ use super::ToCardCtrlRbDescBuilder;
 fn test_device_read_and_write() {
     let send_agent = UDPSendAgent::new().unwrap();
     let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
-    let mut recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device)).unwrap();
-    recv_agent.start().unwrap();
+    let _recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device)).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;
@@ -41,7 +40,7 @@ fn test_device_read_and_write() {
         let mr_desc = ToCardCtrlRbDescBuilder::new(UpdateMrTable)
             .with_addr(dest_addr)
             .with_len(2048)
-            .with_key(mr1_rkey.to_be_bytes())
+            .with_key(mr1_rkey)
             .with_pd_hdl(0)
             .with_acc_flags(
                 MemAccessTypeFlag::IbvAccessRemoteWrite | MemAccessTypeFlag::IbvAccessRemoteRead,
@@ -53,7 +52,7 @@ fn test_device_read_and_write() {
         let mr_desc = ToCardCtrlRbDescBuilder::new(UpdateMrTable)
             .with_addr(src_addr)
             .with_len(2048)
-            .with_key(mr2_rkey.to_be_bytes())
+            .with_key(mr2_rkey)
             .with_pd_hdl(0)
             .with_acc_flags(
                 MemAccessTypeFlag::IbvAccessRemoteWrite | MemAccessTypeFlag::IbvAccessRemoteRead,
@@ -93,7 +92,7 @@ fn test_device_read_and_write() {
             .with_dqpn(dqpn)
             .with_sg_list(
                 SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32.to_be_bytes())
+                    .with_sge(src_addr, 1024, 0_u32)
                     .build(),
             )
             .build();
@@ -156,7 +155,7 @@ fn test_device_read_and_write() {
             .with_dqpn(dqpn)
             .with_sg_list(
                 SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32.to_be_bytes())
+                    .with_sge(src_addr, 1024, 0_u32)
                     .build(),
             )
             .build();
@@ -228,7 +227,7 @@ fn test_device_read_and_write() {
     //             total_len: send_length as u32,
     //         },
     //         raddr: src_addr,
-    //         rkey: mr2_rkey.to_be_bytes(),
+    //         rkey: mr2_rkey,
     //         dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
     //         pmtu: Pmtu::Mtu512,
     //         flags: 0,
@@ -242,7 +241,7 @@ fn test_device_read_and_write() {
     //             data: [ScatterGatherElement {
     //                 laddr: dest_addr,
     //                 len: 1024,
-    //                 lkey: mr1_rkey.to_be_bytes(),
+    //                 lkey: mr1_rkey,
     //             }; 4],
     //             len: 1,
     //         },
@@ -255,7 +254,7 @@ fn test_device_read_and_write() {
     //     match q1 {
     //         ToHostWorkRbDesc::SecondaryReth(data) => {
     //             assert_eq!(data.sec_reth.secondary_va, dest_addr);
-    //             assert_eq!(data.sec_reth.secondary_rkey, mr1_rkey.to_be_bytes());
+    //             assert_eq!(data.sec_reth.secondary_rkey, mr1_rkey);
     //         }
     //         _ => panic!("unexpected descriptor"),
     //     }
@@ -272,7 +271,7 @@ fn test_device_read_and_write() {
     //             total_len: send_length as u32,
     //         },
     //         raddr: dest_addr,
-    //         rkey: mr1_rkey.to_be_bytes(),
+    //         rkey: mr1_rkey,
     //         dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
     //         pmtu: Pmtu::Mtu512,
     //         flags: 0,
@@ -286,7 +285,7 @@ fn test_device_read_and_write() {
     //             data: [ScatterGatherElement {
     //                 laddr: src_addr,
     //                 len: 1024,
-    //                 lkey: 0_u32.to_be_bytes(),
+    //                 lkey: 0_u32,
     //             }; 4],
     //             len: 1,
     //         },
@@ -325,7 +324,7 @@ fn test_software_device() {
         let mr_desc = ToCardCtrlRbDescBuilder::new(UpdateMrTable)
             .with_addr(dest_addr)
             .with_len(2048)
-            .with_key(mr1_rkey.to_be_bytes())
+            .with_key(mr1_rkey)
             .with_pd_hdl(0)
             .with_acc_flags(
                 MemAccessTypeFlag::IbvAccessRemoteWrite | MemAccessTypeFlag::IbvAccessRemoteRead,
@@ -338,7 +337,7 @@ fn test_software_device() {
         let mr_desc = ToCardCtrlRbDescBuilder::new(UpdateMrTable)
             .with_addr(src_addr)
             .with_len(2048)
-            .with_key(mr2_rkey.to_be_bytes())
+            .with_key(mr2_rkey)
             .with_pd_hdl(0)
             .with_acc_flags(
                 MemAccessTypeFlag::IbvAccessRemoteWrite | MemAccessTypeFlag::IbvAccessRemoteRead,
@@ -376,7 +375,7 @@ fn test_software_device() {
             .with_dqpn(dqpn)
             .with_sg_list(
                 SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32.to_be_bytes())
+                    .with_sge(src_addr, 1024, 0_u32)
                     .build(),
             )
             .build();
@@ -442,7 +441,7 @@ fn test_software_device() {
             .with_dqpn(dqpn)
             .with_sg_list(
                 SGListBuilder::new()
-                    .with_sge(src_addr, 1024, 0_u32.to_be_bytes())
+                    .with_sge(src_addr, 1024, 0_u32)
                     .build(),
             )
             .build();
@@ -516,7 +515,7 @@ fn test_software_device() {
     //             total_len: send_length as u32,
     //         },
     //         raddr: src_addr,
-    //         rkey: mr2_rkey.to_be_bytes(),
+    //         rkey: mr2_rkey,
     //         dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
     //         pmtu: Pmtu::Mtu512,
     //         flags: 0,
@@ -530,7 +529,7 @@ fn test_software_device() {
     //             data: [ScatterGatherElement {
     //                 laddr: dest_addr,
     //                 len: 1024,
-    //                 lkey: mr1_rkey.to_be_bytes(),
+    //                 lkey: mr1_rkey,
     //             }; 4],
     //             len: 1,
     //         },
@@ -543,7 +542,7 @@ fn test_software_device() {
     //     match q1 {
     //         ToHostWorkRbDesc::SecondaryReth(data) => {
     //             assert_eq!(data.sec_reth.secondary_va, dest_addr);
-    //             assert_eq!(data.sec_reth.secondary_rkey, mr1_rkey.to_be_bytes());
+    //             assert_eq!(data.sec_reth.secondary_rkey, mr1_rkey);
     //         }
     //         _ => panic!("unexpected descriptor"),
     //     }
@@ -560,7 +559,7 @@ fn test_software_device() {
     //             total_len: send_length as u32,
     //         },
     //         raddr: dest_addr,
-    //         rkey: mr1_rkey.to_be_bytes(),
+    //         rkey: mr1_rkey,
     //         dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
     //         pmtu: Pmtu::Mtu512,
     //         flags: 0,
@@ -574,7 +573,7 @@ fn test_software_device() {
     //             data: [ScatterGatherElement {
     //                 laddr: src_addr,
     //                 len: 1024,
-    //                 lkey: 0_u32.to_be_bytes(),
+    //                 lkey: 0_u32,
     //             }; 4],
     //             len: 1,
     //         },

@@ -9,7 +9,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::device::{ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType};
+use crate::{
+    device::{ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType},
+    types::QpType,
+};
 
 use super::types::{
     AethHeader, Metadata, PayloadInfo, RdmaGeneralMeta, RdmaMessage, RdmaMessageMetaCommon,
@@ -150,7 +153,7 @@ impl BTH {
 
     /// convert the &RdmaMessageMetaCommon to BTH
     pub fn set_from_common_meta(&mut self, common_meta: &RdmaMessageMetaCommon, pad_cnt: usize) {
-        self.set_opcode_and_type(common_meta.opcode.clone(), common_meta.tran_type.clone());
+        self.set_opcode_and_type(common_meta.opcode.clone(), common_meta.tran_type);
         self.set_flags_solicited(common_meta.solicited);
         self.set_pad_cnt(pad_cnt);
         self.set_destination_qpn(common_meta.dqpn.get());
@@ -181,8 +184,8 @@ impl RETH {
         u64::from_be_bytes(self.va)
     }
 
-    pub fn get_rkey(&self) -> [u8; 4] {
-        self.rkey
+    pub fn get_rkey(&self) -> u32 {
+        u32::from_be_bytes(self.rkey)
     }
 
     pub fn get_dlen(&self) -> u32 {
@@ -190,15 +193,15 @@ impl RETH {
     }
 
     pub fn set_va(&mut self, va: u64) {
-        self.va = va.to_be_bytes();
+        self.va = u64::to_be_bytes(va);
     }
 
-    pub fn set_rkey(&mut self, rkey: [u8; 4]) {
-        self.rkey = rkey;
+    pub fn set_rkey(&mut self, rkey: u32) {
+        self.rkey = u32::to_be_bytes(rkey);
     }
 
     pub fn set_dlen(&mut self, dlen: u32) {
-        self.dlen = dlen.to_be_bytes();
+        self.dlen = u32::to_be_bytes(dlen);
     }
 
     pub fn set_from_reth_header(&mut self, reth: &RethHeader) {
@@ -250,15 +253,15 @@ impl AETH {
 }
 
 /// The `imm` of RDMA protocol
-pub(crate) struct Immediate(u32);
+pub(crate) struct Immediate([u8; 4]);
 
 impl Immediate {
     pub fn get_immediate(&self) -> u32 {
-        self.0
+        u32::from_be_bytes(self.0)
     }
 
     pub fn set_immediate(&mut self, imm: u32) {
-        self.0 = imm;
+        self.0 = imm.to_be_bytes();
     }
 }
 
@@ -557,11 +560,24 @@ pub enum PacketError {
     #[error("Header gets an invalid opcode")]
     InvalidOpcode,
     #[error("Convert ToHostWorkRbDescTransType failed")]
-    FailedToConvertTransType(#[from] num_enum::TryFromPrimitiveError<ToHostWorkRbDescTransType>),
+    FailedToConvertTransType,
     #[error("Convert ToHostWorkRbDescOpcode failed")]
     FailedToConvertRdmaOpcode(#[from] num_enum::TryFromPrimitiveError<ToHostWorkRbDescOpcode>),
     #[error("Convert ToHostWorkRbDescAethCode failed")]
     FailedToConvertAethCode(#[from] num_enum::TryFromPrimitiveError<ToHostWorkRbDescAethCode>),
     #[error("Invalid Metadata type")]
     InvalidMetadataType,
+}
+
+impl From<QpType> for ToHostWorkRbDescTransType {
+    fn from(ty: QpType) -> ToHostWorkRbDescTransType {
+        match ty {
+            QpType::Rc => ToHostWorkRbDescTransType::Rc,
+            QpType::Uc => ToHostWorkRbDescTransType::Uc,
+            QpType::Ud => ToHostWorkRbDescTransType::Ud,
+            QpType::RawPacket => ToHostWorkRbDescTransType::Rc,
+            QpType::XrcSend => ToHostWorkRbDescTransType::Xrc,
+            QpType::XrcRecv => ToHostWorkRbDescTransType::Xrc,
+        }
+    }
 }

@@ -21,7 +21,7 @@ extern crate ctor;
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
 const BUFFER_LENGTH : usize = 1024 * 128;
-const SEND_CNT: usize = 1024*64;
+const SEND_CNT: usize = 1024*4;
 static mut HEAP_START_ADDR: usize = 0;
 
 #[ctor]

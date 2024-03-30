@@ -197,7 +197,7 @@ impl ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice {
         let mut writer = guard.write();
 
         let mem = writer.next().ok_or(DeviceError::Overflow)?;
-        debug!("{:?}", desc);
+        debug!("{:?}", &desc);
         desc.write(mem);
 
         Ok(())
@@ -233,7 +233,7 @@ fn push_to_card_work_rb_desc(
     rb: &Mutex<ToCardWorkRb>,
     desc: ToCardWorkRbDesc,
 ) -> Result<(), DeviceError> {
-    debug!("{:?}", desc);
+    debug!("{:?}", &desc);
     let mut guard = rb
         .lock()
         .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
