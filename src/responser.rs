@@ -229,7 +229,10 @@ impl AcknowledgeBuffer {
     pub const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
     /// Create a new acknowledge buffer
     pub fn new(start_va: usize, length: usize, lkey: Key) -> Self {
-        assert!(length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0, "The length should be multiple of 64");
+        assert!(
+            length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0,
+            "The length should be multiple of 64"
+        );
         let free_list = Queue::new();
         let mut va = start_va;
         let slots: usize = length / Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
@@ -309,8 +312,13 @@ fn write_packet(
     let mut ip_header = Ipv4(buf);
     ip_header.set_version_and_len(IP_DEFAULT_VERSION_AND_LEN as u32);
     ip_header.set_dscp_ecn(0);
-    ip_header.set_total_length(ACKPACKET_SIZE.to_be() as u32);
-    ip_header.set_identification(0);
+    ip_header.set_total_length(u32::from_be_bytes([
+        0,
+        0,
+        ACKPACKET_SIZE.try_into().unwrap(),
+        0,
+    ]));
+    ip_header.set_identification(0x27);
     ip_header.set_fragment_offset(0);
     ip_header.set_ttl(IP_DEFAULT_TTL as u32);
     ip_header.set_protocol(IP_DEFAULT_PROTOCOL as u32);
@@ -362,7 +370,9 @@ fn write_packet(
         nreth_header.set_last_retry_psn(0);
     }
     // calculate the ICRC
-    calculate_icrc(ip_header.0)?;
+    let total_buf = &mut ip_header.0[..ACKPACKET_SIZE];
+    let icrc = calculate_icrc(total_buf)?;
+    total_buf[ACKPACKET_SIZE - 4..].copy_from_slice(&icrc.to_le_bytes());
     Ok(())
 }
 
@@ -389,7 +399,7 @@ const RDMA_DEFAULT_PORT: u16 = 4791;
 /// Calculate the RDMA packet ICRC.
 ///
 /// the `data` passing in should include the space for the ICRC(4 bytes).
-fn calculate_icrc(data: &mut [u8]) -> Result<(), Error> {
+fn calculate_icrc(data: &[u8]) -> Result<u32, Error> {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
     let mut buf = [0; IPV4_UDP_BTH_HEADER_SIZE];
@@ -410,10 +420,7 @@ fn calculate_icrc(data: &mut [u8]) -> Result<(), Error> {
     hasher.update(&buf);
     // the rest of header and payload
     hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - 4]);
-    let icrc = hasher.finalize();
-    let len = data.len();
-    data[len - 4..].copy_from_slice(&icrc.to_le_bytes());
-    Ok(())
+    Ok(hasher.finalize())
 }
 
 /// Calculate the checksum of the IPv4 header
@@ -458,7 +465,7 @@ mod tests {
     use super::calculate_icrc;
     #[test]
     fn test_icrc_computing() {
-        let mut packet = [
+        let packet = [
             0x45, 0x00, 0x00, 0xbc, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0xf8, 0xda, 0xc0, 0xa8,
             0x00, 0x02, 0xc0, 0xa8, 0x00, 0x03, 0x12, 0xb7, 0x12, 0xb7, 0x00, 0xa8, 0x00, 0x00,
             0x0a, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -474,11 +481,17 @@ mod tests {
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xc6, 0x87, 0x22, 0x98,
         ];
-        calculate_icrc(&mut packet).unwrap();
-        assert_eq!(
-            packet[packet.len() - 4..packet.len()],
-            [0xc6, 0x87, 0x22, 0x98]
-        );
+        let icrc = calculate_icrc(&packet).unwrap();
+        assert_eq!(icrc, u32::from_le_bytes([0xc6, 0x87, 0x22, 0x98]));
+        let packet = [
+            69, 0, 0, 0, 0, 0, 0, 0, 64, 17, 124, 232, 127, 0, 0, 3, 127, 0, 0, 2, 18, 183, 18,
+            183, 0, 32, 0, 0, 17, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0,
+        ];
+        let icrc = calculate_icrc(&packet).unwrap();
+        assert_eq!(icrc, u32::from_le_bytes([64, 33, 163, 207]));
+
+
     }
     #[test]
     fn test_calculate_ipv4_checksum() {

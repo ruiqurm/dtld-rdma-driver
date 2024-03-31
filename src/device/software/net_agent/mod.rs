@@ -25,10 +25,6 @@ pub trait NetSendAgent {
         dest_port: u16,
         payload : &PayloadInfo
     ) -> Result<(), NetAgentError>;
-
-    fn get_dest_addr(&self) -> Ipv4Addr;
-
-    fn get_dest_port(&self) -> u16;
 }
 
 #[derive(Error, Debug)]

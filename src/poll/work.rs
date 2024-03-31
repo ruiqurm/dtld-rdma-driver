@@ -49,7 +49,7 @@ impl WorkDescPollerContext {
         loop {
             let desc = ctx.work_rb.pop().unwrap();
 
-            debug!("{:?}", &desc);
+            debug!("driver read from card RQ: {:?}", &desc);
             if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
                 error!("desc status is {:?}", desc.status());
                 continue;

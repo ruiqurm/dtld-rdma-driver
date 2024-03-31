@@ -233,7 +233,7 @@ fn push_to_card_work_rb_desc(
     rb: &Mutex<ToCardWorkRb>,
     desc: ToCardWorkRbDesc,
 ) -> Result<(), DeviceError> {
-    debug!("{:?}", &desc);
+    debug!("driver send to card SQ: {:?}", &desc);
     let mut guard = rb
         .lock()
         .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;

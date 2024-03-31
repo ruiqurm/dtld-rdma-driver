@@ -11,7 +11,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::device::software::{
     packet::{CommonPacketHeader, IpUdpHeaders, ICRC_SIZE},
-    packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter, PacketWriterType},
+    packet_processor::{is_icrc_valid, PacketProcessor, PacketWriter},
     types::{PayloadInfo, RdmaMessage},
 };
 
@@ -30,10 +30,12 @@ pub struct UDPReceiveAgent {
 pub struct UDPSendAgent {
     sender: Socket,
     sending_id_counter: AtomicU16,
+    src_addr: Ipv4Addr,
+    src_port: u16,
 }
 
 impl UDPSendAgent {
-    pub fn new() -> Result<Self, NetAgentError> {
+    pub fn new(src_addr: &Ipv4Addr, src_port: u16) -> Result<Self, NetAgentError> {
         let sender = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let fd = sender.as_raw_fd();
         unsafe {
@@ -62,6 +64,8 @@ impl UDPSendAgent {
         Ok(Self {
             sender,
             sending_id_counter: sending_id,
+            src_addr: *src_addr,
+            src_port,
         })
     }
 }
@@ -69,7 +73,7 @@ impl UDPSendAgent {
 impl UDPReceiveAgent {
     pub fn new(
         receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
-        addr: Ipv4Addr,
+        addr: &Ipv4Addr,
         port: u16,
     ) -> Result<Self, NetAgentError> {
         let mut agent = Self {
@@ -82,11 +86,12 @@ impl UDPReceiveAgent {
 
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
-    pub fn init(&mut self, addr: Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
+    pub fn init(&mut self, addr: &Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
         let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
-        let addr = SocketAddrV4::new(addr, port);
+        let addr = SocketAddrV4::new(*addr, port);
         socket.bind(&addr.into())?;
+        info!("UDP server started at {}:{}", addr.ip(), addr.port());
         self.listen_thread = Some(thread::spawn(move || -> Result<(), NetAgentError> {
             let mut buf = [MaybeUninit::<u8>::uninit(); NET_SERVER_BUF_SIZE];
             let processor = PacketProcessor;
@@ -98,17 +103,16 @@ impl UDPReceiveAgent {
                 }
                 // SAFETY: `recv_from` ensures that the buffer is filled with `length` bytes.
                 let received_data =
-                    unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, length) };
+                    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, length) };
 
                 if !is_icrc_valid(received_data)? {
-                    error!("ICRC check failed");
+                    error!("ICRC check failed {:?}", received_data);
                     continue;
                 }
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
                 let received_data = &received_data[offset..length - ICRC_SIZE];
                 if let Ok(mut message) = processor.to_rdma_message(received_data) {
-                    info!("Received message: {:?}", message);
                     receiver.recv(&mut message);
                 }
             }
@@ -125,14 +129,13 @@ impl NetSendAgent for UDPSendAgent {
         message: &RdmaMessage,
     ) -> Result<(), NetAgentError> {
         let mut buf = [0u8; NET_SERVER_BUF_SIZE];
-        let src_addr = self.get_dest_addr();
-        let src_port = self.get_dest_port();
+        let src_addr = self.src_addr;
+        let src_port = self.src_port;
         let ip_id = self
             .sending_id_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let total_length = PacketWriter::new(&mut buf)
-            .packet_type(PacketWriterType::Rdma)
             .src_addr(src_addr)
             .src_port(src_port)
             .dest_addr(dest_addr)
@@ -156,47 +159,20 @@ impl NetSendAgent for UDPSendAgent {
         dest_port: u16,
         payload: &PayloadInfo,
     ) -> Result<(), NetAgentError> {
-        let mut buf = [0u8; NET_SERVER_BUF_SIZE];
-        let src_addr = self.get_dest_addr();
-        let src_port = self.get_dest_port();
-        let ip_id = self
-            .sending_id_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        let total_length = PacketWriter::new(&mut buf)
-            .packet_type(PacketWriterType::Raw)
-            .src_addr(src_addr)
-            .src_port(src_port)
-            .dest_addr(dest_addr)
-            .dest_port(dest_port)
-            .ip_id(ip_id)
-            .payload(payload)
-            .write()?;
-
-        let sended_size = self.sender.send_to(
-            &buf[0..total_length],
-            &SocketAddrV4::new(dest_addr, dest_port).into(),
-        )?;
-        if total_length != sended_size {
-            return Err(NetAgentError::WrongBytesSending(total_length, sended_size));
+        let buf = payload.direct_data_ptr();
+        let sended_size = self
+            .sender
+            .send_to(buf, &SocketAddrV4::new(dest_addr, dest_port).into())?;
+        if buf.len() != sended_size {
+            return Err(NetAgentError::WrongBytesSending(buf.len(), sended_size));
         }
         Ok(())
-    }
-
-    fn get_dest_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::LOCALHOST
-    }
-
-    fn get_dest_port(&self) -> u16 {
-        4791
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use crate::device::software::{net_agent::NetReceiveLogic, types::RdmaMessage};
     struct DummyNetReceiveLogic {

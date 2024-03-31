@@ -1,6 +1,7 @@
 use std::net::Ipv4Addr;
 
 use bitflags::bitflags;
+use derive_builder::Builder;
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use serde::ser::StdError;
@@ -234,8 +235,8 @@ pub struct Sge {
     pub key: Key,
 }
 
+#[derive(Debug,Builder,Clone, Copy)]
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
 pub struct RdmaDeviceNetwork {
     pub gateway: Ipv4Addr,
     pub netmask: Ipv4Addr,
@@ -243,56 +244,16 @@ pub struct RdmaDeviceNetwork {
     pub macaddr: MacAddress,
 }
 
-impl RdmaDeviceNetwork {
-    pub fn new(
-        ipaddr: Ipv4Addr,
-        netmask: Ipv4Addr,
-        gateway: Ipv4Addr,
-        macaddr: MacAddress,
-    ) -> Self {
-        Self {
-            ipaddr,
-            macaddr,
-            netmask,
-            gateway,
-        }
-    }
-}
-
+#[derive(Builder,Clone, Copy)]
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
 pub struct Qp {
-    #[allow(unused)]
     pub pd: Pd,
     pub qpn: Qpn,
     pub qp_type: QpType,
-    #[allow(unused)]
     pub rq_acc_flags: MemAccessTypeFlag,
     pub pmtu: Pmtu,
     pub dqp_ip: Ipv4Addr,
     pub dqp_mac: MacAddress,
-}
-
-impl Qp {
-    pub fn new(
-        pd: Pd,
-        qpn: Qpn,
-        qp_type: QpType,
-        rq_acc_flags: MemAccessTypeFlag,
-        pmtu: Pmtu,
-        dqp_ip: Ipv4Addr,
-        dqp_mac: MacAddress,
-    ) -> Self {
-        Self {
-            pd,
-            qpn,
-            qp_type,
-            rq_acc_flags,
-            pmtu,
-            dqp_ip,
-            dqp_mac,
-        }
-    }
 }
 
 #[non_exhaustive]

@@ -36,14 +36,6 @@ impl NetSendAgent for DummpyProxy {
         self.payload.borrow_mut().push_back(payload.clone());
         Ok(())
     }
-
-    fn get_dest_addr(&self) -> Ipv4Addr {
-        Ipv4Addr::LOCALHOST
-    }
-
-    fn get_dest_port(&self) -> u16 {
-        4791
-    }
 }
 
 unsafe impl Send for DummpyProxy {}

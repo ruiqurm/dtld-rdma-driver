@@ -2,7 +2,10 @@ use thiserror::Error;
 
 use crate::{
     device::{
-        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostWorkRbDesc, ToHostWorkRbDescAck,
+        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostCtrlRbDescCommon,
+        ToHostCtrlRbDescQpManagement, ToHostCtrlRbDescSetNetworkParam,
+        ToHostCtrlRbDescSetRawPacketReceiveMeta, ToHostCtrlRbDescUpdateMrTable,
+        ToHostCtrlRbDescUpdatePageTable, ToHostWorkRbDesc, ToHostWorkRbDescAck,
         ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode,
         ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
         ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
@@ -20,7 +23,6 @@ use super::{
 };
 use std::{
     collections::HashMap,
-    net::Ipv4Addr,
     sync::{Arc, PoisonError, RwLock},
 };
 
@@ -36,8 +38,8 @@ struct QueuePairInner {
 /// The hardware queue pair context
 #[derive(Debug)]
 struct QueuePair {
-    inner: RwLock<QueuePairInner>,
-    // recv: RecvRingbuf,
+    #[allow(dead_code)]
+    inner: QueuePairInner,
 }
 
 /// The hardware memory region context
@@ -72,6 +74,7 @@ pub(crate) struct BlueRDMALogic {
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
     net_send_agent: Arc<dyn NetSendAgent>,
     to_host_data_descriptor_queue: Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>,
+    to_host_ctrl_descriptor_queue: Arc<crossbeam_queue::SegQueue<ToHostCtrlRbDesc>>,
 }
 
 #[derive(Error, Debug)]
@@ -102,6 +105,7 @@ impl BlueRDMALogic {
             qp_table: RwLock::new(HashMap::new()),
             net_send_agent: net_sender,
             to_host_data_descriptor_queue: Arc::new(crossbeam_queue::SegQueue::new()),
+            to_host_ctrl_descriptor_queue: Arc::new(crossbeam_queue::SegQueue::new()),
         }
     }
 
@@ -154,6 +158,7 @@ impl BlueRDMALogic {
 
         match desc {
             ToCardDescriptor::Write(mut req) => {
+                log::info!("{:?}", req);
                 let pmtu = u32::from(&req.common.pmtu);
                 let first_packet_max_length = get_first_packet_max_length(req.common.raddr, pmtu);
 
@@ -177,6 +182,11 @@ impl BlueRDMALogic {
                     let (opcode, imm) = req.write_only_opcode_with_imm();
                     meta_data.common_meta.opcode = opcode;
                     meta_data.imm = imm;
+                    meta_data.reth.len = if meta_data.common_meta.opcode.is_first() {
+                        req.common.total_len
+                    } else {
+                        sge_total_length
+                    };
 
                     let msg = RdmaMessage {
                         meta_data: Metadata::General(meta_data),
@@ -199,6 +209,11 @@ impl BlueRDMALogic {
 
                 let payload = req.sg_list.cut(first_packet_length)?;
                 meta_data.common_meta.opcode = req.write_first_opcode();
+                meta_data.reth.len = if meta_data.common_meta.opcode.is_first() {
+                    req.common.total_len
+                } else {
+                    first_packet_length
+                };
                 meta_data.reth.va = cur_va;
                 let msg = RdmaMessage {
                     meta_data: Metadata::General(meta_data.clone()),
@@ -210,6 +225,7 @@ impl BlueRDMALogic {
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
 
                 // send the middle packets
+                meta_data.reth.len = pmtu;
                 while cur_len > pmtu {
                     let payload = req.sg_list.cut(pmtu)?;
                     meta_data.common_meta.opcode = req.write_middle_opcode();
@@ -234,6 +250,7 @@ impl BlueRDMALogic {
                 meta_data.common_meta.psn = psn;
                 meta_data.imm = imm;
                 meta_data.reth.va = cur_va;
+                meta_data.reth.len = cur_len;
                 let msg = RdmaMessage {
                     meta_data: Metadata::General(meta_data),
                     payload,
@@ -268,8 +285,12 @@ impl BlueRDMALogic {
         Ok(())
     }
 
+    pub fn get_update_result(&self) -> Option<ToHostCtrlRbDesc> {
+        self.to_host_ctrl_descriptor_queue.pop()
+    }
+
     pub fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
-        match desc {
+        let result_desc = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;
                 let qpn = Qpn::new(desc.qpn.get());
@@ -279,19 +300,35 @@ impl BlueRDMALogic {
                     qp_access_flags: desc.rq_acc_flags,
                     pdkey: PDHandle::new(desc.pd_hdl),
                 };
-                if let Some(qp_context) = qp_table.get(&qpn) {
-                    // update pd_handler, qp_type and access_flags
-                    let mut guard = qp_context.inner.write()?;
-                    *guard = qp_inner;
+                let is_success = if desc.is_valid {
+                    // create
+                    if qp_table.get(&qpn).is_some() {
+                        // exist
+                        false
+                    } else {
+                        // otherwise insert a new qp context
+                        let qp = Arc::new(QueuePair { inner: qp_inner });
+                        // we have ensured that the qpn is not exists.
+                        let _: Option<Arc<QueuePair>> = qp_table.insert(qpn, qp);
+                        true
+                    }
                 } else {
-                    // otherwise insert a new qp context
-                    let qp = Arc::new(QueuePair {
-                        inner: RwLock::new(qp_inner),
-                    });
-                    // we have ensured that the qpn is not exists.
-                    let _: Option<Arc<QueuePair>> = qp_table.insert(qpn, qp);
-                }
-                Ok(())
+                    // delete
+                    if qp_table.get(&qpn).is_some() {
+                        // exist
+                        let _: Option<Arc<QueuePair>> = qp_table.remove(&qpn);
+                        true
+                    } else {
+                        false
+                    }
+                };
+
+                ToHostCtrlRbDesc::QpManagement(ToHostCtrlRbDescQpManagement {
+                    common: ToHostCtrlRbDescCommon {
+                        op_id: desc.common.op_id,
+                        is_success,
+                    },
+                })
             }
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
                 let mut mr_table = self.mr_rkey_table.write()?;
@@ -312,13 +349,42 @@ impl BlueRDMALogic {
                     // we have ensured that the qpn is not exists.
                     let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(key, mr);
                 }
-                Ok(())
+
+                ToHostCtrlRbDesc::UpdateMrTable(ToHostCtrlRbDescUpdateMrTable {
+                    common: ToHostCtrlRbDescCommon {
+                        op_id: desc.common.op_id,
+                        is_success: true,
+                    },
+                })
             }
             // Userspace types use virtual address directly
-            ToCardCtrlRbDesc::UpdatePageTable(_desc) => Ok(()),
-            ToCardCtrlRbDesc::SetNetworkParam(_desc) => Ok(()),
-            ToCardCtrlRbDesc::SetRawPacketReceiveMeta(_desc) => Ok(()),
-        }
+            ToCardCtrlRbDesc::UpdatePageTable(desc) => {
+                ToHostCtrlRbDesc::UpdatePageTable(ToHostCtrlRbDescUpdatePageTable {
+                    common: ToHostCtrlRbDescCommon {
+                        op_id: desc.common.op_id,
+                        is_success: true,
+                    },
+                })
+            }
+            ToCardCtrlRbDesc::SetNetworkParam(desc) => {
+                ToHostCtrlRbDesc::SetNetworkParam(ToHostCtrlRbDescSetNetworkParam {
+                    common: ToHostCtrlRbDescCommon {
+                        op_id: desc.common.op_id,
+                        is_success: true,
+                    },
+                })
+            }
+            ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
+                ToHostCtrlRbDesc::SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta {
+                    common: ToHostCtrlRbDescCommon {
+                        op_id: desc.common.op_id,
+                        is_success: false,
+                    },
+                })
+            }
+        };
+        self.to_host_ctrl_descriptor_queue.push(result_desc);
+        Ok(())
     }
 
     /// Validate the permission, va and length of corresponding memory region.
@@ -366,7 +432,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
             trans: ToHostWorkRbDescTransType::Rc,
             dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
             pad_cnt: message.payload.get_pad_cnt() as u8,
-            msn: Msn::default(),
+            msn: Msn::new(message.meta_data.common_meta().pkey.get()),
             expected_psn: crate::types::Psn::new(0),
         };
         let descriptor = match meta {
@@ -453,10 +519,10 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
                             common,
                             len: header.reth.len,
-                            laddr: sec_reth.va,
-                            lkey: sec_reth.rkey.into(),
-                            raddr: header.reth.va,
-                            rkey: header.reth.rkey.into(),
+                            laddr: header.reth.va,
+                            lkey: header.reth.rkey.into(),
+                            raddr: sec_reth.va,
+                            rkey: sec_reth.rkey.into(),
                         })
                     }
                     _ => {
@@ -465,6 +531,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 }
             }
             Metadata::Acknowledge(header) => {
+                common.status = ToHostWorkRbDescStatus::Normal;
                 match header.aeth_code {
                     ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                         common,
@@ -536,14 +603,6 @@ mod tests {
             ) -> Result<(), NetAgentError> {
                 Ok(())
             }
-
-            fn get_dest_addr(&self) -> Ipv4Addr {
-                Ipv4Addr::LOCALHOST
-            }
-
-            fn get_dest_port(&self) -> u16 {
-                4791
-            }
         }
         let agent = Arc::new(DummpyProxy);
         let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
@@ -562,10 +621,10 @@ mod tests {
             {
                 let guard = logic.qp_table.read().unwrap();
                 let qp_context = guard.get(&Qpn::new(1234)).unwrap();
-                let read_guard = qp_context.inner.read().unwrap();
-                assert!(matches!(read_guard.pmtu, Pmtu::Mtu1024));
-                assert!(matches!(read_guard.qp_type, QpType::Rc));
-                assert!(read_guard
+                let inner = &qp_context.inner;
+                assert!(matches!(inner.pmtu, Pmtu::Mtu1024));
+                assert!(matches!(inner.qp_type, QpType::Rc));
+                assert!(inner
                     .qp_access_flags
                     .contains(MemAccessTypeFlag::IbvAccessRemoteWrite));
             }
@@ -584,10 +643,10 @@ mod tests {
             {
                 let guard = logic.qp_table.read().unwrap();
                 let qp_context = guard.get(&Qpn::new(1234)).unwrap();
-                let read_guard = qp_context.inner.read().unwrap();
-                assert!(matches!(read_guard.pmtu, Pmtu::Mtu2048));
-                assert!(matches!(read_guard.qp_type, QpType::Rc));
-                assert!(read_guard
+                let inner = &qp_context.inner;
+                assert!(matches!(inner.pmtu, Pmtu::Mtu2048));
+                assert!(matches!(inner.qp_type, QpType::Rc));
+                assert!(inner
                     .qp_access_flags
                     .contains(MemAccessTypeFlag::IbvAccessRemoteWrite));
             }

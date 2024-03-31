@@ -148,6 +148,7 @@ impl PayloadInfo {
         }
     }
 
+    #[cfg(test)]
     pub fn get_length(&self) -> usize {
         self.total_len
     }
@@ -182,6 +183,14 @@ impl PayloadInfo {
             unsafe {
                 dst = dst.add(self.sg_list[i].len);
             }
+        }
+    }
+
+    /// Get the first and only element of the scatter-gather list.
+    /// Note that you should only use this function when you are sure that the payload only contains one element.
+    pub fn direct_data_ptr(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(self.sg_list[0].data, self.sg_list[0].len)
         }
     }
 }
@@ -356,6 +365,8 @@ impl From<ToCardCtrlRbDescSge> for SGListElementWithKey {
         }
     }
 }
+
+#[derive(Debug)]
 pub struct SGList {
     pub data: [SGListElementWithKey; 4],
     pub cur_level: u32,
@@ -500,6 +511,7 @@ impl SGList {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum ToCardDescriptor {
     Write(ToCardWriteDescriptor),
     Read(ToCardReadDescriptor),
@@ -531,7 +543,7 @@ impl ToCardDescriptor {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct ToCardWriteDescriptor {
     pub(crate) opcode: ToCardWorkRbDescOpcode,
     pub(crate) common: ToCardWorkRbDescCommon,
@@ -598,7 +610,7 @@ impl ToCardWriteDescriptor {
             (false, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
         }
     }
-
+    
     pub fn is_resp(&self) -> bool {
         matches!(self.opcode, ToCardWorkRbDescOpcode::ReadResp)
     }
@@ -608,6 +620,7 @@ impl ToCardWriteDescriptor {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardReadDescriptor {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) sge: SGList,

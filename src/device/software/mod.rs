@@ -2,10 +2,11 @@ use std::{
     error::Error,
     net::Ipv4Addr,
     sync::Arc,
-    thread::{spawn, JoinHandle},
+    thread::{sleep, spawn, JoinHandle},
 };
 
 use crossbeam_queue::SegQueue;
+use log::debug;
 
 use self::{
     logic::{BlueRDMALogic, BlueRdmaLogicError},
@@ -41,17 +42,12 @@ mod types;
 #[allow(dead_code)]
 pub(crate) struct SoftwareDevice {
     recv_agent: UDPReceiveAgent,
+    device: Arc<BlueRDMALogic>,
     polling_thread: JoinHandle<()>,
-    to_card_ctrl_rb: ToCardCtrlRb,
-    to_host_ctrl_rb: ToHostCtrlRb,
     to_card_work_rb: ToCardWorkRb,
     to_host_work_rb: ToHostWorkRb,
 }
 
-#[derive(Clone)]
-struct ToCardCtrlRb(Arc<BlueRDMALogic>);
-#[derive(Clone)]
-struct ToHostCtrlRb;
 #[derive(Clone)]
 struct ToCardWorkRb(Arc<DescriptorScheduler>);
 #[derive(Clone)]
@@ -59,8 +55,8 @@ struct ToHostWorkRb(Arc<SegQueue<ToHostWorkRbDesc>>);
 
 impl SoftwareDevice {
     /// Initializing an software device.
-    pub(crate) fn init(addr: Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
-        let send_agent = UDPSendAgent::new()?;
+    pub(crate) fn init(addr: &Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
+        let send_agent = UDPSendAgent::new(addr, port)?;
         let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
         // The strategy is a global singleton, so we leak it
         let round_robin = Arc::new(RoundRobinStrategy::new());
@@ -80,8 +76,7 @@ impl SoftwareDevice {
         Ok(Self {
             recv_agent,
             polling_thread,
-            to_card_ctrl_rb: ToCardCtrlRb(device),
-            to_host_ctrl_rb: ToHostCtrlRb,
+            device,
             to_card_work_rb,
             to_host_work_rb: ToHostWorkRb(to_host_queue),
         })
@@ -90,11 +85,11 @@ impl SoftwareDevice {
 
 impl DeviceAdaptor for SoftwareDevice {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
-        Arc::new(self.to_card_ctrl_rb.clone())
+        Arc::<BlueRDMALogic>::clone(&self.device)
     }
 
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>> {
-        todo!()
+        Arc::<BlueRDMALogic>::clone(&self.device)
     }
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
@@ -118,29 +113,38 @@ impl DeviceAdaptor for SoftwareDevice {
     }
 }
 
-impl ToCardRb<ToCardCtrlRbDesc> for ToCardCtrlRb {
+impl ToCardRb<ToCardCtrlRbDesc> for BlueRDMALogic {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
-        self.0.update(desc).unwrap();
+        self.update(desc).unwrap();
         Ok(())
     }
 }
 
-impl ToHostRb<ToHostCtrlRbDesc> for ToHostCtrlRb {
+impl ToHostRb<ToHostCtrlRbDesc> for BlueRDMALogic {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
-        todo!()
+        loop {
+            if let Some(desc) = self.get_update_result() {
+                return Ok(desc);
+            }
+            sleep(std::time::Duration::from_millis(1));
+        }
     }
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
-        self.0.pop().ok_or(DeviceError::Device(
-            "Failed to read from ringbuf".to_owned(),
-        ))
+        loop {
+            if let Some(desc) = self.0.pop() {
+                return Ok(desc);
+            }
+            sleep(std::time::Duration::from_millis(1));
+        }
     }
 }
 
 impl ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb {
     fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
+        debug!("driver to card SQ: {:?}", desc);
         self.0.push(desc)
     }
 }

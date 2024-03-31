@@ -1,14 +1,18 @@
 use buddy_system_allocator::LockedHeap;
 
 use eui48::MacAddress;
+use log::info;
 use open_rdma_driver::{
     qp::QpManager,
-    types::{MemAccessTypeFlag, Pmtu, Qp, QpType, Qpn, RdmaDeviceNetwork, PAGE_SIZE},
+    types::{
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
+        RdmaDeviceNetworkBuilder, PAGE_SIZE,
+    },
     Device, Mr, Pd, Sge,
 };
-use std::slice::from_raw_parts_mut;
 use std::{ffi::c_void, net::Ipv4Addr};
-use log::{info, Level, LevelFilter, Metadata, Record, SetLoggerError};
+
+use crate::common::{init_logging, AlignedMemory};
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -20,9 +24,11 @@ extern crate ctor;
 #[global_allocator]
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
-const BUFFER_LENGTH : usize = 1024 * 128;
-const SEND_CNT: usize = 1024*4;
+const BUFFER_LENGTH: usize = 1024 * 128;
+const SEND_CNT: usize = 1024 * 64;
 static mut HEAP_START_ADDR: usize = 0;
+
+mod common;
 
 #[ctor]
 fn init_global_allocator() {
@@ -53,52 +59,13 @@ fn init_global_allocator() {
     }
 }
 
-fn get_phys_addr(addr: usize) -> usize {
-    addr - unsafe { HEAP_START_ADDR }
-}
-
-struct SimpleLogger;
-
-impl log::Log for SimpleLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Debug
-    }
-
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            println!("{} - {}", record.level(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-pub fn init_logging() -> Result<(), SetLoggerError> {
-    log::set_boxed_logger(Box::new(SimpleLogger))
-        .map(|()| log::set_max_level(LevelFilter::Debug))
-}
-
-#[allow(clippy::slow_vector_initialization)]
-fn allocate_aligned_buf(size: usize) -> Box<[u8]> {
-    let mut vec = Vec::with_capacity(size + PAGE_SIZE);
-    vec.resize(size + PAGE_SIZE, 0u8);
-    let buffer = Box::leak(vec.into_boxed_slice());
-    let buffer_padding = get_phys_addr(buffer.as_ptr() as usize) & (PAGE_SIZE - 1);
-    unsafe {
-        Box::from_raw(from_raw_parts_mut(
-            &buffer[buffer_padding] as *const _ as *mut u8,
-            size,
-        ))
-    }
-}
-
-fn create_and_init_card(
+fn create_and_init_card<'a>(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
     local_network: &RdmaDeviceNetwork,
     remote_network: &RdmaDeviceNetwork,
-) -> (Device, Pd, Mr, Box<[u8]>) {
+) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let dev = Device::new_emulated(
         mock_server_addr.parse().unwrap(),
@@ -111,10 +78,10 @@ fn create_and_init_card(
     let pd = dev.alloc_pd().unwrap();
     info!("[{}] PD allocated", card_id);
 
-    let mut mr_buffer = allocate_aligned_buf(BUFFER_LENGTH);
+    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH);
 
     unsafe {
-        println!(
+        info!(
             "[{}] MR's PA_START={:X}",
             card_id,
             mr_buffer.as_mut_ptr() as usize - HEAP_START_ADDR
@@ -134,15 +101,16 @@ fn create_and_init_card(
         )
         .unwrap();
     info!("[{}] MR registered", card_id);
-    let qp = Qp::new(
-        pd,
-        qpn,
-        QpType::Rc,
-        access_flag,
-        Pmtu::Mtu4096,
-        remote_network.ipaddr,
-        remote_network.macaddr,
-    );
+    let qp = QpBuilder::default()
+        .pd(pd)
+        .qpn(qpn)
+        .qp_type(QpType::Rc)
+        .rq_acc_flags(access_flag)
+        .pmtu(Pmtu::Mtu4096)
+        .dqp_ip(remote_network.ipaddr)
+        .dqp_mac(remote_network.macaddr)
+        .build()
+        .unwrap();
     dev.create_qp(&qp).unwrap();
     info!("[{}] QP created", card_id);
 
@@ -152,18 +120,20 @@ fn main() {
     init_logging().unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
-    let a_network = RdmaDeviceNetwork::new(
-        Ipv4Addr::new(192, 168, 0, 0x1),
-        Ipv4Addr::new(255, 255, 255, 0),
-        Ipv4Addr::new(192, 168, 0, 2),
-        MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]),
-    );
-    let b_network = RdmaDeviceNetwork::new(
-        Ipv4Addr::new(192, 168, 0, 0x1),
-        Ipv4Addr::new(255, 255, 255, 0),
-        Ipv4Addr::new(192, 168, 0, 3),
-        MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]),
-    );
+    let a_network = RdmaDeviceNetworkBuilder::default()
+        .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
+        .netmask(Ipv4Addr::new(255, 255, 255, 0))
+        .ipaddr(Ipv4Addr::new(192, 168, 0, 2))
+        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
+        .build()
+        .unwrap();
+    let b_network = RdmaDeviceNetworkBuilder::default()
+        .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
+        .netmask(Ipv4Addr::new(255, 255, 255, 0))
+        .ipaddr(Ipv4Addr::new(192, 168, 0, 3))
+        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
+        .build()
+        .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =

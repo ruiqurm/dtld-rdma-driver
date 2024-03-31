@@ -87,13 +87,15 @@ impl Device {
                 .adaptor
                 .get_phys_addr(va as usize)
                 .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?;
+            // If we run with hardware DMA,
             // we must make sure va and pa are all allign to pg_size
-            if va as usize & (PAGE_SIZE - 1) != 0 {
-                return Err(Error::AddressNotAlign("va", va as usize));
-            }
-            if pa & (PAGE_SIZE - 1) != 0 {
-                return Err(Error::AddressNotAlign("pa", pa));
-            }
+            // if va as usize & (PAGE_SIZE - 1) != 0 {
+            //     return Err(Error::AddressNotAlign("va", va as usize));
+            // }
+            // if pa & (PAGE_SIZE - 1) != 0 {
+            //     return Err(Error::AddressNotAlign("pa", pa));
+            // }
+
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 

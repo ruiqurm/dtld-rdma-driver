@@ -306,7 +306,7 @@ enum CtrlRbDescOpcode {
     SetRawPacketReceiveMeta = 0x04,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) enum ToCardWorkRbDescOpcode {
     // IBV_WR_RDMA_WRITE           =  0,
     // IBV_WR_RDMA_WRITE_WITH_IMM  =  1,
@@ -364,6 +364,25 @@ pub(crate) enum ToHostWorkRbDescOpcode {
     RdmaReadResponseOnly = 0x10,
     RdmaReadRequest = 0x0c,
     Acknowledge = 0x11,
+}
+
+impl ToHostWorkRbDescOpcode {
+    pub(crate) fn is_first(&self) -> bool {
+        match self {
+            ToHostWorkRbDescOpcode::RdmaWriteFirst
+            | ToHostWorkRbDescOpcode::RdmaReadResponseFirst => true,
+            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            | ToHostWorkRbDescOpcode::RdmaWriteLast
+            | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
+            | ToHostWorkRbDescOpcode::RdmaWriteOnly
+            | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
+            | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+            | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+            | ToHostWorkRbDescOpcode::RdmaReadRequest
+            | ToHostWorkRbDescOpcode::Acknowledge => false,
+        }
+    }
 }
 
 #[derive(TryFromPrimitive, Clone, PartialEq, Eq, Debug)]

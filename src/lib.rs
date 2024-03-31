@@ -65,7 +65,7 @@
     // clippy::arithmetic_side_effects, //TODO:
  
     // clippy::pattern_type_mismatch, // cause some false postive and unneeded copy
-    // clippy::print_stderr, // TODO:
+    clippy::print_stderr, // TODO:
     clippy::print_stdout,
     clippy::rc_buffer,
     clippy::rc_mutex,
@@ -156,7 +156,7 @@ use responser::DescResponser;
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
@@ -185,6 +185,7 @@ pub use types::Error;
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;
 const MR_PGT_SIZE: usize = 1024;
+const DEFAULT_RMDA_PORT : u16 = 4791;
 
 #[derive(Clone)]
 pub struct Device(Arc<DeviceInner<dyn DeviceAdaptor>>);
@@ -253,9 +254,9 @@ impl Device {
         Ok(dev)
     }
 
-    pub fn new_software(network: &RdmaDeviceNetwork,addr:Ipv4Addr,port : u16) -> Result<Self, Error> {
+    pub fn new_software(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        let adaptor = SoftwareDevice::init(addr,port).map_err(Error::Device)?;
+        let adaptor = SoftwareDevice::init(&network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
