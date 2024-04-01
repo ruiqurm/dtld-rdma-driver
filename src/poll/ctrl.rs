@@ -21,7 +21,7 @@ pub(crate) struct ControlPollerContext {
 unsafe impl Send for ControlPollerContext {}
 
 impl ControlPoller{
-    pub fn new(ctx : ControlPollerContext) -> Self {
+    pub(crate) fn new(ctx : ControlPollerContext) -> Self {
         let thread = std::thread::spawn(move || ControlPollerContext::poll_ctrl_thread(&ctx));
         Self { _thread: thread }
     }

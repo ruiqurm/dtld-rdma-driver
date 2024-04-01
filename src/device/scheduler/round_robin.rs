@@ -9,12 +9,12 @@ use super::SchedulerStrategy;
 /// The round-robin strategy for the scheduler.
 #[allow(clippy::module_name_repetitions, clippy::linkedlist)]
 #[derive(Debug)]
-pub struct RoundRobinStrategy {
+pub(crate) struct RoundRobinStrategy {
     queue: Mutex<LinkedList<(u32, LinkedList<ToCardWorkRbDesc>)>>,
 }
 
 impl RoundRobinStrategy {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             queue: Mutex::new(LinkedList::new()),
         }
@@ -79,7 +79,7 @@ mod tests {
         types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
     };
 
-    pub fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWorkRbDesc> {
+    pub(crate) fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWorkRbDesc> {
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: 512,

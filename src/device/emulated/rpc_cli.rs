@@ -70,7 +70,7 @@ pub(crate) struct ToCardCtrlRbCsrProxy(RpcClient);
 impl ToCardCtrlRbCsrProxy {
     const HEAD_CSR: usize = CSR_ADDR_CMD_REQ_QUEUE_HEAD;
     const TAIL_CSR: usize = CSR_ADDR_CMD_REQ_QUEUE_TAIL;
-    pub fn new(client: RpcClient) -> Self {
+    pub(crate) fn new(client: RpcClient) -> Self {
         Self(client)
     }
 }
@@ -89,7 +89,7 @@ pub(crate) struct ToHostCtrlRbCsrProxy(RpcClient);
 impl ToHostCtrlRbCsrProxy {
     const HEAD_CSR: usize = CSR_ADDR_CMD_RESP_QUEUE_HEAD;
     const TAIL_CSR: usize = CSR_ADDR_CMD_RESP_QUEUE_TAIL;
-    pub fn new(client: RpcClient) -> Self {
+    pub(crate) fn new(client: RpcClient) -> Self {
         Self(client)
     }
 }
@@ -109,7 +109,7 @@ pub(crate) struct ToCardWorkRbCsrProxy(RpcClient);
 impl ToCardWorkRbCsrProxy {
     const HEAD_CSR: usize = CSR_ADDR_SEND_QUEUE_HEAD;
     const TAIL_CSR: usize = CSR_ADDR_SEND_QUEUE_TAIL;
-    pub fn new(client: RpcClient) -> Self {
+    pub(crate) fn new(client: RpcClient) -> Self {
         Self(client)
     }
 }
@@ -129,7 +129,7 @@ pub(crate) struct ToHostWorkRbCsrProxy(RpcClient);
 impl ToHostWorkRbCsrProxy {
     const HEAD_CSR: usize = CSR_ADDR_META_REPORT_QUEUE_HEAD;
     const TAIL_CSR: usize = CSR_ADDR_META_REPORT_QUEUE_TAIL;
-    pub fn new(client: RpcClient) -> Self {
+    pub(crate) fn new(client: RpcClient) -> Self {
         Self(client)
     }
 }

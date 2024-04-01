@@ -16,11 +16,11 @@ use super::{
 pub(crate) struct Qpn(u32);
 
 impl Qpn {
-    pub fn new(qpn: u32) -> Self {
+    pub(crate) fn new(qpn: u32) -> Self {
         Qpn(qpn)
     }
 
-    pub fn get(self) -> u32 {
+    pub(crate) fn get(self) -> u32 {
         self.0
     }
 }
@@ -30,12 +30,12 @@ impl Qpn {
 pub(crate) struct PDHandle(u32);
 
 impl PDHandle {
-    pub fn new(handle: u32) -> Self {
+    pub(crate) fn new(handle: u32) -> Self {
         PDHandle(handle)
     }
 
     #[cfg(test)]
-    pub fn get(&self) -> u32 {
+    pub(crate) fn get(&self) -> u32 {
         self.0
     }
 }
@@ -45,11 +45,11 @@ impl PDHandle {
 pub(crate) struct Key(u32);
 
 impl Key {
-    pub fn new(key: u32) -> Self {
+    pub(crate) fn new(key: u32) -> Self {
         Key(key)
     }
 
-    pub fn get(self) -> u32 {
+    pub(crate) fn get(self) -> u32 {
         self.0
     }
 }
@@ -70,18 +70,18 @@ impl From<Key> for crate::Key {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PKey(u16);
 impl PKey {
-    pub fn new(key: u16) -> Self {
+    pub(crate) fn new(key: u16) -> Self {
         Self(key)
     }
 
-    pub fn get(self) -> u16 {
+    pub(crate) fn get(self) -> u16 {
         self.0
     }
 }
 
 /// State of the queue pair
 #[allow(dead_code)]
-pub enum StateQP {
+pub(crate) enum StateQP {
     Reset,
     Init,
     Rtr,
@@ -95,7 +95,7 @@ pub enum StateQP {
 
 /// A abstraction of a RDMA message.
 #[derive(Debug, Clone)]
-pub enum Metadata {
+pub(crate) enum Metadata {
     /// RDMA write, read request and response
     General(RdmaGeneralMeta),
 
@@ -104,14 +104,14 @@ pub enum Metadata {
 }
 
 impl Metadata {
-    pub fn get_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn get_opcode(&self) -> ToHostWorkRbDescOpcode {
         match self {
             Metadata::General(header) => header.common_meta.opcode.clone(),
             Metadata::Acknowledge(header) => header.common_meta.opcode.clone(),
         }
     }
 
-    pub fn common_meta(&self) -> &RdmaMessageMetaCommon {
+    pub(crate) fn common_meta(&self) -> &RdmaMessageMetaCommon {
         match self {
             Metadata::General(header) => &header.common_meta,
             Metadata::Acknowledge(header) => &header.common_meta,
@@ -122,8 +122,8 @@ impl Metadata {
 /// A scatter-gather list element.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SGListElement {
-    pub data: *const u8,
-    pub len: usize,
+    pub(crate) data: *const u8,
+    pub(crate) len: usize,
 }
 
 /// A payload info, which contains the scatter-gather list and the total length of the payload.
@@ -134,14 +134,14 @@ pub(crate) struct PayloadInfo {
 }
 
 impl PayloadInfo {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         PayloadInfo {
             sg_list: Vec::new(),
             total_len: 0,
         }
     }
 
-    pub fn new_with_data(data: *const u8, len: usize) -> Self {
+    pub(crate) fn new_with_data(data: *const u8, len: usize) -> Self {
         PayloadInfo {
             sg_list: vec![SGListElement { data, len }],
             total_len: len,
@@ -149,11 +149,11 @@ impl PayloadInfo {
     }
 
     #[cfg(test)]
-    pub fn get_length(&self) -> usize {
+    pub(crate) fn get_length(&self) -> usize {
         self.total_len
     }
 
-    pub fn get_pad_cnt(&self) -> usize {
+    pub(crate) fn get_pad_cnt(&self) -> usize {
         let mut pad_cnt = RDMA_PAYLOAD_ALIGNMENT - self.total_len % RDMA_PAYLOAD_ALIGNMENT;
         if pad_cnt == RDMA_PAYLOAD_ALIGNMENT {
             pad_cnt = 0;
@@ -161,21 +161,21 @@ impl PayloadInfo {
         pad_cnt
     }
 
-    pub fn with_pad_length(&self) -> usize {
+    pub(crate) fn with_pad_length(&self) -> usize {
         self.total_len + self.get_pad_cnt()
     }
 
-    pub fn add(&mut self, data: *const u8, len: usize) {
+    pub(crate) fn add(&mut self, data: *const u8, len: usize) {
         self.sg_list.push(SGListElement { data, len });
         self.total_len += len;
     }
 
     #[cfg(test)]
-    pub fn get_sg_list(&self) -> &Vec<SGListElement> {
+    pub(crate) fn get_sg_list(&self) -> &Vec<SGListElement> {
         &self.sg_list
     }
 
-    pub fn copy_to(&self, mut dst: *mut u8) {
+    pub(crate) fn copy_to(&self, mut dst: *mut u8) {
         for i in 0..self.sg_list.len() {
             unsafe {
                 std::ptr::copy_nonoverlapping(self.sg_list[i].data, dst, self.sg_list[i].len);
@@ -188,22 +188,22 @@ impl PayloadInfo {
 
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
-    pub fn direct_data_ptr(&self) -> &[u8] {
+    pub(crate) fn direct_data_ptr(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.sg_list[0].data, self.sg_list[0].len) }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct RdmaMessage {
-    pub meta_data: Metadata,
-    pub payload: PayloadInfo,
+pub(crate) struct RdmaMessage {
+    pub(crate) meta_data: Metadata,
+    pub(crate) payload: PayloadInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RethHeader {
-    pub va: u64,
-    pub rkey: Key,
-    pub len: u32,
+pub(crate) struct RethHeader {
+    pub(crate) va: u64,
+    pub(crate) rkey: Key,
+    pub(crate) len: u32,
 }
 
 impl From<&RETH> for RethHeader {
@@ -217,14 +217,14 @@ impl From<&RETH> for RethHeader {
 }
 
 #[derive(Debug, Clone)]
-pub struct RdmaMessageMetaCommon {
-    pub tran_type: ToHostWorkRbDescTransType,
-    pub opcode: ToHostWorkRbDescOpcode,
-    pub solicited: bool,
-    pub pkey: PKey,
-    pub dqpn: Qpn,
-    pub ack_req: bool,
-    pub psn: Psn,
+pub(crate) struct RdmaMessageMetaCommon {
+    pub(crate) tran_type: ToHostWorkRbDescTransType,
+    pub(crate) opcode: ToHostWorkRbDescOpcode,
+    pub(crate) solicited: bool,
+    pub(crate) pkey: PKey,
+    pub(crate) dqpn: Qpn,
+    pub(crate) ack_req: bool,
+    pub(crate) psn: Psn,
 }
 
 impl TryFrom<&BTH> for RdmaMessageMetaCommon {
@@ -244,15 +244,15 @@ impl TryFrom<&BTH> for RdmaMessageMetaCommon {
 }
 
 #[derive(Debug, Clone)]
-pub struct RdmaGeneralMeta {
-    pub common_meta: RdmaMessageMetaCommon,
-    pub reth: RethHeader,
-    pub imm: Option<u32>,
-    pub secondary_reth: Option<RethHeader>,
+pub(crate) struct RdmaGeneralMeta {
+    pub(crate) common_meta: RdmaMessageMetaCommon,
+    pub(crate) reth: RethHeader,
+    pub(crate) imm: Option<u32>,
+    pub(crate) secondary_reth: Option<RethHeader>,
 }
 
 impl RdmaGeneralMeta {
-    pub fn new_from_packet(
+    pub(crate) fn new_from_packet(
         bth: &BTH,
         reth: &RETH,
         imm: Option<&Immediate>,
@@ -266,14 +266,14 @@ impl RdmaGeneralMeta {
         })
     }
 
-    pub fn is_read_request(&self) -> bool {
+    pub(crate) fn is_read_request(&self) -> bool {
         matches!(
             self.common_meta.opcode,
             ToHostWorkRbDescOpcode::RdmaReadRequest
         )
     }
 
-    pub fn has_payload(&self) -> bool {
+    pub(crate) fn has_payload(&self) -> bool {
         matches!(
             self.common_meta.opcode,
             ToHostWorkRbDescOpcode::RdmaWriteFirst
@@ -289,7 +289,7 @@ impl RdmaGeneralMeta {
         )
     }
 
-    pub fn needed_permissions(&self) -> MemAccessTypeFlag {
+    pub(crate) fn needed_permissions(&self) -> MemAccessTypeFlag {
         if self.has_payload() {
             MemAccessTypeFlag::IbvAccessRemoteWrite
         } else if self.is_read_request() {
@@ -300,15 +300,15 @@ impl RdmaGeneralMeta {
     }
 }
 #[derive(Debug, Clone)]
-pub struct AethHeader {
-    pub common_meta: RdmaMessageMetaCommon,
-    pub aeth_code: ToHostWorkRbDescAethCode,
-    pub aeth_value: u8,
-    pub msn: u32,
+pub(crate) struct AethHeader {
+    pub(crate) common_meta: RdmaMessageMetaCommon,
+    pub(crate) aeth_code: ToHostWorkRbDescAethCode,
+    pub(crate) aeth_value: u8,
+    pub(crate) msn: u32,
 }
 
 impl AethHeader {
-    pub fn new_from_packet(bth: &BTH, aeth: &AETH) -> Result<Self, PacketError> {
+    pub(crate) fn new_from_packet(bth: &BTH, aeth: &AETH) -> Result<Self, PacketError> {
         let aeth_code = ToHostWorkRbDescAethCode::try_from(aeth.get_aeth_code())?;
         let aeth_value = aeth.get_aeth_value();
         let msn = aeth.get_msn();
@@ -365,15 +365,15 @@ impl From<ToCardCtrlRbDescSge> for SGListElementWithKey {
 }
 
 #[derive(Debug)]
-pub struct SGList {
-    pub data: [SGListElementWithKey; 4],
-    pub cur_level: u32,
-    pub len: u32,
+pub(crate) struct SGList {
+    pub(crate) data: [SGListElementWithKey; 4],
+    pub(crate) cur_level: u32,
+    pub(crate) len: u32,
 }
 
 impl SGList {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         SGList {
             data: [SGListElementWithKey::default(); 4],
             cur_level: 0,
@@ -381,7 +381,7 @@ impl SGList {
         }
     }
 
-    pub fn new_with_sge(sge: ToCardCtrlRbDescSge) -> Self {
+    pub(crate) fn new_with_sge(sge: ToCardCtrlRbDescSge) -> Self {
         SGList {
             data: [
                 SGListElementWithKey::from(sge),
@@ -394,7 +394,7 @@ impl SGList {
         }
     }
 
-    pub fn get_total_length(&self) -> u32 {
+    pub(crate) fn get_total_length(&self) -> u32 {
         self.data.iter().map(|sge| sge.len).sum()
     }
 
@@ -405,7 +405,7 @@ impl SGList {
         }
     }
 
-    pub fn new_with_sge_list(
+    pub(crate) fn new_with_sge_list(
         sge0: ToCardCtrlRbDescSge,
         sge1: Option<ToCardCtrlRbDescSge>,
         sge2: Option<ToCardCtrlRbDescSge>,
@@ -470,7 +470,7 @@ impl SGList {
     }
 
     #[cfg(test)]
-    pub fn into_four_sges(
+    pub(crate) fn into_four_sges(
         self,
     ) -> (
         ToCardCtrlRbDescSge,
@@ -517,7 +517,7 @@ pub(crate) enum ToCardDescriptor {
 }
 
 impl ToCardDescriptor {
-    pub fn is_raw_packet(&self) -> bool {
+    pub(crate) fn is_raw_packet(&self) -> bool {
         match self {
             ToCardDescriptor::Write(desc) => {
                 matches!(desc.opcode, ToCardWorkRbDescOpcode::Write)
@@ -527,14 +527,14 @@ impl ToCardDescriptor {
         }
     }
 
-    pub fn common(&self) -> &ToCardWorkRbDescCommon {
+    pub(crate) fn common(&self) -> &ToCardWorkRbDescCommon {
         match self {
             ToCardDescriptor::Write(desc) => &desc.common,
             ToCardDescriptor::Read(desc) => &desc.common,
         }
     }
 
-    pub fn first_sge_mut(&mut self) -> &mut SGList {
+    pub(crate) fn first_sge_mut(&mut self) -> &mut SGList {
         match self {
             ToCardDescriptor::Write(desc) => &mut desc.sg_list,
             ToCardDescriptor::Read(desc) => &mut desc.sge,
@@ -553,7 +553,7 @@ pub(crate) struct ToCardWriteDescriptor {
 }
 
 impl ToCardWriteDescriptor {
-    pub fn write_only_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+    pub(crate) fn write_only_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
         if self.is_first && self.is_last {
             // is_first = True and is_last = True, means only one packet
             match (self.is_resp(), self.has_imm()) {
@@ -578,7 +578,7 @@ impl ToCardWriteDescriptor {
         }
     }
 
-    pub fn write_first_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn write_first_opcode(&self) -> ToHostWorkRbDescOpcode {
         match (self.is_first, self.is_resp()) {
             (true, true) => ToHostWorkRbDescOpcode::RdmaReadResponseFirst,
             (true, false) => ToHostWorkRbDescOpcode::RdmaWriteFirst,
@@ -587,7 +587,7 @@ impl ToCardWriteDescriptor {
         }
     }
 
-    pub fn write_middle_opcode(&self) -> ToHostWorkRbDescOpcode {
+    pub(crate) fn write_middle_opcode(&self) -> ToHostWorkRbDescOpcode {
         if self.is_resp() {
             ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
         } else {
@@ -595,7 +595,7 @@ impl ToCardWriteDescriptor {
         }
     }
 
-    pub fn write_last_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
+    pub(crate) fn write_last_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
         match (self.is_last, self.is_resp(), self.has_imm()) {
             (true, true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore read response last with imm
             (true, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
@@ -605,11 +605,11 @@ impl ToCardWriteDescriptor {
         }
     }
 
-    pub fn is_resp(&self) -> bool {
+    pub(crate) fn is_resp(&self) -> bool {
         matches!(self.opcode, ToCardWorkRbDescOpcode::ReadResp)
     }
 
-    pub fn has_imm(&self) -> bool {
+    pub(crate) fn has_imm(&self) -> bool {
         self.imm.is_some()
     }
 }

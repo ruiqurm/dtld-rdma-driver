@@ -68,7 +68,7 @@ pub(crate) struct DescResponser {
 }
 
 impl DescResponser {
-    pub fn new(
+    pub(crate) fn new(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
         ack_buffers: Arc<AcknowledgeBuffer>,
@@ -202,7 +202,7 @@ impl DescResponser {
     }
 }
 
-pub struct Slot {
+pub(crate) struct Slot {
     buf: NonNull<u8>,
     allocator: Arc<AcknowledgeBuffer>,
 }
@@ -259,9 +259,9 @@ pub(crate) struct AcknowledgeBuffer {
 }
 
 impl AcknowledgeBuffer {
-    pub const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
+    pub(crate) const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
     /// Create a new acknowledge buffer
-    pub fn new(start_va: usize, length: usize, lkey: Key) -> Arc<Self> {
+    pub(crate) fn new(start_va: usize, length: usize, lkey: Key) -> Arc<Self> {
         assert!(
             length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0,
             "The length should be multiple of 64"
@@ -283,7 +283,7 @@ impl AcknowledgeBuffer {
         this
     }
 
-    pub fn alloc(self: &Arc<Self>) -> Option<Slot> {
+    pub(crate) fn alloc(self: &Arc<Self>) -> Option<Slot> {
         // FIXME: currently, we just recycle all the buffer in the free list.
         let result = self.free_list.pop();
         match result {
@@ -292,7 +292,7 @@ impl AcknowledgeBuffer {
         }
     }
 
-    pub fn convert_buf_into_sge(&self, buf: &Slot, real_length: u32) -> Sge {
+    pub(crate) fn convert_buf_into_sge(&self, buf: &Slot, real_length: u32) -> Sge {
         Sge {
             addr: buf.buf.as_ptr() as u64,
             len: real_length,

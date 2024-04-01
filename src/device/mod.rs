@@ -9,8 +9,8 @@ mod ringbuf;
 mod software;
 mod types;
 
-pub mod scheduler;
-pub use types::ToCardWorkRbDesc;
+pub(crate) mod scheduler;
+pub(crate) use types::ToCardWorkRbDesc;
 
 pub(crate) use self::{
     emulated::EmulatedDevice, hardware::HardwareDevice, software::SoftwareDevice, types::*,

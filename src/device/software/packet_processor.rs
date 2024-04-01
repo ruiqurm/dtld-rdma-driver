@@ -19,7 +19,7 @@ use super::{
 pub(crate) struct PacketProcessor;
 
 impl PacketProcessor {
-    pub fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
+    pub(crate) fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
         let opcode = ToHostWorkRbDescOpcode::try_from(BTH::from_bytes(buf).get_opcode());
         match opcode {
             Ok(ToHostWorkRbDescOpcode::RdmaWriteFirst) => {
@@ -74,7 +74,7 @@ impl PacketProcessor {
         }
     }
 
-    pub fn set_from_rdma_message(
+    pub(crate) fn set_from_rdma_message(
         buf: &mut [u8],
         message: &RdmaMessage,
     ) -> Result<usize, PacketError> {
@@ -166,7 +166,7 @@ pub(crate) struct PacketWriter<'buf, 'message> {
 }
 
 impl<'buf, 'message> PacketWriter<'buf, 'message> {
-    pub fn new(buf: &'buf mut [u8]) -> Self {
+    pub(crate) fn new(buf: &'buf mut [u8]) -> Self {
         Self {
             buf,
             src_addr: None,
@@ -178,43 +178,43 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
         }
     }
 
-    pub fn src_addr(&mut self, addr: Ipv4Addr) -> &mut Self {
+    pub(crate) fn src_addr(&mut self, addr: Ipv4Addr) -> &mut Self {
         let new = self;
         new.src_addr = Some(addr);
         new
     }
 
-    pub fn src_port(&mut self, port: u16) -> &mut Self {
+    pub(crate) fn src_port(&mut self, port: u16) -> &mut Self {
         let new = self;
         new.src_port = Some(port);
         new
     }
 
-    pub fn dest_addr(&mut self, addr: Ipv4Addr) -> &mut Self {
+    pub(crate) fn dest_addr(&mut self, addr: Ipv4Addr) -> &mut Self {
         let new = self;
         new.dest_addr = Some(addr);
         new
     }
 
-    pub fn dest_port(&mut self, port: u16) -> &mut Self {
+    pub(crate) fn dest_port(&mut self, port: u16) -> &mut Self {
         let new = self;
         new.dest_port = Some(port);
         new
     }
 
-    pub fn ip_id(&mut self, id: u16) -> &mut Self {
+    pub(crate) fn ip_id(&mut self, id: u16) -> &mut Self {
         let new = self;
         new.ip_id = Some(id);
         new
     }
 
-    pub fn message(&mut self, message: &'message RdmaMessage) -> &mut Self {
+    pub(crate) fn message(&mut self, message: &'message RdmaMessage) -> &mut Self {
         let new = self;
         new.message = Some(message);
         new
     }
 
-    pub fn write(&mut self) -> Result<usize, PacketProcessorError> {
+    pub(crate) fn write(&mut self) -> Result<usize, PacketProcessorError> {
         // advance `size_of::<IpUdpHeaders>()` to write the rdma header
         let net_packet_offset = size_of::<IpUdpHeaders>();
         let message = self.message.ok_or(PacketProcessorError::MissingMessage)?;

@@ -25,7 +25,7 @@
     single_use_lifetimes,
     // trivial_casts, // We allow trivial_casts for casting a pointer
     trivial_numeric_casts,
-    // unreachable_pub, // TODO:
+    unreachable_pub, // TODO:
     // unsafe_code, // we need unsafe when managing memory
     unsafe_op_in_unsafe_fn,
     unstable_features,

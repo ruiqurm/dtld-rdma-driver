@@ -9,13 +9,13 @@ use super::{
 };
 use std::io;
 
-pub mod udp_agent;
+pub(crate) mod udp_agent;
 
-pub trait NetReceiveLogic<'a>: Send + Sync + Debug {
+pub(crate) trait NetReceiveLogic<'a>: Send + Sync + Debug {
     fn recv(&self, message: &mut RdmaMessage);
 }
 
-pub trait NetSendAgent: Debug {
+pub(crate) trait NetSendAgent: Debug {
     fn send(
         &self,
         dest_addr: Ipv4Addr,
@@ -33,7 +33,7 @@ pub trait NetSendAgent: Debug {
 
 #[derive(Error, Debug)]
 #[allow(clippy::module_name_repetitions)]
-pub enum NetAgentError {
+pub(crate) enum NetAgentError {
     #[error("packet process error")]
     Packet(#[from] PacketError),
     #[error("io error")]

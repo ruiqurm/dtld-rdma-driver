@@ -13,7 +13,7 @@ const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
 const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
-pub mod round_robin;
+pub(crate) mod round_robin;
 
 /// A descriptor scheduler that cut descriptor into `SCHEDULER_SIZE` size and schedule with a strategy.
 #[derive(Debug)]
@@ -26,7 +26,7 @@ pub(crate) struct DescriptorScheduler {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub trait SchedulerStrategy: Send + Sync + Debug{
+pub(crate) trait SchedulerStrategy: Send + Sync + Debug{
     #[allow(clippy::linkedlist)]
     fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>);
 
@@ -36,13 +36,13 @@ pub trait SchedulerStrategy: Send + Sync + Debug{
 }
 
 struct SGList {
-    pub data: [ToCardCtrlRbDescSge; MAX_SGL_LENGTH],
-    pub cur_level: u32,
-    pub len: u32,
+    pub(crate) data: [ToCardCtrlRbDescSge; MAX_SGL_LENGTH],
+    pub(crate) cur_level: u32,
+    pub(crate) len: u32,
 }
 
 impl SGList {
-    pub fn new_from_sge(sge: ToCardCtrlRbDescSge) -> Self {
+    pub(crate) fn new_from_sge(sge: ToCardCtrlRbDescSge) -> Self {
         let mut sge_list = Self {
             data: [ToCardCtrlRbDescSge::default(); MAX_SGL_LENGTH],
             cur_level: 0,
@@ -64,7 +64,7 @@ impl Default for SGList {
 }
 
 impl DescriptorScheduler {
-    pub fn new(strat: Arc<dyn SchedulerStrategy>) -> Self {
+    pub(crate) fn new(strat: Arc<dyn SchedulerStrategy>) -> Self {
         let (sender, receiver) = crossbeam_channel::unbounded();
         let strategy: Arc<dyn SchedulerStrategy> = Arc::<dyn SchedulerStrategy>::clone(&strat);
         let thread_receiver = receiver.clone();
@@ -88,7 +88,7 @@ impl DescriptorScheduler {
         }
     }
 
-    pub fn pop(self: &Arc<Self>) -> Option<ToCardWorkRbDesc> {
+    pub(crate) fn pop(self: &Arc<Self>) -> Option<ToCardWorkRbDesc> {
         self.strategy.pop()
     }
 }
@@ -165,7 +165,7 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
 
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
 #[allow(clippy::linkedlist)]
-pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
+pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
     let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
 
@@ -291,23 +291,23 @@ mod test {
 
     use super::{SGList, MAX_SGL_LENGTH};
 
-    pub struct SGListBuilder {
+    pub(crate) struct SGListBuilder {
         sg_list: Vec<ToCardCtrlRbDescSge>,
     }
 
     impl SGListBuilder {
-        pub fn new() -> Self {
+        pub(crate) fn new() -> Self {
             SGListBuilder {
                 sg_list: Vec::new(),
             }
         }
 
-        pub fn with_sge(&mut self, addr: u64, len: u32, key: Key) -> &mut Self {
+        pub(crate) fn with_sge(&mut self, addr: u64, len: u32, key: Key) -> &mut Self {
             self.sg_list.push(ToCardCtrlRbDescSge { addr, len, key });
             self
         }
 
-        pub fn build(&self) -> SGList {
+        pub(crate) fn build(&self) -> SGList {
             let mut sg_list = SGList::default();
             for sge in self.sg_list.iter() {
                 sg_list.data[sg_list.len as usize] = *sge;

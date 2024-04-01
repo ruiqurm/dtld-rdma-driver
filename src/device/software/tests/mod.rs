@@ -19,18 +19,18 @@ mod test_logic;
 mod test_packet;
 mod test_utils;
 
-pub struct SGListBuilder {
+pub(crate) struct SGListBuilder {
     sg_list: Vec<SGListElementWithKey>,
 }
 
 impl SGListBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         SGListBuilder {
             sg_list: Vec::new(),
         }
     }
 
-    pub fn with_sge(&mut self, addr: u64, len: u32, key: u32) -> &mut Self {
+    pub(crate) fn with_sge(&mut self, addr: u64, len: u32, key: u32) -> &mut Self {
         self.sg_list.push(SGListElementWithKey {
             addr,
             len,
@@ -39,7 +39,7 @@ impl SGListBuilder {
         self
     }
 
-    pub fn build(&self) -> SGList {
+    pub(crate) fn build(&self) -> SGList {
         let mut sg_list = SGList::new();
         for sge in self.sg_list.iter() {
             sg_list.data[sg_list.len as usize] = *sge;
@@ -53,7 +53,7 @@ impl SGListBuilder {
     }
 }
 
-pub struct ToCardWorkRbDescBuilder {
+pub(crate) struct ToCardWorkRbDescBuilder {
     opcode: Option<ToCardWorkRbDescOpcode>,
     total_len: Option<u32>,
     raddr: Option<u64>,
@@ -70,7 +70,7 @@ pub struct ToCardWorkRbDescBuilder {
 }
 
 impl ToCardWorkRbDescBuilder {
-    pub fn default() -> Self {
+    pub(crate) fn default() -> Self {
         Self {
             opcode: None,
             total_len: None,
@@ -87,72 +87,72 @@ impl ToCardWorkRbDescBuilder {
             sg_list: None,
         }
     }
-    pub fn with_is_first(&mut self, is_first: bool) -> &mut Self {
+    pub(crate) fn with_is_first(&mut self, is_first: bool) -> &mut Self {
         self.is_first = Some(is_first);
         self
     }
 
-    pub fn with_is_last(&mut self, is_last: bool) -> &mut Self {
+    pub(crate) fn with_is_last(&mut self, is_last: bool) -> &mut Self {
         self.is_last = Some(is_last);
         self
     }
 
-    pub fn with_opcode(&mut self, opcode: ToCardWorkRbDescOpcode) -> &mut Self {
+    pub(crate) fn with_opcode(&mut self, opcode: ToCardWorkRbDescOpcode) -> &mut Self {
         self.opcode = Some(opcode);
         self
     }
 
-    pub fn with_total_len(&mut self, total_len: u32) -> &mut Self {
+    pub(crate) fn with_total_len(&mut self, total_len: u32) -> &mut Self {
         self.total_len = Some(total_len);
         self
     }
 
-    pub fn with_raddr(&mut self, raddr: u64) -> &mut Self {
+    pub(crate) fn with_raddr(&mut self, raddr: u64) -> &mut Self {
         self.raddr = Some(raddr);
         self
     }
 
-    pub fn with_rkey(&mut self, rkey: u32) -> &mut Self {
+    pub(crate) fn with_rkey(&mut self, rkey: u32) -> &mut Self {
         self.rkey = Some(rkey);
         self
     }
 
-    pub fn with_dqpn(&mut self, dqpn: u32) -> &mut Self {
+    pub(crate) fn with_dqpn(&mut self, dqpn: u32) -> &mut Self {
         self.dqpn = Some(dqpn);
         self
     }
 
-    pub fn with_pmtu(&mut self, pmtu: Pmtu) -> &mut Self {
+    pub(crate) fn with_pmtu(&mut self, pmtu: Pmtu) -> &mut Self {
         self.pmtu = Some(pmtu);
         self
     }
 
-    pub fn with_qp_type(&mut self, qp_type: QpType) -> &mut Self {
+    pub(crate) fn with_qp_type(&mut self, qp_type: QpType) -> &mut Self {
         self.qp_type = Some(qp_type);
         self
     }
 
-    pub fn with_psn(&mut self, psn: u32) -> &mut Self {
+    pub(crate) fn with_psn(&mut self, psn: u32) -> &mut Self {
         self.psn = Some(psn);
         self
     }
 
-    pub fn with_flags(&mut self, flags: MemAccessTypeFlag) -> &mut Self {
+    pub(crate) fn with_flags(&mut self, flags: MemAccessTypeFlag) -> &mut Self {
         self.flags = Some(flags);
         self
     }
 
-    pub fn with_imm(&mut self, imm: u32) -> &mut Self {
+    pub(crate) fn with_imm(&mut self, imm: u32) -> &mut Self {
         self.imm = Some(imm);
         self
     }
 
-    pub fn with_sg_list(&mut self, sg_list: SGList) -> &mut Self {
+    pub(crate) fn with_sg_list(&mut self, sg_list: SGList) -> &mut Self {
         self.sg_list = Some(sg_list);
         self
     }
 
-    pub fn build(&mut self) -> ToCardWorkRbDesc {
+    pub(crate) fn build(&mut self) -> ToCardWorkRbDesc {
         let common = ToCardWorkRbDescCommon {
             total_len: self.total_len.unwrap(),
             raddr: self.raddr.unwrap(),
@@ -205,11 +205,11 @@ impl ToCardWorkRbDescBuilder {
     }
 }
 
-pub enum ToCardCtrlRbDescBuilderType {
+pub(crate) enum ToCardCtrlRbDescBuilderType {
     UpdateMrTable,
     QpManagement,
 }
-pub struct ToCardCtrlRbDescBuilder {
+pub(crate) struct ToCardCtrlRbDescBuilder {
     type_: ToCardCtrlRbDescBuilderType,
     op_id: Option<u32>,
     addr: Option<u64>,
@@ -226,7 +226,7 @@ pub struct ToCardCtrlRbDescBuilder {
 }
 
 impl ToCardCtrlRbDescBuilder {
-    pub fn new(type_: ToCardCtrlRbDescBuilderType) -> Self {
+    pub(crate) fn new(type_: ToCardCtrlRbDescBuilderType) -> Self {
         Self {
             type_,
             op_id: Some(0),
@@ -245,67 +245,67 @@ impl ToCardCtrlRbDescBuilder {
     }
 
     #[allow(dead_code)]
-    pub fn with_op_id(&mut self, op_id: u32) -> &mut Self {
+    pub(crate) fn with_op_id(&mut self, op_id: u32) -> &mut Self {
         self.op_id = Some(op_id);
         self
     }
 
-    pub fn with_addr(&mut self, addr: u64) -> &mut Self {
+    pub(crate) fn with_addr(&mut self, addr: u64) -> &mut Self {
         self.addr = Some(addr);
         self
     }
 
-    pub fn with_len(&mut self, len: u32) -> &mut Self {
+    pub(crate) fn with_len(&mut self, len: u32) -> &mut Self {
         self.len = Some(len);
         self
     }
 
-    pub fn with_key(&mut self, key: u32) -> &mut Self {
+    pub(crate) fn with_key(&mut self, key: u32) -> &mut Self {
         self.key = Some(key);
         self
     }
 
-    pub fn with_pd_hdl(&mut self, pd_hdl: u32) -> &mut Self {
+    pub(crate) fn with_pd_hdl(&mut self, pd_hdl: u32) -> &mut Self {
         self.pd_hdl = Some(pd_hdl);
         self
     }
 
-    pub fn with_acc_flags(&mut self, acc_flags: MemAccessTypeFlag) -> &mut Self {
+    pub(crate) fn with_acc_flags(&mut self, acc_flags: MemAccessTypeFlag) -> &mut Self {
         self.acc_flags = Some(acc_flags);
         self
     }
 
-    pub fn with_pgt_offset(&mut self, pgt_offset: u32) -> &mut Self {
+    pub(crate) fn with_pgt_offset(&mut self, pgt_offset: u32) -> &mut Self {
         self.pgt_offset = Some(pgt_offset);
         self
     }
 
-    pub fn with_is_valid(&mut self, is_valid: bool) -> &mut Self {
+    pub(crate) fn with_is_valid(&mut self, is_valid: bool) -> &mut Self {
         self.is_valid = Some(is_valid);
         self
     }
 
-    pub fn with_qpn(&mut self, qpn: u32) -> &mut Self {
+    pub(crate) fn with_qpn(&mut self, qpn: u32) -> &mut Self {
         self.qpn = Some(qpn);
         self
     }
 
-    pub fn with_qp_type(&mut self, qp_type: QpType) -> &mut Self {
+    pub(crate) fn with_qp_type(&mut self, qp_type: QpType) -> &mut Self {
         self.qp_type = Some(qp_type);
         self
     }
 
-    pub fn with_rq_acc_flags(&mut self, rq_acc_flags: MemAccessTypeFlag) -> &mut Self {
+    pub(crate) fn with_rq_acc_flags(&mut self, rq_acc_flags: MemAccessTypeFlag) -> &mut Self {
         self.rq_acc_flags = Some(rq_acc_flags);
         self
     }
 
-    pub fn with_pmtu(&mut self, pmtu: Pmtu) -> &mut Self {
+    pub(crate) fn with_pmtu(&mut self, pmtu: Pmtu) -> &mut Self {
         self.pmtu = Some(pmtu);
         self
     }
 
-    pub fn build(&self) -> ToCardCtrlRbDesc {
+    pub(crate) fn build(&self) -> ToCardCtrlRbDesc {
         let common = ToCardCtrlRbDescCommon {
             op_id: self.op_id.unwrap(),
         };

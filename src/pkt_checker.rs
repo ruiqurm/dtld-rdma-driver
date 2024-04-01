@@ -18,7 +18,7 @@ pub(crate) struct PacketChecker {
 }
 
 impl PacketChecker {
-    pub fn new(
+    pub(crate) fn new(
         send_queue: Sender<RespCommand>,
         recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
         read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,

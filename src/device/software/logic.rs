@@ -70,7 +70,7 @@ pub(crate) struct BlueRDMALogic {
 }
 
 #[derive(Error, Debug)]
-pub enum BlueRdmaLogicError {
+pub(crate) enum BlueRdmaLogicError {
     #[error("packet process error")]
     NetAgentError(#[from] NetAgentError),
     // #[error("convert qp type to transport type error")]
@@ -90,7 +90,7 @@ impl<T> From<PoisonError<T>> for BlueRdmaLogicError {
 }
 
 impl BlueRDMALogic {
-    pub fn new(net_sender: Arc<dyn NetSendAgent>) -> Self {
+    pub(crate) fn new(net_sender: Arc<dyn NetSendAgent>) -> Self {
         BlueRDMALogic {
             // mr_lkey_table: RwLock::new(HashMap::new()),
             mr_rkey_table: RwLock::new(HashMap::new()),
@@ -102,7 +102,7 @@ impl BlueRDMALogic {
     }
 
     /// Get the queue that contains the received meta descriptor
-    pub fn get_to_host_descriptor_queue(&self) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
+    pub(crate) fn get_to_host_descriptor_queue(&self) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
         Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(
             &self.to_host_data_descriptor_queue,
         )
@@ -182,7 +182,7 @@ impl BlueRDMALogic {
     }
 
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
-    pub fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
+    pub(crate) fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
         let desc = ToCardDescriptor::from(desc);
         // if it's a raw packet, send it directly
         if desc.is_raw_packet() {
@@ -294,11 +294,11 @@ impl BlueRDMALogic {
         Ok(())
     }
 
-    pub fn get_update_result(&self) -> Option<ToHostCtrlRbDesc> {
+    pub(crate) fn get_update_result(&self) -> Option<ToHostCtrlRbDesc> {
         self.to_host_ctrl_descriptor_queue.pop()
     }
 
-    pub fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
+    pub(crate) fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
         let result_desc = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;

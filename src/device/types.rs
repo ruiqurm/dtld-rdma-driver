@@ -29,7 +29,7 @@ pub(crate) enum ToHostCtrlRbDesc {
 }
 
 #[derive(Clone, Debug)]
-pub enum ToCardWorkRbDesc {
+pub(crate) enum ToCardWorkRbDesc {
     Read(ToCardWorkRbDescRead),
     Write(ToCardWorkRbDescWrite),
     WriteWithImm(ToCardWorkRbDescWriteWithImm),
@@ -1314,7 +1314,7 @@ pub(crate) struct ToCardWorkRbDescBuilder {
 }
 
 impl ToCardWorkRbDescBuilder {
-    pub fn new_write() -> Self {
+    pub(crate) fn new_write() -> Self {
         Self {
             type_: ToCardWorkRbDescOpcode::Write,
             common: None,
@@ -1323,7 +1323,7 @@ impl ToCardWorkRbDescBuilder {
         }
     }
 
-    pub fn new_read_resp() -> Self {
+    pub(crate) fn new_read_resp() -> Self {
         Self {
             type_: ToCardWorkRbDescOpcode::ReadResp,
             common: None,
@@ -1332,7 +1332,7 @@ impl ToCardWorkRbDescBuilder {
         }
     }
 
-    pub fn new_read() -> Self {
+    pub(crate) fn new_read() -> Self {
         Self {
             type_: ToCardWorkRbDescOpcode::Read,
             common: None,
@@ -1341,17 +1341,17 @@ impl ToCardWorkRbDescBuilder {
         }
     }
 
-    pub fn with_common(mut self, common: ToCardWorkRbDescCommon) -> Self {
+    pub(crate) fn with_common(mut self, common: ToCardWorkRbDescCommon) -> Self {
         self.common = Some(common);
         self
     }
 
-    pub fn with_sge(mut self, seg: Sge) -> Self {
+    pub(crate) fn with_sge(mut self, seg: Sge) -> Self {
         self.seg_list.push(seg);
         self
     }
 
-    pub fn build(mut self) -> Result<ToCardWorkRbDesc, Error> {
+    pub(crate) fn build(mut self) -> Result<ToCardWorkRbDesc, Error> {
         let common = self
             .common
             .ok_or_else(|| Error::BuildDescFailed("common"))?;
@@ -1429,7 +1429,7 @@ impl ToCardWorkRbDescBuilder {
 }
 
 #[derive(Debug, Error)]
-pub enum DeviceError {
+pub(crate) enum DeviceError {
     #[error("device error : {0}")]
     Device(String),
     #[error("Overflow")]

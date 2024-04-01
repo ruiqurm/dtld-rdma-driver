@@ -89,7 +89,7 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         )
     }
 
-    pub fn is_full(head: usize, tail: usize) -> bool {
+    pub(crate) fn is_full(head: usize, tail: usize) -> bool {
         let diff = if head >= tail {
             head - tail
         } else {
@@ -98,11 +98,11 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         diff & Self::PTR_IDX_MASK == Self::PTR_IDX_MASK
     }
 
-    pub fn is_empty(head: usize, tail: usize) -> bool {
+    pub(crate) fn is_empty(head: usize, tail: usize) -> bool {
         head == tail
     }
 
-    pub fn wrapping_add(cur: usize, cnt: usize) -> usize {
+    pub(crate) fn wrapping_add(cur: usize, cnt: usize) -> usize {
         (cur + cnt) & Self::PTR_IDX_MASK
     }
 }
@@ -294,13 +294,13 @@ mod test {
         tail: AtomicU32,
     }
     impl Proxy {
-        pub fn consume(&self) {
+        pub(crate) fn consume(&self) {
             // move the tail to the head
             let head = self.0.head.load(Ordering::Acquire);
             self.0.tail.store(head, Ordering::Release);
         }
 
-        pub fn produce<const DEPTH: usize>(&self, cnt: usize) {
+        pub(crate) fn produce<const DEPTH: usize>(&self, cnt: usize) {
             // move the head to the tail
             let head = self.0.head.load(Ordering::Acquire);
             let new_head = (head + cnt as u32) % DEPTH as u32;

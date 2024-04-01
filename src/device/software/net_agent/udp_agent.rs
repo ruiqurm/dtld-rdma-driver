@@ -17,18 +17,18 @@ use crate::device::software::{
 
 use super::{NetAgentError, NetReceiveLogic, NetSendAgent};
 
-pub const NET_SERVER_BUF_SIZE: usize = 8192;
+pub(crate) const NET_SERVER_BUF_SIZE: usize = 8192;
 
 /// A single thread udp server that listens to the corresponding port and calls the `recv` method of the receiver when a message is received.
 #[derive(Debug)]
-pub struct UDPReceiveAgent {
+pub(crate) struct UDPReceiveAgent {
     receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
     listen_thread: Option<thread::JoinHandle<Result<(), NetAgentError>>>,
 }
 
 /// A udp client that sends messages to the corresponding address and port.
 #[derive(Debug)]
-pub struct UDPSendAgent {
+pub(crate) struct UDPSendAgent {
     sender: Socket,
     sending_id_counter: AtomicU16,
     src_addr: Ipv4Addr,
@@ -37,7 +37,7 @@ pub struct UDPSendAgent {
 
 impl UDPSendAgent {
     #[allow(clippy::cast_possible_truncation,clippy::cast_sign_loss)]
-    pub fn new(src_addr: Ipv4Addr, src_port: u16) -> Result<Self, NetAgentError> {
+    pub(crate) fn new(src_addr: Ipv4Addr, src_port: u16) -> Result<Self, NetAgentError> {
         let sender = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let fd = sender.as_raw_fd();
         unsafe {
@@ -74,7 +74,7 @@ impl UDPSendAgent {
 }
 
 impl UDPReceiveAgent {
-    pub fn new(
+    pub(crate) fn new(
         receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
         addr: Ipv4Addr,
         port: u16,
@@ -89,7 +89,7 @@ impl UDPReceiveAgent {
 
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
-    pub fn init(&mut self, addr: Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
+    pub(crate) fn init(&mut self, addr: Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
         let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let addr = SocketAddrV4::new(addr, port);
