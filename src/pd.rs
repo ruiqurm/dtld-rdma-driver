@@ -11,6 +11,7 @@ pub struct Pd {
     pub(crate) handle: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct PdCtx {
     pub(crate) mr: HashSet<Mr>,
     pub(crate) qp: HashSet<Qpn>,

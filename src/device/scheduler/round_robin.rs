@@ -8,6 +8,7 @@ use super::SchedulerStrategy;
 
 /// The round-robin strategy for the scheduler.
 #[allow(clippy::module_name_repetitions, clippy::linkedlist)]
+#[derive(Debug)]
 pub struct RoundRobinStrategy {
     queue: Mutex<LinkedList<(u32, LinkedList<ToCardWorkRbDesc>)>>,
 }

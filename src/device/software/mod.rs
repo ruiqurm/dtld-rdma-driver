@@ -40,6 +40,7 @@ mod types;
 /// // data_recv_rb.pop() // recv data
 /// ```
 #[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) struct SoftwareDevice {
     recv_agent: UDPReceiveAgent,
     device: Arc<BlueRDMALogic>,
@@ -48,9 +49,10 @@ pub(crate) struct SoftwareDevice {
     to_host_work_rb: ToHostWorkRb,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ToCardWorkRb(Arc<DescriptorScheduler>);
-#[derive(Clone)]
+
+#[derive(Debug, Clone)]
 struct ToHostWorkRb(Arc<SegQueue<ToHostWorkRbDesc>>);
 
 impl SoftwareDevice {

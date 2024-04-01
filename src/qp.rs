@@ -178,6 +178,7 @@ impl PartialEq for Qp {
 impl Eq for Qp {}
 
 #[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
 pub struct QpManager {
     qp_availability: Box<[AtomicBool]>,
 }

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Debug, sync::Arc};
 
 use thiserror::Error;
 
@@ -17,17 +17,17 @@ pub(crate) use self::{
 };
 
 /// Public interface for a device. Can be a real hardware device or a software emulation.
-pub(crate) trait DeviceAdaptor: Send + Sync {
+pub(crate) trait DeviceAdaptor: Send + Sync + Debug {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>>;
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>>;
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>>;
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>>;
 
-    fn read_csr(&self, addr: usize) -> Result<u32,DeviceError>;
-    fn write_csr(&self, addr: usize, data: u32) -> Result<(),DeviceError>;
+    fn read_csr(&self, addr: usize) -> Result<u32, DeviceError>;
+    fn write_csr(&self, addr: usize, data: u32) -> Result<(), DeviceError>;
 
-    fn get_phys_addr(&self, virt_addr: usize) -> Result<usize,DeviceError>;
+    fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError>;
 }
 
 /// Generic interface for a to-card ring buffer.
@@ -37,7 +37,7 @@ pub(crate) trait ToCardRb<D> {
 
 /// Generic interface for a to-host ring buffer.
 pub(crate) trait ToHostRb<D> {
-    fn pop(&self) -> Result<D,DeviceError>;
+    fn pop(&self) -> Result<D, DeviceError>;
 }
 
 /// An error indicating that a ring buffer overflowed.

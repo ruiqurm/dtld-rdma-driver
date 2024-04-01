@@ -11,6 +11,8 @@ use crate::{
 };
 
 use log::{error, info};
+
+#[derive(Debug)]
 pub(crate) struct PacketChecker {
     _thread: std::thread::JoinHandle<()>,
 }

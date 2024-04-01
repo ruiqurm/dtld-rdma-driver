@@ -48,6 +48,7 @@ type ToHostWorkRb = Ringbuf<
 >;
 
 /// An emulated device implementation of the device.
+#[derive(Debug)]
 pub(crate) struct EmulatedDevice {
     // FIXME: Temporarily ,we use Mutex to make the Rb imuumtable as well as thread safe
     to_card_ctrl_rb: Mutex<ToCardCtrlRb>,

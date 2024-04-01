@@ -30,6 +30,7 @@ impl Mr {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct MrCtx {
     #[allow(unused)]
     pub(crate) key: Key,
@@ -43,6 +44,7 @@ pub(crate) struct MrCtx {
     pub(crate) pg_size: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct MrPgt {
     table: [u64; crate::MR_PGT_SIZE],
     free_blk_list: *mut MrPgtFreeBlk,

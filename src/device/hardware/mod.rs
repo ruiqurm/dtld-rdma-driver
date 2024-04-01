@@ -1,11 +1,11 @@
-
 use super::{
-    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc,
-    ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
+    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
+    ToHostRb, ToHostWorkRbDesc,
 };
 use std::sync::Arc;
 
 #[allow(clippy::struct_field_names)]
+#[derive(Debug)]
 pub(crate) struct HardwareDevice {
     to_card_ctrl_rb: ToCardCtrlRb,
     to_host_ctrl_rb: ToHostCtrlRb,
@@ -13,13 +13,13 @@ pub(crate) struct HardwareDevice {
     to_host_work_rb: ToHostWorkRb,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ToCardCtrlRb;
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ToHostCtrlRb;
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ToCardWorkRb;
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct ToHostWorkRb;
 
 impl HardwareDevice {
@@ -70,13 +70,13 @@ impl ToCardRb<ToCardCtrlRbDesc> for ToCardCtrlRb {
 }
 
 impl ToHostRb<ToHostCtrlRbDesc> for ToHostCtrlRb {
-    fn pop(&self) -> Result<ToHostCtrlRbDesc,DeviceError> {
+    fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
         todo!()
     }
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
-    fn pop(&self) -> Result<ToHostWorkRbDesc,DeviceError> {
+    fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
         todo!()
     }
 }

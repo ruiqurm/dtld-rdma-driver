@@ -26,7 +26,7 @@ pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u3
 }
 
 pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
-    slice.iter().fold(0, |a, b| (a << 8) + u64::from(*b))
+    slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
 pub(crate) fn allocate_aligned_memory(size: usize) -> &'static mut [u8] {

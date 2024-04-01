@@ -16,6 +16,7 @@ pub(super) trait CsrReaderProxy {
 }
 
 /// The Ringbuf is a circular buffer used comunicate between the host and the card.
+#[derive(Debug)]
 pub(super) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
     buf: Mutex<&'static mut [u8]>,
     buf_padding: usize,

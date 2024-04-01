@@ -19,6 +19,7 @@ use crate::{
 };
 
 #[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
 pub struct WorkDescPoller {
     _thread: std::thread::JoinHandle<()>,
 }

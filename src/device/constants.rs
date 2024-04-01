@@ -7,11 +7,11 @@ enum CsrIndex {
 
 const fn generate_csr_addr(is_h2c: bool, queue_index: usize, reg_index: CsrIndex) -> usize {
     let mut a = if is_h2c { 1 } else { 0 };
-    a <<= 3;
+    a <<= 3_i32;
     a |= queue_index & 0b111;
-    a <<= 10;
+    a <<= 10_i32;
     a |= reg_index as usize & 0x3FF;
-    a <<= 2;
+    a <<= 2_i32;
     a
 }
 

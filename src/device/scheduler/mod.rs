@@ -1,4 +1,4 @@
-use std::{collections::LinkedList, sync::Arc, thread::spawn};
+use std::{collections::LinkedList, fmt::Debug, sync::Arc, thread::spawn};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
@@ -16,6 +16,7 @@ const MAX_SGL_LENGTH: usize = 1;
 pub mod round_robin;
 
 /// A descriptor scheduler that cut descriptor into `SCHEDULER_SIZE` size and schedule with a strategy.
+#[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct DescriptorScheduler {
     sender: Sender<ToCardWorkRbDesc>,
@@ -25,7 +26,7 @@ pub(crate) struct DescriptorScheduler {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub trait SchedulerStrategy: Send + Sync {
+pub trait SchedulerStrategy: Send + Sync + Debug{
     #[allow(clippy::linkedlist)]
     fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>);
 

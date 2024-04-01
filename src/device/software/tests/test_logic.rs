@@ -13,6 +13,7 @@ use crate::{
     types::{Pmtu, QpType},
 };
 
+#[derive(Debug)]
 struct DummpyProxy {
     message: RefCell<LinkedList<RdmaMessage>>,
     payload: RefCell<LinkedList<PayloadInfo>>,

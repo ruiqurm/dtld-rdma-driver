@@ -62,6 +62,7 @@ pub(crate) enum RespCommand {
 }
 
 /// A thread that is responsible for sending the response to the other side
+#[derive(Debug)]
 pub(crate) struct DescResponser {
     _thread: std::thread::JoinHandle<()>,
 }
@@ -438,15 +439,15 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 
     for i in (0..IPV4_HEADER_SIZE).step_by(2) {
         let word = if i + 1 < header.len() {
-            (u16::from(header[i]) << 8) | u16::from(header[i + 1])
+            (u16::from(header[i]) << 8_i32) | u16::from(header[i + 1])
         } else {
-            u16::from(header[i]) << 8
+            u16::from(header[i]) << 8_i32
         };
         sum += u32::from(word);
     }
 
-    while sum >> 16 != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
+    while sum >> 16_i32 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16_i32);
     }
     
     !sum as u16

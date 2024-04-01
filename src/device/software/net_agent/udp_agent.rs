@@ -20,6 +20,7 @@ use super::{NetAgentError, NetReceiveLogic, NetSendAgent};
 pub const NET_SERVER_BUF_SIZE: usize = 8192;
 
 /// A single thread udp server that listens to the corresponding port and calls the `recv` method of the receiver when a message is received.
+#[derive(Debug)]
 pub struct UDPReceiveAgent {
     receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
     listen_thread: Option<thread::JoinHandle<Result<(), NetAgentError>>>,
@@ -49,7 +50,7 @@ impl UDPSendAgent {
                 on_ref,
                 std::mem::size_of_val(&on) as u32, // size_of(int) is a u32 value
             );
-            if ret != 0 {
+            if ret != 0_i32 {
                 return Err(NetAgentError::SetSockOptFailed(ret));
             }
         }
@@ -176,6 +177,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::device::software::{net_agent::NetReceiveLogic, types::RdmaMessage};
+    #[derive(Debug)]
     struct DummyNetReceiveLogic {
         packets: Arc<Mutex<Vec<RdmaMessage>>>,
     }

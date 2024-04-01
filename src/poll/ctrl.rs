@@ -8,6 +8,7 @@ use crate::{
     }, op_ctx::CtrlOpCtx
 };
 
+#[derive(Debug)]
 pub(crate) struct ControlPoller {
     _thread: std::thread::JoinHandle<()>,   
 }

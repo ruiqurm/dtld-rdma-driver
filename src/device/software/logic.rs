@@ -60,6 +60,7 @@ struct MemoryRegion {
 /// Typically, the logic needs a `NetSendAgent` and a `NetReceiveAgent` to send and receive packets.
 /// User use the `send` method to send a `ToCardWorkRbDesc` to the network, and use the `update` method to update the hardware context.
 /// And when the `recv_agent` is binded, the received packets will be parsed and be pushed to the `to_host_data_descriptor_queue`.
+#[derive(Debug)]
 pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,

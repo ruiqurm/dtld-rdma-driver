@@ -1,17 +1,21 @@
-use std::net::Ipv4Addr;
+use std::{fmt::Debug, net::Ipv4Addr};
 
 use thiserror::Error;
 
-use super::{packet::PacketError, types::{RdmaMessage, PayloadInfo}, packet_processor::PacketProcessorError};
+use super::{
+    packet::PacketError,
+    packet_processor::PacketProcessorError,
+    types::{PayloadInfo, RdmaMessage},
+};
 use std::io;
 
 pub mod udp_agent;
 
-pub trait NetReceiveLogic<'a>: Send + Sync {
+pub trait NetReceiveLogic<'a>: Send + Sync + Debug {
     fn recv(&self, message: &mut RdmaMessage);
 }
 
-pub trait NetSendAgent {
+pub trait NetSendAgent: Debug {
     fn send(
         &self,
         dest_addr: Ipv4Addr,
@@ -23,7 +27,7 @@ pub trait NetSendAgent {
         &self,
         dest_addr: Ipv4Addr,
         dest_port: u16,
-        payload : &PayloadInfo
+        payload: &PayloadInfo,
     ) -> Result<(), NetAgentError>;
 }
 
@@ -39,5 +43,5 @@ pub enum NetAgentError {
     #[error("setsockopt failed, errno: {0}")]
     SetSockOptFailed(i32),
     #[error("Expected {0} bytes, but sended {1} bytes")]
-    WrongBytesSending(usize,usize),
+    WrongBytesSending(usize, usize),
 }

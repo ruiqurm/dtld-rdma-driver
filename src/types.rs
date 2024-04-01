@@ -15,19 +15,23 @@ pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
 #[derive(Debug, Clone, Copy, Hash)]
 pub struct Imm(u32);
 impl Imm {
-    #[must_use] pub fn new(imm: u32) -> Self {
+    #[must_use]
+    pub fn new(imm: u32) -> Self {
         Self(imm)
     }
 
-    #[must_use] pub fn get(&self) -> u32 {
+    #[must_use]
+    pub fn get(&self) -> u32 {
         self.0
     }
 
-    #[must_use] pub fn into_be(self) -> u32 {
+    #[must_use]
+    pub fn into_be(self) -> u32 {
         self.0.to_be()
     }
 
-    #[must_use] pub fn from_be(val: u32) -> Self {
+    #[must_use]
+    pub fn from_be(val: u32) -> Self {
         Self::new(val.to_le())
     }
 }
@@ -42,15 +46,18 @@ impl From<u32> for Imm {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct Msn(u16);
 impl Msn {
-    #[must_use] pub fn new(msn: u16) -> Self {
+    #[must_use]
+    pub fn new(msn: u16) -> Self {
         Self(msn)
     }
 
-    #[must_use] pub fn get(&self) -> u16 {
+    #[must_use]
+    pub fn get(&self) -> u16 {
         self.0
     }
 
-    #[must_use] pub fn into_be(self) -> u16 {
+    #[must_use]
+    pub fn into_be(self) -> u16 {
         self.0.to_be()
     }
 }
@@ -71,19 +78,23 @@ impl Default for Msn {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
 pub struct Key(u32);
 impl Key {
-    #[must_use] pub fn new(key: u32) -> Self {
+    #[must_use]
+    pub fn new(key: u32) -> Self {
         Self(key)
     }
 
-    #[must_use] pub fn get(&self) -> u32 {
+    #[must_use]
+    pub fn get(&self) -> u32 {
         self.0
     }
 
-    #[must_use] pub fn into_be(self) -> u32 {
+    #[must_use]
+    pub fn into_be(self) -> u32 {
         self.0.to_be()
     }
 
-    #[must_use] pub fn from_be(val: u32) -> Self {
+    #[must_use]
+    pub fn from_be(val: u32) -> Self {
         // the val is already in big endian
         // So we need to convert it to little endian, use `to_be()`
         Self::new(val.to_be())
@@ -110,15 +121,18 @@ impl ThreeBytesStruct {
     const MASK: u32 = u32::MAX >> (32 - Self::WIDTH);
     const MAX: u32 = Self::MASK + 1;
 
-    #[must_use] pub fn new(key: u32) -> Self {
+    #[must_use]
+    pub fn new(key: u32) -> Self {
         Self(key & Self::MASK)
     }
 
-    #[must_use] pub fn get(&self) -> u32 {
+    #[must_use]
+    pub fn get(&self) -> u32 {
         self.0
     }
 
-    #[must_use] pub fn into_be(self) -> u32 {
+    #[must_use]
+    pub fn into_be(self) -> u32 {
         // In little endian machine, to_le_bytes() is a no-op. Just get the layout.
         let key = self.0.to_le_bytes();
         // Then we reoder the bytes to big endian
@@ -126,7 +140,8 @@ impl ThreeBytesStruct {
         u32::from_le_bytes([key[2], key[1], key[0], 0])
     }
 
-    #[must_use] pub fn from_be(val: u32) -> Self {
+    #[must_use]
+    pub fn from_be(val: u32) -> Self {
         // get the layout.
         let key = val.to_le_bytes();
         // from_le_bytes is also a no-op in little endian machine.
@@ -134,11 +149,13 @@ impl ThreeBytesStruct {
         Self::new(u32::from_le_bytes([key[2], key[1], key[0], 0]))
     }
 
-    #[must_use] pub fn wrapping_add(&self, rhs: u32) -> Self {
+    #[must_use]
+    pub fn wrapping_add(&self, rhs: u32) -> Self {
         Self((self.0 + rhs) % Self::MAX)
     }
 
-    #[must_use] pub fn wrapping_sub(&self, rhs: u32) -> Self {
+    #[must_use]
+    pub fn wrapping_sub(&self, rhs: u32) -> Self {
         let rhs = rhs % Self::MAX;
         if self.0 > rhs {
             Self(self.0 - rhs)
@@ -150,7 +167,8 @@ impl ThreeBytesStruct {
     /// The absolute difference between two PSN
     /// We assume that the bigger PSN should not exceed the
     /// smaller PSN by more than 2^23(that half of the range)
-    #[must_use] pub fn wrapping_abs(&self, rhs: Psn) -> u32 {
+    #[must_use]
+    pub fn wrapping_abs(&self, rhs: Psn) -> u32 {
         if self.0 >= rhs.0 {
             self.0 - rhs.get()
         } else {
@@ -235,7 +253,7 @@ pub struct Sge {
     pub key: Key,
 }
 
-#[derive(Debug,Builder,Clone, Copy)]
+#[derive(Debug, Builder, Clone, Copy)]
 #[non_exhaustive]
 pub struct RdmaDeviceNetwork {
     pub gateway: Ipv4Addr,
@@ -244,8 +262,8 @@ pub struct RdmaDeviceNetwork {
     pub macaddr: MacAddress,
 }
 
-#[derive(Builder,Clone, Copy)]
 #[non_exhaustive]
+#[derive(Builder, Debug, Clone, Copy)]
 pub struct Qp {
     pub pd: Pd,
     pub qpn: Qpn,
@@ -274,7 +292,7 @@ pub enum Error {
     #[error("PD in use :{0}")]
     PdInUse(String),
     #[error("Failed to insert to map {0} : key {1} already exist")]
-    InsertFailed(&'static str,String),
+    InsertFailed(&'static str, String),
     #[error("no available resource : {0}")]
     ResourceNoAvailable(String),
     #[error("allocate page table failed")]
@@ -314,7 +332,7 @@ mod tests {
         assert_eq!(ret.get(), 1);
 
         let ret = psn.wrapping_add(0xffffff);
-        assert_eq!(ret.get(), 0xffffff-1);
+        assert_eq!(ret.get(), 0xffffff - 1);
     }
 
     #[test]

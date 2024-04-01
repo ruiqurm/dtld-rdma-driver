@@ -11,7 +11,7 @@
     meta_variable_misuse,
     missing_abi,
     missing_copy_implementations,
-    // missing_debug_implementations, 
+    missing_debug_implementations, 
     // must_not_suspend, unstable
     // missing_docs, // TODO:
     non_ascii_idents,
@@ -41,12 +41,12 @@
     // clippy::cargo, // TODO:
 
     // The followings are selected restriction lints for rust 1.57
-    // clippy::as_conversions,
+    // clippy::as_conversions, // we allow lossless "as" conversion, it has checked by clippy::cast_possible_truncation
     clippy::clone_on_ref_ptr,
     clippy::create_dir,
     clippy::dbg_macro,
     clippy::decimal_literal_representation,
-    // clippy::default_numeric_fallback,
+    clippy::default_numeric_fallback,
     clippy::disallowed_script_idents,
     clippy::else_if_without_else,
     clippy::exhaustive_enums,
@@ -60,12 +60,11 @@
     clippy::if_then_some_else_none,
     // clippy::implicit_return, it's idiomatic Rust code.
     // clippy::indexing_slicing, //TODO:
-    // clippy::inline_asm_x86_att_syntax, stick to intel syntax
     clippy::inline_asm_x86_intel_syntax,
     // clippy::arithmetic_side_effects, //TODO:
  
     // clippy::pattern_type_mismatch, // cause some false postive and unneeded copy
-    clippy::print_stderr, // TODO:
+    clippy::print_stderr,
     clippy::print_stdout,
     clippy::rc_buffer,
     clippy::rc_mutex,
@@ -82,10 +81,10 @@
     // clippy::unimplemented, // We still have some unimplemented functions
     clippy::unnecessary_self_imports,
     clippy::unneeded_field_pattern,
-    // clippy::unreachable, // TODO:
-    // clippy::unwrap_in_result,// TODO:
+    // clippy::unreachable, // the unreachable code should unreachable otherwise it's a bug
+    // clippy::unwrap_in_result,
     // clippy::unwrap_used, 
-    // clippy::use_debug, debug is allow for debug log
+    clippy::use_debug,
     clippy::verbose_file_reads,
     clippy::wildcard_enum_match_arm,
 
@@ -135,6 +134,7 @@
         clippy::arithmetic_side_effects,
         clippy::let_underscore_untyped,
         clippy::pedantic, 
+        clippy::default_numeric_fallback,
     )
 )]
 use crate::{
@@ -188,9 +188,10 @@ const MR_TABLE_SIZE: usize = 64;
 const MR_PGT_SIZE: usize = 1024;
 const DEFAULT_RMDA_PORT : u16 = 4791;
 
-#[derive(Clone)]
+#[derive(Debug,Clone)]
 pub struct Device(Arc<DeviceInner<dyn DeviceAdaptor>>);
 
+#[derive(Debug)]
 struct DeviceInner<D: ?Sized> {
     pd: Mutex<HashMap<Pd, PdCtx>>,
     mr_table: Mutex<[Option<MrCtx>; MR_TABLE_SIZE]>,
@@ -210,7 +211,7 @@ struct DeviceInner<D: ?Sized> {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Sge {
     pub addr: u64,
     pub len: u32,

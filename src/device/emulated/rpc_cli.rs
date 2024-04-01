@@ -15,8 +15,7 @@ use crate::device::{
     DeviceError,
 };
 
-
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct RpcClient(Arc<UdpSocket>);
 
 #[derive(Serialize, Deserialize)]
@@ -66,6 +65,7 @@ impl RpcClient {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardCtrlRbCsrProxy(RpcClient);
 impl ToCardCtrlRbCsrProxy {
     const HEAD_CSR: usize = CSR_ADDR_CMD_REQ_QUEUE_HEAD;
@@ -83,6 +83,7 @@ impl CsrWriterProxy for ToCardCtrlRbCsrProxy {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbCsrProxy(RpcClient);
 
 impl ToHostCtrlRbCsrProxy {
@@ -102,6 +103,7 @@ impl CsrReaderProxy for ToHostCtrlRbCsrProxy {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToCardWorkRbCsrProxy(RpcClient);
 
 impl ToCardWorkRbCsrProxy {
@@ -121,6 +123,7 @@ impl CsrWriterProxy for ToCardWorkRbCsrProxy {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ToHostWorkRbCsrProxy(RpcClient);
 
 impl ToHostWorkRbCsrProxy {
