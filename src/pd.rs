@@ -1,4 +1,4 @@
-use crate::{Device, Error, Mr, types::Qpn};
+use crate::{types::Qpn, Device, Error, Mr};
 use rand::RngCore as _;
 use std::{
     collections::HashSet,
@@ -6,7 +6,7 @@ use std::{
 };
 
 // TODO: PD will be shared by multi function call. Use reference counter?
-#[derive(Debug, Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Pd {
     pub(crate) handle: u32,
 }
@@ -17,8 +17,18 @@ pub(crate) struct PdCtx {
 }
 
 impl Device {
+    /// allocate a pd
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
     pub fn alloc_pd(&self) -> Result<Pd, Error> {
-        let mut pool = self.0.pd.lock().unwrap();
+        let mut pool = self
+            .0
+            .pd
+            .lock()
+            .map_err(|_| Error::LockPoisoned("pd pool lock"))?;
 
         let pd = Pd {
             handle: rand::thread_rng().next_u32(),
@@ -33,25 +43,37 @@ impl Device {
         );
 
         if res.is_some() {
-            return Err(Error::InvalidPd);
+            return Err(Error::Invalid(format!("PD :{pd:?}")));
         }
 
         Ok(pd)
     }
 
+    /// deallocate a pd
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * invalid Pd
+    /// * mr or qp is in use
     pub fn dealloc_pd(&self, pd: Pd) -> Result<(), Error> {
-        let mut pool = self.0.pd.lock().unwrap();
-        let pd_ctx = pool.get(&pd).ok_or(Error::InvalidPd)?;
+        let mut pool = self
+            .0
+            .pd
+            .lock()
+            .map_err(|_| Error::LockPoisoned("pd pool lock"))?;
+        let pd_ctx = pool.get(&pd).ok_or(Error::Invalid(format!("PD :{pd:?}")))?;
 
         if !pd_ctx.mr.is_empty() {
-            return Err(Error::PdInUse);
+            return Err(Error::PdInUse(format!("mr is not empty:{:?}", pd_ctx.mr)));
         }
 
         if !pd_ctx.qp.is_empty() {
-            return Err(Error::QpInUse);
+            return Err(Error::PdInUse(format!("qp is not empty:{:?}", pd_ctx.qp)));
         }
 
-        let _ : Option<PdCtx> = pool.remove(&pd);
+        let _: Option<PdCtx> = pool.remove(&pd);
 
         Ok(())
     }

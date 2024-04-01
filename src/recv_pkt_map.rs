@@ -26,9 +26,9 @@ impl RecvPktMap {
             // used-bit count in the last u64, len % 64
             let rem = len & Self::LAST_CHUNK_MOD_MASK;
             // number of u64, ceil(len / 64)
-            let len = (len >> Self::FULL_CHUNK_DIV_BIT_SHIFT_CNT) + (rem != 0) as usize;
+            let len = (len >> Self::FULL_CHUNK_DIV_BIT_SHIFT_CNT) + usize::from(rem != 0);
             // last u64, lower `rem` bits are 1, higher bits are 0. if `rem == 0``, all bits are 1
-            let last_chunk = ((1u64 << rem) - 1) | ((rem != 0) as u64).wrapping_sub(1);
+            let last_chunk = ((1u64 << rem) - 1) | u64::from(rem != 0).wrapping_sub(1);
 
             (vec![0; len].into_boxed_slice(), last_chunk)
         };
@@ -36,6 +36,8 @@ impl RecvPktMap {
         let (stage_0, stage_0_last_chunk) = create_stage(pkt_cnt);
         let (stage_1, stage_1_last_chunk) = create_stage(stage_0.len());
         let (stage_2, stage_2_last_chunk) = create_stage(stage_1.len());
+        // pkt_cnt is guaranteed to be less than 2^24, so the cast is safe
+        #[allow(clippy::cast_possible_truncation)]
         Self {
             is_read_resp,
             start_psn,
@@ -61,22 +63,22 @@ impl RecvPktMap {
 
         let is_stage_0_last_chunk = stage_0_idx == self.stage_0.len() - 1; // is the bit in the last u64 in stage 0
         let stage_0_chunk_expected =
-            (is_stage_0_last_chunk as u64).wrapping_sub(1) | self.stage_0_last_chunk; // expected bit mask of the target u64 in stage 0
+            u64::from(is_stage_0_last_chunk).wrapping_sub(1) | self.stage_0_last_chunk; // expected bit mask of the target u64 in stage 0
         let is_stage_0_chunk_complete = self.stage_0[stage_0_idx] == stage_0_chunk_expected; // is the target u64 in stage 0 full
 
         let stage_1_idx = stage_0_idx >> Self::FULL_CHUNK_DIV_BIT_SHIFT_CNT; // which u64 in stage 1
         let stage_1_rem = stage_0_idx & Self::LAST_CHUNK_MOD_MASK; // bit position in u64
-        let stage_1_bit = (is_stage_0_chunk_complete as u64) << stage_1_rem; // bit mask
+        let stage_1_bit = u64::from(is_stage_0_chunk_complete) << stage_1_rem; // bit mask
         self.stage_1[stage_1_idx] |= stage_1_bit; // set bit in stage 1
 
         let is_stage_1_last_chunk = stage_1_idx == self.stage_1.len() - 1; // is the bit in the last u64 in stage 1
         let stage_1_chunk_expected =
-            (is_stage_1_last_chunk as u64).wrapping_sub(1) | self.stage_1_last_chunk; // expected bit mask of the target u64 in stage 1
+            u64::from(is_stage_1_last_chunk).wrapping_sub(1) | self.stage_1_last_chunk; // expected bit mask of the target u64 in stage 1
         let is_stage_1_chunk_complete = self.stage_1[stage_1_idx] == stage_1_chunk_expected; // is the target u64 in stage 1 full
 
         let stage_2_idx = stage_1_idx >> Self::FULL_CHUNK_DIV_BIT_SHIFT_CNT; // which u64 in stage 2
         let stage_2_rem = stage_1_idx & Self::LAST_CHUNK_MOD_MASK; // bit position in u64
-        let stage_2_bit = (is_stage_1_chunk_complete as u64) << stage_2_rem; // bit mask
+        let stage_2_bit = u64::from(is_stage_1_chunk_complete) << stage_2_rem; // bit mask
         self.stage_2[stage_2_idx] |= stage_2_bit; // set bit in stage 2
         if self.last_pkt_psn.wrapping_add(1) != new_psn {
             self.is_out_of_order = true;
@@ -99,7 +101,7 @@ impl RecvPktMap {
             .fold(true, |acc, (idx, &bits)| {
                 let is_last_chunk = idx == self.stage_2.len() - 1;
                 let chunk_expected =
-                    (is_last_chunk as u64).wrapping_sub(1) | self.stage_2_last_chunk;
+                    u64::from(is_last_chunk).wrapping_sub(1) | self.stage_2_last_chunk;
                 let is_chunk_complete = bits == chunk_expected;
                 acc && is_chunk_complete
             })

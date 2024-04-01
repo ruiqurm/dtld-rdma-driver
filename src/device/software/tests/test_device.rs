@@ -21,11 +21,11 @@ use super::ToCardCtrlRbDescBuilder;
 #[test]
 #[serial]
 fn test_device_read_and_write() {
-    let send_agent = UDPSendAgent::new(&Ipv4Addr::LOCALHOST,4791).unwrap();
+    let send_agent = UDPSendAgent::new(Ipv4Addr::LOCALHOST,4791).unwrap();
     let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
     let _recv_agent = UDPReceiveAgent::new(
         Arc::<BlueRDMALogic>::clone(&device),
-        &Ipv4Addr::LOCALHOST,
+        Ipv4Addr::LOCALHOST,
         4791,
     )
     .unwrap();
@@ -303,7 +303,7 @@ fn test_device_read_and_write() {
 #[test]
 #[serial]
 fn test_software_device() {
-    let device = SoftwareDevice::init(&Ipv4Addr::LOCALHOST, 4791).unwrap();
+    let device = SoftwareDevice::init(Ipv4Addr::LOCALHOST, 4791).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;

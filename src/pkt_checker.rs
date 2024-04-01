@@ -27,7 +27,7 @@ impl PacketChecker {
             read_op_ctx_map,
         };
         let thread = std::thread::spawn(move || {
-            PacketCheckerContext::working_thread(ctx);
+            PacketCheckerContext::working_thread(&ctx);
         });
         Self { _thread: thread }
     }
@@ -45,7 +45,7 @@ enum ThreadFlag {
 }
 
 impl PacketCheckerContext {
-    fn working_thread(ctx: Self) {
+    fn working_thread(ctx: &Self) {
         loop {
             match ctx.check_pkt_map() {
                 ThreadFlag::Running => {}
@@ -65,7 +65,7 @@ impl PacketCheckerContext {
                 .map(|(k, v)| (*k, Arc::clone(v)))
                 .collect::<Vec<_>>()
         };
-        for (msn, map) in iter_maps.into_iter() {
+        for (msn, map) in iter_maps {
             let (is_complete, is_read_resp, is_out_of_order, dqpn, end_psn) = {
                 let guard = map.lock().unwrap();
                 (
@@ -114,9 +114,9 @@ impl PacketCheckerContext {
         // remove the completed recv_pkt_map
         if !remove_list.is_empty() {
             let mut guard = self.recv_pkt_map.write().unwrap();
-            remove_list.iter().for_each(|dqpn| {
+            for dqpn in &remove_list {
                 let _ : Option<Arc<Mutex<RecvPktMap>>> = guard.remove(dqpn);
-            });
+            }
         }
         ThreadFlag::Running
     }

@@ -383,6 +383,46 @@ impl ToHostWorkRbDescOpcode {
             | ToHostWorkRbDescOpcode::Acknowledge => false,
         }
     }
+
+    pub(crate) fn is_resp(&self) -> bool {
+        matches!(
+            self,
+            ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+                | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+                | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+        )
+    }
+
+    pub(crate) fn is_read_resp(&self) -> bool {
+        matches!(
+            self,
+            ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+                | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+                | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
+        )
+    }
+
+    pub(crate) fn write_type(&self) -> Option<ToHostWorkRbDescWriteType> {
+        match self {
+            ToHostWorkRbDescOpcode::RdmaWriteFirst
+            | ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
+                Some(ToHostWorkRbDescWriteType::First)
+            }
+            ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
+                Some(ToHostWorkRbDescWriteType::Middle)
+            }
+            ToHostWorkRbDescOpcode::RdmaWriteLast
+            | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
+            | ToHostWorkRbDescOpcode::RdmaReadResponseLast => Some(ToHostWorkRbDescWriteType::Last),
+            ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
+            | ToHostWorkRbDescOpcode::RdmaWriteOnly
+            | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => Some(ToHostWorkRbDescWriteType::Only),
+            ToHostWorkRbDescOpcode::RdmaReadRequest | ToHostWorkRbDescOpcode::Acknowledge => None,
+        }
+    }
 }
 
 #[derive(TryFromPrimitive, Clone, PartialEq, Eq, Debug)]
@@ -498,7 +538,7 @@ impl ToCardCtrlRbDesc {
         ) {
             let mut raw_packet_recv_meta = CmdQueueReqDescSetRawPacketReceiveMeta(dst);
             raw_packet_recv_meta.set_write_base_addr(desc.base_write_addr);
-            raw_packet_recv_meta.set_write_mr_key(desc.key.get() as u64);
+            raw_packet_recv_meta.set_write_mr_key(u64::from(desc.key.get()));
         }
 
         match self {
@@ -530,7 +570,7 @@ impl ToCardCtrlRbDesc {
     }
 
     #[allow(unused)]
-    pub(super) fn serialized_desc_cnt(&self) -> usize {
+    pub(super) fn serialized_desc_cnt() -> usize {
         1
     }
 }
@@ -553,12 +593,15 @@ impl ToHostCtrlRbDesc {
         let extra_segment_cnt = head.get_extra_segment_cnt();
         assert!(
             extra_segment_cnt == 0,
-            "extra_segment_cnt: {}",
-            extra_segment_cnt
+            "extra_segment_cnt: {extra_segment_cnt}"
         );
 
         let is_success = head.get_is_success_or_need_signal_cplt();
-        let opcode = CtrlRbDescOpcode::try_from(head.get_op_code() as u8).unwrap();
+        // bitfield restricts the field is not longer than 8bits.
+        // So we can safely cast it to u8.
+        #[allow(clippy::cast_possible_truncation)]
+        let opcode_raw = head.get_op_code() as u8;
+        let opcode = CtrlRbDescOpcode::try_from(opcode_raw).unwrap();
         let op_id = head.get_user_data().to_le();
 
         let common = ToHostCtrlRbDescCommon { op_id, is_success };
@@ -585,7 +628,7 @@ impl ToHostCtrlRbDesc {
     }
 
     #[allow(unused)]
-    pub(super) fn serialized_desc_cnt(&self) -> usize {
+    pub(super) fn serialized_desc_cnt() -> usize {
         1
     }
 }
@@ -624,7 +667,7 @@ impl ToCardWorkRbDesc {
         head.set_op_code(opcode as u32);
 
         let extra_segment_cnt = self.serialized_desc_cnt() - 1;
-        head.set_extra_segment_cnt(extra_segment_cnt as u32);
+        head.set_extra_segment_cnt(extra_segment_cnt);
         head.set_total_len(common.total_len);
 
         // typedef struct {
@@ -673,28 +716,22 @@ impl ToCardWorkRbDesc {
 
         let (common, sge_cnt) = match self {
             ToCardWorkRbDesc::Read(desc) => (&desc.common, 1),
-            ToCardWorkRbDesc::Write(desc) => (
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => (
                 &desc.common,
-                1 + desc.sge1.is_some() as u8
-                    + desc.sge2.is_some() as u8
-                    + desc.sge3.is_some() as u8,
+                1 + u8::from(desc.sge1.is_some())
+                    + u8::from(desc.sge2.is_some())
+                    + u8::from(desc.sge3.is_some()),
             ),
             ToCardWorkRbDesc::WriteWithImm(desc) => (
                 &desc.common,
-                1 + desc.sge1.is_some() as u8
-                    + desc.sge2.is_some() as u8
-                    + desc.sge3.is_some() as u8,
-            ),
-            ToCardWorkRbDesc::ReadResp(desc) => (
-                &desc.common,
-                1 + desc.sge1.is_some() as u8
-                    + desc.sge2.is_some() as u8
-                    + desc.sge3.is_some() as u8,
+                1 + u8::from(desc.sge1.is_some())
+                    + u8::from(desc.sge2.is_some())
+                    + u8::from(desc.sge3.is_some()),
             ),
         };
         let mut desc_common = SendQueueReqDescSeg1(dst);
         desc_common.set_pmtu(common.pmtu as u64);
-        desc_common.set_flags(common.flags.bits() as u64);
+        desc_common.set_flags(u64::from(common.flags.bits()));
         desc_common.set_qp_type(common.qp_type as u64);
         desc_common.set_seg_cnt(sge_cnt.into());
         desc_common.set_psn(common.psn.get().into());
@@ -703,7 +740,7 @@ impl ToCardWorkRbDesc {
         desc_common.set_dqpn(common.dqpn.get().into());
 
         if let ToCardWorkRbDesc::WriteWithImm(desc) = self {
-            desc_common.set_imm(desc.imm as u64);
+            desc_common.set_imm(u64::from(desc.imm));
         } else {
             desc_common.set_imm(0);
         }
@@ -723,9 +760,10 @@ impl ToCardWorkRbDesc {
 
         let (sge0, sge1) = match self {
             ToCardWorkRbDesc::Read(desc) => (&desc.sge, None),
-            ToCardWorkRbDesc::Write(desc) => (&desc.sge0, desc.sge1.as_ref()),
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => {
+                (&desc.sge0, desc.sge1.as_ref())
+            }
             ToCardWorkRbDesc::WriteWithImm(desc) => (&desc.sge0, desc.sge1.as_ref()),
-            ToCardWorkRbDesc::ReadResp(desc) => (&desc.sge0, desc.sge1.as_ref()),
         };
         // Note that the order of the sges is reversed in the struct
         let mut frag_sge = SendQueueReqDescFragSGE(&mut dst[16..32]);
@@ -757,9 +795,10 @@ impl ToCardWorkRbDesc {
 
         let (sge2, sge3) = match self {
             ToCardWorkRbDesc::Read(_) => (None, None),
-            ToCardWorkRbDesc::Write(desc) => (desc.sge2.as_ref(), desc.sge3.as_ref()),
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => {
+                (desc.sge2.as_ref(), desc.sge3.as_ref())
+            }
             ToCardWorkRbDesc::WriteWithImm(desc) => (desc.sge2.as_ref(), desc.sge3.as_ref()),
-            ToCardWorkRbDesc::ReadResp(desc) => (desc.sge2.as_ref(), desc.sge3.as_ref()),
         };
 
         let mut frag_sge = SendQueueReqDescFragSGE(&mut dst[0..16]);
@@ -785,12 +824,13 @@ impl ToCardWorkRbDesc {
         }
     }
 
-    pub(super) fn serialized_desc_cnt(&self) -> usize {
+    pub(super) fn serialized_desc_cnt(&self) -> u32 {
         let sge_desc_cnt = match self {
             ToCardWorkRbDesc::Read(_) => 1,
-            ToCardWorkRbDesc::Write(desc) => 1 + desc.sge2.is_some() as usize,
-            ToCardWorkRbDesc::WriteWithImm(desc) => 1 + desc.sge2.is_some() as usize,
-            ToCardWorkRbDesc::ReadResp(desc) => 1 + desc.sge2.is_some() as usize,
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => {
+                1 + u32::from(desc.sge2.is_some())
+            }
+            ToCardWorkRbDesc::WriteWithImm(desc) => 1 + u32::from(desc.sge2.is_some()),
         };
 
         2 + sge_desc_cnt
@@ -798,55 +838,60 @@ impl ToCardWorkRbDesc {
 }
 
 impl ToHostWorkRbDesc {
+    /// (addr, key, len)
+    fn read_reth(src: &[u8]) -> (u64, Key, u32) {
+        // typedef struct {
+        //     Length                  dlen;         // 32
+        //     RKEY                    rkey;         // 32
+        //     ADDR                    va;           // 64
+        // } MeatReportQueueDescFragRETH deriving(Bits, FShow);
+
+        // first 12 bytes are desc type, status and bth
+        let frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
+        let addr = frag_reth.get_va();
+        // bitfield restricts the field is not longer than 32 bits.
+        #[allow(clippy::cast_possible_truncation)]
+        let key = Key::new(frag_reth.get_rkey() as u32);
+        #[allow(clippy::cast_possible_truncation)]
+        let len = frag_reth.get_dlen() as u32;
+
+        (addr, key, len)
+    }
+
+    // FIXME: imm will be in next desc
+    fn read_imm(src: &[u8]) -> u32 {
+        // typedef struct {
+        //     IMM                             data;           // 32
+        // } MeatReportQueueDescFragImmDT deriving(Bits, FShow);
+
+        // first 28 bytes are desc type, status, bth and reth
+        let imm = MeatReportQueueDescFragImmDT(&src[28..32]);
+        // call the `to_be` to convert order
+        imm.get_imm()
+    }
+
+    // (last_psn, msn, value, code)
+    #[allow(clippy::cast_possible_truncation)]
+    fn read_aeth(src: &[u8]) -> (Psn, Msn, u8, ToHostWorkRbDescAethCode) {
+        // typedef struct {
+        //     AethCode                code;         // 3
+        //     AethValue               value;        // 5
+        //     MSN                     msn;          // 24
+        //     PSN                     lastRetryPSN; // 24
+        // } MeatReportQueueDescFragAETH deriving(Bits, FShow);
+
+        // first 12 bytes are desc type, status and bth
+        let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
+        let psn = Psn::new(frag_aeth.get_psn());
+        let msg_seq_number = Msn::new(frag_aeth.get_msn() as u16);
+        let value = frag_aeth.get_aeth_value() as u8;
+        let code = ToHostWorkRbDescAethCode::try_from(frag_aeth.get_aeth_code() as u8).unwrap();
+
+        (psn, msg_seq_number, value, code)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
     pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
-        /// (addr, key, len)
-        fn read_reth(src: &[u8]) -> (u64, Key, u32) {
-            // typedef struct {
-            //     Length                  dlen;         // 32
-            //     RKEY                    rkey;         // 32
-            //     ADDR                    va;           // 64
-            // } MeatReportQueueDescFragRETH deriving(Bits, FShow);
-
-            // first 12 bytes are desc type, status and bth
-            let frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
-            let addr = frag_reth.get_va();
-            let key = Key::new(frag_reth.get_rkey() as u32);
-            let len = frag_reth.get_dlen() as u32;
-
-            (addr, key, len)
-        }
-
-        // FIXME: imm will be in next desc
-        fn read_imm(src: &[u8]) -> u32 {
-            // typedef struct {
-            //     IMM                             data;           // 32
-            // } MeatReportQueueDescFragImmDT deriving(Bits, FShow);
-
-            // first 28 bytes are desc type, status, bth and reth
-            let imm = MeatReportQueueDescFragImmDT(&src[28..32]);
-            // call the `to_be` to convert order
-            imm.get_imm()
-        }
-
-        // (last_psn, msn, value, code)
-        fn read_aeth(src: &[u8]) -> (Psn, Msn, u8, ToHostWorkRbDescAethCode) {
-            // typedef struct {
-            //     AethCode                code;         // 3
-            //     AethValue               value;        // 5
-            //     MSN                     msn;          // 24
-            //     PSN                     lastRetryPSN; // 24
-            // } MeatReportQueueDescFragAETH deriving(Bits, FShow);
-
-            // first 12 bytes are desc type, status and bth
-            let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
-            let psn = Psn::new(frag_aeth.get_psn());
-            let msn = Msn::new(frag_aeth.get_msn() as u16);
-            let value = frag_aeth.get_aeth_value() as u8;
-            let code = ToHostWorkRbDescAethCode::try_from(frag_aeth.get_aeth_code() as u8).unwrap();
-
-            (psn, msn, value, code)
-        }
-
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
         //     MSN                             msn;            // 24
@@ -856,6 +901,7 @@ impl ToHostWorkRbDesc {
         //     PSN                             expectedPSN;    // 24
         // } MeatReportQueueDescBthRethReth deriving(Bits, FShow);
         let desc_bth = MeatReportQueueDescBthReth(&src[0..32]);
+
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
         let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).unwrap();
@@ -878,32 +924,38 @@ impl ToHostWorkRbDesc {
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
         let pad_cnt = desc_frag_bth.get_pad_cnt() as u8;
-        let msn = Msn::new(desc_bth.get_msn() as u16);
+        let msg_seq_number = Msn::new(desc_bth.get_msn() as u16);
 
         let common = ToHostWorkRbDescCommon {
             status,
             trans,
             dqpn,
             pad_cnt,
-            msn,
+            msn: msg_seq_number,
             expected_psn,
         };
-        let is_read_resp = matches!(
-            opcode,
-            ToHostWorkRbDescOpcode::RdmaReadResponseFirst
-                | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
-                | ToHostWorkRbDescOpcode::RdmaReadResponseLast
-                | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
-        );
+        let is_read_resp = opcode.is_read_resp();
+        // The default value will not be used since the `write_type` will only appear
+        // in those write related opcodes.
+        let write_type = opcode
+            .write_type()
+            .unwrap_or(ToHostWorkRbDescWriteType::Only);
         match opcode {
-            ToHostWorkRbDescOpcode::RdmaWriteFirst => {
-                let (addr, key, len) = read_reth(src);
+            ToHostWorkRbDescOpcode::RdmaWriteFirst
+            | ToHostWorkRbDescOpcode::RdmaWriteMiddle
+            | ToHostWorkRbDescOpcode::RdmaWriteLast
+            | ToHostWorkRbDescOpcode::RdmaWriteOnly
+            | ToHostWorkRbDescOpcode::RdmaReadResponseFirst
+            | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
+            | ToHostWorkRbDescOpcode::RdmaReadResponseLast
+            | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
+                let (addr, key, len) = Self::read_reth(src);
 
                 Ok(ToHostWorkRbDesc::WriteOrReadResp(
                     ToHostWorkRbDescWriteOrReadResp {
                         common,
                         is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::First,
+                        write_type,
                         psn,
                         addr,
                         len,
@@ -911,135 +963,15 @@ impl ToHostWorkRbDesc {
                     },
                 ))
             }
-            ToHostWorkRbDescOpcode::RdmaWriteMiddle => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Middle,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaWriteLast => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Last,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaWriteOnly => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Only,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::First,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Middle,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Last,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
-                let (addr, key, len) = read_reth(src);
-
-                Ok(ToHostWorkRbDesc::WriteOrReadResp(
-                    ToHostWorkRbDescWriteOrReadResp {
-                        common,
-                        is_read_resp,
-                        write_type: ToHostWorkRbDescWriteType::Only,
-                        psn,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate => {
-                let (addr, key, len) = read_reth(src);
-                let imm = read_imm(src);
+            ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
+            | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
+                let (addr, key, len) = Self::read_reth(src);
+                let imm = Self::read_imm(src);
 
                 Ok(ToHostWorkRbDesc::WriteWithImm(
                     ToHostWorkRbDescWriteWithImm {
                         common,
-                        write_type: ToHostWorkRbDescWriteType::Last,
-                        psn,
-                        imm,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
-            }
-            ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
-                let (addr, key, len) = read_reth(src);
-                let imm = read_imm(src);
-
-                Ok(ToHostWorkRbDesc::WriteWithImm(
-                    ToHostWorkRbDescWriteWithImm {
-                        common,
-                        write_type: ToHostWorkRbDescWriteType::Only,
+                        write_type,
                         psn,
                         imm,
                         addr,
@@ -1049,7 +981,7 @@ impl ToHostWorkRbDesc {
                 ))
             }
             ToHostWorkRbDescOpcode::RdmaReadRequest => {
-                let (addr, key, len) = read_reth(src);
+                let (addr, key, len) = Self::read_reth(src);
 
                 Err(IncompleteToHostWorkRbDesc {
                     parsed: ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
@@ -1064,7 +996,7 @@ impl ToHostWorkRbDesc {
                 })
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn_in_ack, value, code) = read_aeth(src);
+                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src);
 
                 match code {
                     ToHostWorkRbDescAethCode::Ack => {
@@ -1094,15 +1026,16 @@ impl ToHostWorkRbDesc {
     pub(super) fn serialized_desc_cnt(&self) -> usize {
         match self {
             ToHostWorkRbDesc::Read(_) => 2,
-            ToHostWorkRbDesc::WriteOrReadResp(_) => 1,
-            ToHostWorkRbDesc::WriteWithImm(_) => 1,
-            ToHostWorkRbDesc::Ack(_) => 1,
-            ToHostWorkRbDesc::Nack(_) => 1,
+            ToHostWorkRbDesc::WriteOrReadResp(_)
+            | ToHostWorkRbDesc::WriteWithImm(_)
+            | ToHostWorkRbDesc::Nack(_)
+            | ToHostWorkRbDesc::Ack(_) => 1,
         }
     }
 }
 
 impl IncompleteToHostWorkRbDesc {
+    #[allow(clippy::cast_possible_truncation)]
     pub(super) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
         fn read_second_reth(src: &[u8]) -> (u64, Key) {
             // typedef struct {
@@ -1126,10 +1059,10 @@ impl IncompleteToHostWorkRbDesc {
                 }
                 _ => unreachable!(),
             },
-            ToHostWorkRbDesc::WriteOrReadResp(_) => unreachable!(),
-            ToHostWorkRbDesc::WriteWithImm(_) => unreachable!(),
-            ToHostWorkRbDesc::Ack(_) => unreachable!(),
-            ToHostWorkRbDesc::Nack(_) => unreachable!(),
+            ToHostWorkRbDesc::WriteOrReadResp(_)
+            | ToHostWorkRbDesc::Nack(_)
+            | ToHostWorkRbDesc::WriteWithImm(_)
+            | ToHostWorkRbDesc::Ack(_) => unreachable!(),
         }
     }
 }
@@ -1282,6 +1215,7 @@ bitfield! {
     get_aeth_value, set_aeth_value: 52, 48; // 5bits
     get_aeth_code, set_aeth_code: 55, 53;   // 3bits
 }
+
 bitfield! {
     struct MeatReportQueueDescBthReth([u8]);
     u64;
@@ -1412,13 +1346,6 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub fn with_option_sge(mut self, seg: Option<Sge>) -> Self {
-        if let Some(seg) = seg {
-            self.seg_list.push(seg);
-        }
-        self
-    }
-
     pub fn with_sge(mut self, seg: Sge) -> Self {
         self.seg_list.push(seg);
         self
@@ -1442,9 +1369,9 @@ impl ToCardWorkRbDescBuilder {
                     is_last: true,
                     is_first: true,
                     sge0: sge0.into(),
-                    sge1: sge1.map(|sge| sge.into()),
-                    sge2: sge2.map(|sge| sge.into()),
-                    sge3: sge3.map(|sge| sge.into()),
+                    sge1: sge1.map(bitfield::Into::into),
+                    sge2: sge2.map(bitfield::Into::into),
+                    sge3: sge3.map(bitfield::Into::into),
                 }))
             }
             ToCardWorkRbDescOpcode::WriteWithImm => {
@@ -1463,9 +1390,9 @@ impl ToCardWorkRbDescBuilder {
                         is_first: true,
                         imm,
                         sge0: sge0.into(),
-                        sge1: sge1.map(|sge| sge.into()),
-                        sge2: sge2.map(|sge| sge.into()),
-                        sge3: sge3.map(|sge| sge.into()),
+                        sge1: sge1.map(bitfield::Into::into),
+                        sge2: sge2.map(bitfield::Into::into),
+                        sge3: sge3.map(bitfield::Into::into),
                     },
                 ))
             }
@@ -1492,9 +1419,9 @@ impl ToCardWorkRbDescBuilder {
                     is_last: true,
                     is_first: true,
                     sge0: sge0.into(),
-                    sge1: sge1.map(|sge| sge.into()),
-                    sge2: sge2.map(|sge| sge.into()),
-                    sge3: sge3.map(|sge| sge.into()),
+                    sge1: sge1.map(bitfield::Into::into),
+                    sge2: sge2.map(bitfield::Into::into),
+                    sge3: sge3.map(bitfield::Into::into),
                 }))
             }
         }

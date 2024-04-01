@@ -29,17 +29,17 @@ pub const RDMA_PAYLOAD_ALIGNMENT: usize = 4;
 const BTH_OPCODE_MASK: u8 = 0x1F;
 const BTH_TRANSACTION_TYPE_MASK: u8 = 0xE0;
 const BTH_TRANSACTION_TYPE_SHIFT: usize = 5;
-const BTH_DESTINATION_QPN_MASK: u32 = 0x00FFFFFF;
+const BTH_DESTINATION_QPN_MASK: u32 = 0x00FF_FFFF;
 const BTH_FLAGS_SOLICITED_MASK: u8 = 0x80;
 const BTH_FLAGS_PAD_CNT_MASK: u8 = 0x60;
 const BTH_FLAGS_PAD_CNT_SHIFT: usize = 5;
 const BTH_ACK_REQ_MASK: u8 = 0x80;
-const BTH_PSN_MASK: u32 = 0x00FFFFFF;
+const BTH_PSN_MASK: u32 = 0x00FF_FFFF;
 const MAX_AETH_CODE: u8 = 4;
 const AETH_CODE_MASK: u8 = 0x60;
 const AETH_CODE_SHIFT: usize = 5;
 const AETH_VALUE_MASK: u8 = 0x1F;
-const AETH_MSN_MASK: u32 = 0x00FFFFFF;
+const AETH_MSN_MASK: u32 = 0x00FF_FFFF;
 
 /// Base Transport Header of RDMA over Ethernet
 #[derive(Clone, Copy)]
@@ -119,6 +119,7 @@ impl BTH {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     pub fn set_pad_cnt(&mut self, pad_cnt: usize) {
         self.flags =
             (self.flags & !BTH_FLAGS_PAD_CNT_MASK) | ((pad_cnt as u8) << BTH_FLAGS_PAD_CNT_SHIFT);
@@ -151,7 +152,7 @@ impl BTH {
         self.destination_qpn[0] = 0xff;
     }
 
-    /// convert the &RdmaMessageMetaCommon to BTH
+    /// convert the &`RdmaMessageMetaCommon` to `BTH`
     pub fn set_from_common_meta(&mut self, common_meta: &RdmaMessageMetaCommon, pad_cnt: usize) {
         self.set_opcode_and_type(common_meta.opcode.clone(), common_meta.tran_type);
         self.set_flags_solicited(common_meta.solicited);
@@ -256,11 +257,11 @@ impl AETH {
 pub(crate) struct Immediate([u8; 4]);
 
 impl Immediate {
-    pub fn get_immediate(&self) -> u32 {
+    pub fn get(&self) -> u32 {
         u32::from_be_bytes(self.0)
     }
 
-    pub fn set_immediate(&mut self, imm: u32) {
+    pub fn set(&mut self, imm: u32) {
         self.0 = imm.to_be_bytes();
     }
 }
@@ -274,7 +275,7 @@ pub trait RdmaPacketHeader: Sized {
     /// The payload is just behind the header, so we can get the pointer to the payload data by adding 1 to the header pointer.
     /// SAFETY: User should ensure the buffer is large enough to hold the packet header
     fn get_data_ptr(&self) -> *const u8 {
-        unsafe { (self as *const Self).offset(1) as *const u8 }
+        unsafe { (self as *const Self).offset(1).cast::<u8>() }
     }
 
     /// Get a reference to the packet header
@@ -285,10 +286,10 @@ pub trait RdmaPacketHeader: Sized {
         unsafe { transmute(bytes.as_ptr()) }
     }
 
-    /// Convert the packet header to RdmaMessage
+    /// Convert the packet header to `RdmaMessage`
     fn to_rdma_message(&self, buf_size: usize) -> Result<RdmaMessage, PacketError>;
 
-    /// Convert the RdmaMessage to packet header
+    /// Convert the `RdmaMessage` to packet header
     fn set_from_rdma_message(&mut self, message: &RdmaMessage) -> Result<usize, PacketError>;
 }
 
@@ -320,7 +321,7 @@ impl RdmaPacketHeader for RdmaHeaderReqBthReth {
                 self.reth.set_from_reth_header(&header.reth);
                 Ok(size_of::<Self>())
             }
-            _ => Err(PacketError::InvalidMetadataType),
+            Metadata::Acknowledge(_) => Err(PacketError::InvalidMetadataType),
         }
     }
 }
@@ -359,7 +360,7 @@ impl RdmaPacketHeader for RdmaHeaderReqBthDoubleReth {
                 self.secondary_reth.set_from_reth_header(sec_reth);
                 Ok(size_of::<Self>())
             }
-            _ => Err(PacketError::InvalidMetadataType),
+            Metadata::Acknowledge(_) => Err(PacketError::InvalidMetadataType),
         }
     }
 }
@@ -394,10 +395,10 @@ impl RdmaPacketHeader for RdmaHeaderReqBthRethImm {
                 self.bth
                     .set_from_common_meta(&header.common_meta, message.payload.get_pad_cnt());
                 self.reth.set_from_reth_header(&header.reth);
-                self.imm.set_immediate(header.imm.unwrap());
+                self.imm.set(header.imm.unwrap());
                 Ok(size_of::<Self>())
             }
-            _ => Err(PacketError::InvalidMetadataType),
+            Metadata::Acknowledge(_) => Err(PacketError::InvalidMetadataType),
         }
     }
 }
@@ -430,7 +431,7 @@ impl RdmaPacketHeader for RdmaHeaderRespBthAeth {
                 self.aeth.set_msn(header.msn);
                 Ok(size_of::<Self>())
             }
-            _ => Err(PacketError::InvalidMetadataType),
+            Metadata::General(_) => Err(PacketError::InvalidMetadataType),
         }
     }
 }
@@ -490,9 +491,6 @@ impl Ipv4Header {
     }
     pub fn set_destination(&mut self, destination: Ipv4Addr) {
         self.destination = destination.octets();
-    }
-    pub fn get_pad_cnt(&self) -> u16 {
-        u16::from_be_bytes(self.total_length)
     }
 }
 
@@ -555,6 +553,7 @@ impl CommonPacketHeader {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Error, Debug)]
 pub enum PacketError {
     #[error("Header gets an invalid opcode")]
@@ -572,12 +571,10 @@ pub enum PacketError {
 impl From<QpType> for ToHostWorkRbDescTransType {
     fn from(ty: QpType) -> ToHostWorkRbDescTransType {
         match ty {
-            QpType::Rc => ToHostWorkRbDescTransType::Rc,
             QpType::Uc => ToHostWorkRbDescTransType::Uc,
             QpType::Ud => ToHostWorkRbDescTransType::Ud,
-            QpType::RawPacket => ToHostWorkRbDescTransType::Rc,
-            QpType::XrcSend => ToHostWorkRbDescTransType::Xrc,
-            QpType::XrcRecv => ToHostWorkRbDescTransType::Xrc,
+            QpType::RawPacket | QpType::Rc => ToHostWorkRbDescTransType::Rc,
+            QpType::XrcSend | QpType::XrcRecv => ToHostWorkRbDescTransType::Xrc,
         }
     }
 }

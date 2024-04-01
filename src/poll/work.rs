@@ -18,6 +18,7 @@ use crate::{
     RecvPktMap,
 };
 
+#[allow(clippy::module_name_repetitions)]
 pub struct WorkDescPoller {
     _thread: std::thread::JoinHandle<()>,
 }
@@ -39,13 +40,13 @@ enum ThreadFlag {
 
 impl WorkDescPoller {
     pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
-        let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(ctx));
+        let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(&ctx));
         Self { _thread: thread }
     }
 }
 
 impl WorkDescPollerContext {
-    pub(crate) fn poll_working_thread(ctx: Self) {
+    pub(crate) fn poll_working_thread(ctx: &Self) {
         loop {
             let desc = ctx.work_rb.pop().unwrap();
 
@@ -57,10 +58,10 @@ impl WorkDescPollerContext {
 
             let flag = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
-                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(desc),
-                ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(desc),
-                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(desc),
-                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(desc),
+                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(&desc),
+                ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
+                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(&desc),
+                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
             };
             match flag {
                 ThreadFlag::Stopped(reason) => {
@@ -81,7 +82,7 @@ impl WorkDescPollerContext {
         }
     }
 
-    fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWriteOrReadResp) -> ThreadFlag {
+    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) -> ThreadFlag {
         let msn = desc.common.msn;
 
         if matches!(
@@ -101,13 +102,13 @@ impl WorkDescPollerContext {
 
             let pmtu = u32::from(&pmtu);
 
-            let first_pkt_len = if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
-                pmtu as u64 - (desc.addr & (pmtu as u64 - 1))
+            let first_pkt_len = u32::try_from(if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
+                u64::from(pmtu) - (desc.addr & (u64::from(pmtu) - 1))
             } else {
-                real_payload_len as u64
-            };
+                u64::from(real_payload_len)
+            }).unwrap();
 
-            let pkt_cnt = 1 + (real_payload_len - first_pkt_len as u32).div_ceil(pmtu);
+            let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
             let mut pkt_map = RecvPktMap::new(
                 desc.is_read_resp,
                 pkt_cnt as usize,
@@ -137,11 +138,11 @@ impl WorkDescPollerContext {
         ThreadFlag::Running
     }
 
-    fn handle_work_desc_write_with_imm(&self, _desc: ToHostWorkRbDescWriteWithImm) -> ThreadFlag {
+    fn handle_work_desc_write_with_imm(&self, _desc: &ToHostWorkRbDescWriteWithImm) -> ThreadFlag {
         todo!()
     }
 
-    fn handle_work_desc_ack(&self, desc: ToHostWorkRbDescAck) -> ThreadFlag {
+    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) -> ThreadFlag {
         let guard = self.write_op_ctx_map.read().unwrap();
         let key = desc.msn;
         if let Some(op_ctx) = guard.get(&key) {
@@ -153,7 +154,9 @@ impl WorkDescPollerContext {
         ThreadFlag::Running
     }
 
-    fn handle_work_desc_nack(&self, _desc: ToHostWorkRbDescNack) -> ThreadFlag {
+    // This function is still under development
+    #[allow(clippy::unused_self)]
+    fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> ThreadFlag {
         panic!("receive a nack");
     }
 }
@@ -318,7 +321,7 @@ mod tests {
             write_op_ctx_map,
         };
         let _poller = WorkDescPoller::new(work_ctx);
-        ctx.wait();
+        let _ = ctx.wait();
         let item = recv_queue.recv().unwrap();
         match item {
             RespCommand::ReadResponse(res) => {

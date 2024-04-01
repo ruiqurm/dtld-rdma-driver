@@ -16,6 +16,8 @@ use std::{
 
 const QP_MAX_CNT: usize = 1024;
 
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
 pub struct QpContext {
     pub(crate) pd: Pd,
     pub(crate) qpn: Qpn,
@@ -33,6 +35,7 @@ pub struct QpContext {
 }
 
 impl QpContext {
+    #[must_use]
     pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
         Self {
             pd: qp.pd,
@@ -50,11 +53,30 @@ impl QpContext {
 }
 
 impl Device {
+    /// create a qp
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * opeartion failed
+    /// * Operating system not support
+    /// * Setted context result failed
     pub fn create_qp(&self, qp: &Qp) -> Result<(), Error> {
-        let mut qp_pool = self.0.qp_table.write().unwrap();
-        let mut pd_pool = self.0.pd.lock().unwrap();
+        let mut qp_pool = self
+            .0
+            .qp_table
+            .write()
+            .map_err(|_| Error::LockPoisoned("qp table lock"))?;
+        let mut pd_pool = self
+            .0
+            .pd
+            .lock()
+            .map_err(|_| Error::LockPoisoned("pd table lock"))?;
         let pd = &qp.pd;
-        let pd_ctx = pd_pool.get_mut(pd).ok_or(Error::InvalidPd)?;
+        let pd_ctx = pd_pool
+            .get_mut(pd)
+            .ok_or(Error::Invalid(format!("PD :{pd:?}")))?;
 
         let qpc = QpContext::new(
             qp,
@@ -75,29 +97,43 @@ impl Device {
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
 
-        let res = ctx.wait_result().unwrap();
+        let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
             return Err(Error::DeviceReturnFailed);
         }
 
         let pd_res = pd_ctx.qp.insert(qp.qpn);
-        let qp_res = qp_pool.insert(qp.qpn, qpc);
+        if pd_res{
+            return Err(Error::InsertFailed("Pd",format!("{0:?}", qp.qpn)));
+        }
 
-        assert!(pd_res, "pd insert failed");
-        assert!(qp_res.is_none(), "qp insert failed");
+        let qp_res = qp_pool.insert(qp.qpn, qpc);
+        if qp_res.is_none(){
+            return Err(Error::InsertFailed("Qp",format!("{0:?}", qp.qpn)));
+        }
 
         Ok(())
     }
 
+    /// destory a qp
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * opeartion failed
+    /// * Setted context result failed
     pub fn destroy_qp(&self, qp: Qpn) -> Result<(), Error> {
-        let mut qp_pool = self.0.qp_table.write().unwrap();
-        let mut pd_pool = self.0.pd.lock().unwrap();
+        let mut qp_pool = self.0.qp_table.write().map_err(|_| Error::LockPoisoned("qp_table lock"))?;
+        let mut pd_pool = self.0.pd.lock().map_err(|_| Error::LockPoisoned("pd pool lock"))?;
 
         let op_id = self.get_ctrl_op_id();
 
         let (pd_ctx, desc) = if let Some(qp_ctx) = qp_pool.get(&qp) {
-            let pd_ctx = pd_pool.get_mut(&qp_ctx.pd).ok_or(Error::InvalidPd)?;
+            let pd_ctx = pd_pool
+                .get_mut(&qp_ctx.pd)
+                .ok_or(Error::Invalid(format!("PD :{:?}", &qp_ctx.pd)))?;
             let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {
                 common: ToCardCtrlRbDescCommon { op_id },
                 is_valid: false,
@@ -109,12 +145,12 @@ impl Device {
             });
             (pd_ctx, desc)
         } else {
-            return Err(Error::InvalidQpn);
+            return Err(Error::Invalid(format!("Qpn :{qp:?}")));
         };
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
 
-        let res = ctx.wait_result().unwrap();
+        let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
             return Err(Error::DeviceReturnFailed);
@@ -141,12 +177,13 @@ impl PartialEq for Qp {
 
 impl Eq for Qp {}
 
+#[allow(clippy::module_name_repetitions)]
 pub struct QpManager {
     qp_availability: Box<[AtomicBool]>,
 }
 
 impl QpManager {
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         let qp_availability: Vec<AtomicBool> =
             (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
 
@@ -159,7 +196,15 @@ impl QpManager {
         }
     }
 
+    /// allocate a qp number
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// not have enough qp number
     pub fn alloc(&self) -> Result<Qpn, Error> {
+        // QP_MAX_CNT is guaranteed to be less than u32::MAX by RDMA spec.
+        #[allow(clippy::cast_possible_truncation)]
         self.qp_availability
             .iter()
             .enumerate()
@@ -167,7 +212,7 @@ impl QpManager {
                 n.swap(false, Ordering::AcqRel)
                     .then_some(Qpn::new(idx as u32))
             })
-            .ok_or_else(|| Error::NoAvailableQp)
+            .ok_or_else(|| Error::ResourceNoAvailable("QP".to_owned()))
     }
 
     pub fn free(&self, qpn: Qpn) {

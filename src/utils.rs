@@ -1,4 +1,9 @@
-use crate::types::Pmtu;
+use std::{
+    alloc::{alloc, dealloc, Layout},
+    slice::from_raw_parts_mut,
+};
+
+use crate::types::{Pmtu, PAGE_SIZE};
 
 /// Get the length of the first packet.
 ///
@@ -7,19 +12,34 @@ use crate::types::Pmtu;
 /// If pmtu = 256 and va = 256, then the first packet can be at most 256 bytes.
 #[inline]
 pub(crate) fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
-    let offset = va % pmtu as u64;
-    pmtu - offset as u32
+    // The offset is smaller than pmtu,which is smaller than 4096 currently.
+    #[allow(clippy::cast_possible_truncation)]
+    let offset = (va % u64::from(pmtu)) as u32;
+    pmtu - offset
 }
 
 pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u32 {
     let first_pkt_max_len = get_first_packet_max_length(raddr, u32::from(&pmtu));
     let first_pkt_len = total_len.min(first_pkt_max_len);
 
-    1 + (total_len - first_pkt_len).div_ceil(u64::from(&pmtu) as u32)
+    1 + (total_len - first_pkt_len).div_ceil(u32::from(&pmtu))
 }
 
 pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
-    slice.iter().fold(0, |a, b| (a << 8) + *b as u64)
+    slice.iter().fold(0, |a, b| (a << 8) + u64::from(*b))
+}
+
+pub(crate) fn allocate_aligned_memory(size: usize) -> &'static mut [u8] {
+    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+    let ptr = unsafe { alloc(layout) };
+    unsafe { from_raw_parts_mut(ptr, size) }
+}
+
+pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) {
+    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+    unsafe {
+        dealloc(buf.as_mut_ptr(), layout);
+    }
 }
 
 #[cfg(test)]

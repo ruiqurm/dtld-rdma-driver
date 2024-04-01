@@ -109,9 +109,6 @@ fn main() {
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),
             sge0,
-            None,
-            None,
-            None,
         )
         .unwrap();
     let ctx2 = dev_a
@@ -121,14 +118,11 @@ fn main() {
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),
             sge1,
-            None,
-            None,
-            None,
         )
         .unwrap();
 
-    ctx1.wait();
-    ctx2.wait();
+    let _ = ctx1.wait();
+    let _ = ctx2.wait();
 
     if mr_buffer_a[0..SEND_CNT * 2] != mr_buffer_b[0..SEND_CNT * 2] {
         for i in 0..SEND_CNT * 2 {
@@ -162,6 +156,6 @@ fn main() {
             sge_read,
         )
         .unwrap();
-    ctx1.wait();
+    let _ = ctx1.wait();
     info!("Read req sent");
 }

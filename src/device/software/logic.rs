@@ -18,7 +18,8 @@ use super::{
     net_agent::{NetAgentError, NetReceiveLogic, NetSendAgent},
     types::{
         Key, Metadata, PDHandle, PKey, PayloadInfo, Qpn, RdmaGeneralMeta, RdmaMessage,
-        RdmaMessageMetaCommon, RethHeader, ToCardDescriptor,
+        RdmaMessageMetaCommon, RethHeader, ToCardDescriptor, ToCardReadDescriptor,
+        ToCardWriteDescriptor,
     },
 };
 use std::{
@@ -54,21 +55,11 @@ struct MemoryRegion {
     pgt_offset: u32,
 }
 
-/// The simulating hardware logic of BlueRDMA
+/// The simulating hardware logic of `BlueRDMA`
 ///
 /// Typically, the logic needs a `NetSendAgent` and a `NetReceiveAgent` to send and receive packets.
 /// User use the `send` method to send a `ToCardWorkRbDesc` to the network, and use the `update` method to update the hardware context.
 /// And when the `recv_agent` is binded, the received packets will be parsed and be pushed to the `to_host_data_descriptor_queue`.
-///
-/// # Examples
-/// ```
-/// let send_agent = UDPSendAgent::new().unwrap();
-/// let types = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
-/// let mut recv_agent = UDPReceiveAgent::new(types.clone()).unwrap();
-/// recv_agent.start().unwrap();
-/// ```
-///
-///
 pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
@@ -132,9 +123,64 @@ impl BlueRDMALogic {
         Ok(())
     }
 
+    fn send_write_only_packet(
+        &self,
+        mut req: ToCardWriteDescriptor,
+        mut meta_data: RdmaGeneralMeta,
+    ) -> Result<(), BlueRdmaLogicError> {
+        // RdmaWriteOnly or RdmaWriteOnlyWithImmediate
+        let payload = req.sg_list.cut_all_levels();
+
+        // if it's a RdmaWriteOnlyWithImmediate, add the immediate data
+        let (opcode, imm) = req.write_only_opcode_with_imm();
+        meta_data.common_meta.opcode = opcode;
+        meta_data.imm = imm;
+        meta_data.reth.len = if meta_data.common_meta.opcode.is_first() {
+            req.common.total_len
+        } else {
+            req.sg_list.get_total_length()
+        };
+
+        let msg = RdmaMessage {
+            meta_data: Metadata::General(meta_data),
+            payload,
+        };
+
+        self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+        Ok(())
+    }
+
+    fn send_read_packet(
+        &self,
+        req: &ToCardReadDescriptor,
+        mut common_meta: RdmaMessageMetaCommon,
+    ) -> Result<(), BlueRdmaLogicError> {
+        let local_sa = &req.sge.data[0];
+        common_meta.opcode = ToHostWorkRbDescOpcode::RdmaReadRequest;
+
+        let msg = RdmaMessage {
+            meta_data: Metadata::General(RdmaGeneralMeta {
+                common_meta,
+                reth: RethHeader {
+                    va: req.common.raddr,
+                    rkey: Key::new(req.common.rkey.get()),
+                    len: req.common.total_len,
+                },
+                imm: None,
+                secondary_reth: Some(RethHeader {
+                    va: local_sa.addr,
+                    rkey: local_sa.key,
+                    len: local_sa.len,
+                }),
+            }),
+            payload: PayloadInfo::new(),
+        };
+
+        self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+        Ok(())
+    }
+
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
-    /// TODO: the function is too long. Try to split it.
-    #[allow(clippy::shadow_unrelated)]
     pub fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
         let desc = ToCardDescriptor::from(desc);
         // if it's a raw packet, send it directly
@@ -142,7 +188,7 @@ impl BlueRDMALogic {
             return self.send_raw_packet(desc);
         }
 
-        let mut common_meta = {
+        let common_meta = {
             let common = desc.common();
             RdmaMessageMetaCommon {
                 tran_type: desc.common().qp_type.into(),
@@ -175,26 +221,7 @@ impl BlueRDMALogic {
                 };
                 let sge_total_length = req.sg_list.get_total_length();
                 if sge_total_length <= first_packet_max_length {
-                    // RdmaWriteOnly or RdmaWriteOnlyWithImmediate
-                    let payload = req.sg_list.cut_all_levels();
-
-                    // if it's a RdmaWriteOnlyWithImmediate, add the immediate data
-                    let (opcode, imm) = req.write_only_opcode_with_imm();
-                    meta_data.common_meta.opcode = opcode;
-                    meta_data.imm = imm;
-                    meta_data.reth.len = if meta_data.common_meta.opcode.is_first() {
-                        req.common.total_len
-                    } else {
-                        sge_total_length
-                    };
-
-                    let msg = RdmaMessage {
-                        meta_data: Metadata::General(meta_data),
-                        payload,
-                    };
-
-                    self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
-                    return Ok(());
+                    return self.send_write_only_packet(req, meta_data);
                 }
                 // othetrwise send the data in multiple packets
                 // we specifically handle the first and last packet
@@ -221,28 +248,29 @@ impl BlueRDMALogic {
                 };
                 cur_len -= first_packet_length;
                 psn = psn.wrapping_add(1);
-                cur_va += first_packet_length as u64;
+                cur_va += u64::from(first_packet_length);
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
 
                 // send the middle packets
                 meta_data.reth.len = pmtu;
                 while cur_len > pmtu {
-                    let payload = req.sg_list.cut(pmtu)?;
+                    let middle_payload = req.sg_list.cut(pmtu)?;
                     meta_data.common_meta.opcode = req.write_middle_opcode();
                     meta_data.reth.va = cur_va;
                     meta_data.common_meta.psn = psn;
-                    let msg = RdmaMessage {
+                    let middle_msg = RdmaMessage {
                         meta_data: Metadata::General(meta_data.clone()),
-                        payload,
+                        payload: middle_payload,
                     };
                     cur_len -= pmtu;
                     psn = psn.wrapping_add(1);
-                    cur_va += pmtu as u64;
-                    self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+                    cur_va += u64::from(pmtu);
+                    self.net_send_agent
+                        .send(req.common.dqp_ip, 4791, &middle_msg)?;
                 }
 
                 // cur_len <= pmtu, send last packet
-                let payload = req.sg_list.cut(cur_len)?;
+                let last_payload = req.sg_list.cut(cur_len)?;
 
                 // The last packet may be with immediate data
                 let (opcode, imm) = req.write_last_opcode_with_imm();
@@ -251,35 +279,15 @@ impl BlueRDMALogic {
                 meta_data.imm = imm;
                 meta_data.reth.va = cur_va;
                 meta_data.reth.len = cur_len;
-                let msg = RdmaMessage {
+                let last_msg = RdmaMessage {
                     meta_data: Metadata::General(meta_data),
-                    payload,
+                    payload: last_payload,
                 };
-                self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+                self.net_send_agent
+                    .send(req.common.dqp_ip, 4791, &last_msg)?;
             }
             ToCardDescriptor::Read(req) => {
-                let local_sa = &req.sge.data[0];
-                common_meta.opcode = ToHostWorkRbDescOpcode::RdmaReadRequest;
-
-                let msg = RdmaMessage {
-                    meta_data: Metadata::General(RdmaGeneralMeta {
-                        common_meta,
-                        reth: RethHeader {
-                            va: req.common.raddr,
-                            rkey: Key::new(req.common.rkey.get()),
-                            len: req.common.total_len,
-                        },
-                        imm: None,
-                        secondary_reth: Some(RethHeader {
-                            va: local_sa.addr,
-                            rkey: local_sa.key,
-                            len: local_sa.len,
-                        }),
-                    }),
-                    payload: PayloadInfo::new(),
-                };
-
-                self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
+                self.send_read_packet(&req, common_meta)?;
             }
         }
         Ok(())
@@ -396,13 +404,13 @@ impl BlueRDMALogic {
     /// Otherwise, return `RDMA_REQ_ST_NORMAL`
     fn validate_rkey(
         &self,
-        rkey: &Key,
+        rkey: Key,
         needed_permissions: MemAccessTypeFlag,
         va: u64,
         length: u32,
     ) -> Result<ToHostWorkRbDescStatus, BlueRdmaLogicError> {
         let mr_rkey_table = self.mr_rkey_table.read()?;
-        let mr = mr_rkey_table.get(rkey);
+        let mr = mr_rkey_table.get(&rkey);
         if mr.is_none() {
             return Ok(ToHostWorkRbDescStatus::InvMrKey);
         }
@@ -414,7 +422,9 @@ impl BlueRDMALogic {
         }
 
         // check if the va and length are valid.
-        if read_guard.addr > va || read_guard.addr + (read_guard.len as u64) < va + length as u64 {
+        if read_guard.addr > va
+            || read_guard.addr + (read_guard.len as u64) < va + u64::from(length)
+        {
             return Ok(ToHostWorkRbDescStatus::InvMrRegion);
         }
         Ok(ToHostWorkRbDescStatus::Normal)
@@ -424,14 +434,32 @@ impl BlueRDMALogic {
 unsafe impl Send for BlueRDMALogic {}
 unsafe impl Sync for BlueRDMALogic {}
 
+// fn opcode_write_type(opcode: &ToHostWorkRbDescOpcode) -> Option<ToHostWorkRbDescWriteType> {
+//     match opcode {
+//         ToHostWorkRbDescOpcode::RdmaWriteFirst | ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
+//             Some(ToHostWorkRbDescWriteType::First)
+//         }
+//         ToHostWorkRbDescOpcode::RdmaWriteMiddle
+//         | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => Some(ToHostWorkRbDescWriteType::Middle),
+//         ToHostWorkRbDescOpcode::RdmaWriteLast
+//         | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
+//         | ToHostWorkRbDescOpcode::RdmaReadResponseLast => Some(ToHostWorkRbDescWriteType::Last),
+//         ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
+//         | ToHostWorkRbDescOpcode::RdmaWriteOnly
+//         | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => Some(ToHostWorkRbDescWriteType::Only),
+//         ToHostWorkRbDescOpcode::RdmaReadRequest | ToHostWorkRbDescOpcode::Acknowledge => None,
+//     }
+// }
+
 impl NetReceiveLogic<'_> for BlueRDMALogic {
     fn recv(&self, message: &mut RdmaMessage) {
         let meta = &message.meta_data;
+        #[allow(clippy::cast_possible_truncation)]
         let mut common = ToHostWorkRbDescCommon {
             status: ToHostWorkRbDescStatus::Unknown,
             trans: ToHostWorkRbDescTransType::Rc,
             dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
-            pad_cnt: message.payload.get_pad_cnt() as u8,
+            pad_cnt: message.payload.get_pad_cnt() as u8, // The cast here is safe, since we just want the lower part of the pad_cnt.
             msn: Msn::new(message.meta_data.common_meta().pkey.get()),
             expected_psn: crate::types::Psn::new(0),
         };
@@ -443,7 +471,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 let va = header.reth.va;
                 let len = header.reth.len;
                 let status = self
-                    .validate_rkey(&reky, needed_permissions, va, len)
+                    .validate_rkey(reky, needed_permissions, va, len)
                     .unwrap();
 
                 // Copy the payload to the memory
@@ -451,37 +479,17 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     message.payload.copy_to(va as *mut u8);
                 }
 
-                let write_type = match header.common_meta.opcode {
-                    ToHostWorkRbDescOpcode::RdmaWriteFirst
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
-                        Some(ToHostWorkRbDescWriteType::First)
-                    }
-                    ToHostWorkRbDescOpcode::RdmaWriteMiddle
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => {
-                        Some(ToHostWorkRbDescWriteType::Middle)
-                    }
-                    ToHostWorkRbDescOpcode::RdmaWriteLast
-                    | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseLast => {
-                        Some(ToHostWorkRbDescWriteType::Last)
-                    }
-                    ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
-                    | ToHostWorkRbDescOpcode::RdmaWriteOnly
-                    | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
-                        Some(ToHostWorkRbDescWriteType::Only)
-                    }
-                    ToHostWorkRbDescOpcode::RdmaReadRequest
-                    | ToHostWorkRbDescOpcode::Acknowledge => None,
-                };
+                // The default value will not be used since the `write_type` will only appear 
+                // in those write related opcodes.
+                let write_type = header
+                    .common_meta
+                    .opcode
+                    .write_type()
+                    .unwrap_or(ToHostWorkRbDescWriteType::Only);
 
                 common.status = status;
-                let is_read_resp = matches!(
-                    header.common_meta.opcode,
-                    ToHostWorkRbDescOpcode::RdmaReadResponseFirst
-                        | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
-                        | ToHostWorkRbDescOpcode::RdmaReadResponseLast
-                        | ToHostWorkRbDescOpcode::RdmaReadResponseOnly
-                );
+                let is_read_resp = header.common_meta.opcode.is_resp();
+
                 // Write a descriptor to host
                 match header.common_meta.opcode {
                     ToHostWorkRbDescOpcode::RdmaWriteFirst
@@ -495,7 +503,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                             common,
                             is_read_resp,
-                            write_type: write_type.unwrap(),
+                            write_type,
                             psn: header.common_meta.psn,
                             addr: header.reth.va,
                             len: header.reth.len,
@@ -506,7 +514,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                     | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
                         ToHostWorkRbDesc::WriteWithImm(ToHostWorkRbDescWriteWithImm {
                             common,
-                            write_type: write_type.unwrap(),
+                            write_type,
                             psn: header.common_meta.psn,
                             imm: header.imm.unwrap(),
                             addr: header.reth.va,
@@ -525,7 +533,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             rkey: sec_reth.rkey.into(),
                         })
                     }
-                    _ => {
+                    ToHostWorkRbDescOpcode::Acknowledge => {
                         unimplemented!()
                     }
                 }
@@ -535,21 +543,14 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 match header.aeth_code {
                     ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                         common,
-                        msn: crate::types::Msn::new(header.msn as u16),
+                        msn: crate::types::Msn::new(u16::try_from(header.msn).unwrap()),
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
                     }),
-                    // ToHostWorkRbDescAethCode::Nak => {
-                    //     ToHostWorkRbDesc::Nack(ToHostWorkRbDescNack {
-                    //         common,
-                    //         msn: header.msn,
-                    //         value : header.aeth_value,
-                    //         lost_psn : Range::new(header.common_meta.psn.get(), header.common_meta.psn.get()),
-                    //     })
-                    // }
                     ToHostWorkRbDescAethCode::Rnr
                     | ToHostWorkRbDescAethCode::Rsvd
                     | ToHostWorkRbDescAethCode::Nak => {
+                        // just ignore
                         unimplemented!()
                     }
                 }

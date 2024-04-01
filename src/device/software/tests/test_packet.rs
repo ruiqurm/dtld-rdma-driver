@@ -41,8 +41,7 @@ fn test_header_bth_reth() {
     reth.set_rkey(0x12345678);
     reth.set_dlen(1);
 
-    let processor = PacketProcessor;
-    let message = processor.to_rdma_message(&buf).unwrap();
+    let message = PacketProcessor::to_rdma_message(&buf).unwrap();
     let meta = &message.meta_data;
     match meta {
         Metadata::General(header) => {
@@ -67,9 +66,7 @@ fn test_header_bth_reth() {
         _ => panic!("wrong meta data"),
     }
     let mut new_buf = [0u8; BTH_SIZE + RETH_SIZE + 512];
-    let size = processor
-        .set_from_rdma_message(&mut new_buf, &message)
-        .unwrap();
+    let size = PacketProcessor::set_from_rdma_message(&mut new_buf, &message).unwrap();
     assert!(size == BTH_SIZE + RETH_SIZE);
     assert!(buf[..size] == new_buf[..size]);
 }
@@ -93,8 +90,7 @@ fn test_header_bth_reth_imm() {
     reth.set_dlen(0x12345678);
     let imm = &mut buf[BTH_SIZE + RETH_SIZE..BTH_SIZE + RETH_SIZE + IMM_SIZE];
     imm.copy_from_slice(&[1u8; IMM_SIZE]);
-    let processor = PacketProcessor;
-    let message = processor.to_rdma_message(&buf).unwrap();
+    let message = PacketProcessor::to_rdma_message(&buf).unwrap();
     let meta = &message.meta_data;
     match meta {
         Metadata::General(header) => {
@@ -120,9 +116,7 @@ fn test_header_bth_reth_imm() {
         _ => panic!("wrong meta data"),
     }
     let mut new_buf = [0u8; BTH_SIZE + RETH_SIZE + IMM_SIZE + 512];
-    let size = processor
-        .set_from_rdma_message(&mut new_buf, &message)
-        .unwrap();
+    let size = PacketProcessor::set_from_rdma_message(&mut new_buf, &message).unwrap();
     assert!(size == BTH_SIZE + RETH_SIZE + IMM_SIZE);
     assert!(buf[..size] == new_buf[..size]);
 }
@@ -148,8 +142,7 @@ fn test_header_bth_reth_reth() {
     reth.set_va(0x1234567812345678);
     reth.set_rkey(0x12345678_u32);
     reth.set_dlen(0x12345678);
-    let processor = PacketProcessor;
-    let message = processor.to_rdma_message(&buf).unwrap();
+    let message = PacketProcessor::to_rdma_message(&buf).unwrap();
     let meta = &message.meta_data;
     match meta {
         Metadata::General(header) => {
@@ -178,9 +171,7 @@ fn test_header_bth_reth_reth() {
         _ => panic!("wrong meta data"),
     }
     let mut new_buf = [0u8; BTH_SIZE + RETH_SIZE + RETH_SIZE + 512];
-    let size = processor
-        .set_from_rdma_message(&mut new_buf, &message)
-        .unwrap();
+    let size = PacketProcessor::set_from_rdma_message(&mut new_buf, &message).unwrap();
     assert!(size == BTH_SIZE + RETH_SIZE + RETH_SIZE);
     assert!(buf[..size] == new_buf[..size]);
 }
@@ -201,8 +192,7 @@ fn test_header_bth_aeth() {
     let aeth = AETH::from_bytes(&buf[BTH_SIZE..]);
     aeth.set_aeth_code_and_value(2, 5);
     aeth.set_msn(0x123456);
-    let processor = PacketProcessor;
-    let message = processor.to_rdma_message(&buf).unwrap();
+    let message = PacketProcessor::to_rdma_message(&buf).unwrap();
     let meta = &message.meta_data;
     match meta {
         Metadata::Acknowledge(header) => {
@@ -225,9 +215,7 @@ fn test_header_bth_aeth() {
         _ => panic!("wrong meta data"),
     }
     let mut new_buf = [0u8; BTH_SIZE + AETH_SIZE];
-    let size = processor
-        .set_from_rdma_message(&mut new_buf, &message)
-        .unwrap();
+    let size = PacketProcessor::set_from_rdma_message(&mut new_buf, &message).unwrap();
     assert!(size == BTH_SIZE + AETH_SIZE);
     assert!(buf[..size] == new_buf[..size]);
 }
@@ -267,7 +255,6 @@ fn test_payload_copy_to() {
 
 #[test]
 fn test_pkt_processor_to_buf() {
-    let processor = PacketProcessor;
     let mut payload = PayloadInfo::new();
     const DATA_SIZE: usize = 512;
     let data_buf = [1u8; DATA_SIZE];
@@ -294,7 +281,7 @@ fn test_pkt_processor_to_buf() {
         payload,
     };
     let mut buf = [0u8; 4096];
-    let size = processor.set_from_rdma_message(&mut buf, &msg).unwrap();
+    let size = PacketProcessor::set_from_rdma_message(&mut buf, &msg).unwrap();
     assert!(size == BTH_SIZE + RETH_SIZE);
     // read bth
     let bth = BTH::from_bytes(&buf);

@@ -28,6 +28,7 @@ pub trait NetSendAgent {
 }
 
 #[derive(Error, Debug)]
+#[allow(clippy::module_name_repetitions)]
 pub enum NetAgentError {
     #[error("packet process error")]
     Packet(#[from] PacketError),

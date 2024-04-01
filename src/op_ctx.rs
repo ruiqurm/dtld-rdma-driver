@@ -5,6 +5,8 @@ use std::{
 
 use log::error;
 
+use crate::Error;
+
 /// The status of operations.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
@@ -35,11 +37,15 @@ struct OpCtxInner {
     status: CtxStatus,
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub type CtrlOpCtx = OpCtx<bool>; // `is_sucess`
+#[allow(clippy::module_name_repetitions)]
 pub type WriteOpCtx = OpCtx<()>;
+#[allow(clippy::module_name_repetitions)]
 pub type ReadOpCtx = OpCtx<()>;
 
 impl<Payload> OpCtx<Payload> {
+    #[must_use]
     pub fn new_running() -> Self {
         let inner = OpCtxInner {
             thread: None,
@@ -52,13 +58,20 @@ impl<Payload> OpCtx<Payload> {
         Self(Arc::new(wrapper))
     }
 
-    pub fn wait(&self) {
-        let mut guard = self.0.inner.lock().unwrap();
+    /// # Errors
+    /// Returns an error if the operation context is poisoned.
+    pub fn wait(&self) -> Result<(), Error> {
+        let mut guard = self
+            .0
+            .inner
+            .lock()
+            .map_err(|_| Error::LockPoisoned("Operation context lock"))?;
         if matches!(guard.status, CtxStatus::Running) {
             guard.thread = Some(thread::current());
             drop(guard);
             thread::park();
         }
+        Ok(())
     }
 
     pub(crate) fn set_result(&self, result: Payload) {
@@ -74,17 +87,16 @@ impl<Payload> OpCtx<Payload> {
         }
     }
 
-    pub fn get_status(&self) -> CtxStatus {
-        self.0.inner.lock().unwrap().status
-    }
-
+    #[must_use]
     pub fn get_result(&self) -> Option<&Payload> {
         self.0.payload.get()
     }
 
-    pub fn wait_result(&self) -> Option<&Payload> {
-        self.wait();
-        self.0.payload.get()
+    /// # Errors
+    /// Returns an error if the operation context is poisoned.
+    pub fn wait_result(&self) -> Result<Option<&Payload>, Error> {
+        self.wait()?;
+        Ok(self.0.payload.get())
     }
 }
 
@@ -99,7 +111,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             ctx_clone.set_result(true);
         });
-        ctx.wait();
+        let _ = ctx.wait();
         assert_eq!(ctx.get_result(), Some(true).as_ref());
 
         let ctx = super::OpCtx::new_running();
@@ -108,7 +120,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             ctx_clone.set_result(false);
         });
-        ctx.wait_result();
+        let _ = ctx.wait_result();
         assert_eq!(ctx.get_result(), Some(false).as_ref());
     }
 }

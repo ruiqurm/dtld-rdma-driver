@@ -177,9 +177,6 @@ fn main() {
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),
             sge0,
-            None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -197,7 +194,7 @@ fn main() {
     //         None,
     //     )
     //     .unwrap();
-    ctx1.wait();
+    let _ = ctx1.wait();
     // ctx2.wait();
     assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
 

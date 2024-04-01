@@ -37,7 +37,7 @@
     variant_size_differences, 
 
     clippy::all,
-    // clippy::pedantic, // TODO:
+    clippy::pedantic,
     // clippy::cargo, // TODO:
 
     // The followings are selected restriction lints for rust 1.57
@@ -83,7 +83,7 @@
     clippy::unnecessary_self_imports,
     clippy::unneeded_field_pattern,
     // clippy::unreachable, // TODO:
-    // clippy::unwrap_in_result,
+    // clippy::unwrap_in_result,// TODO:
     // clippy::unwrap_used, 
     // clippy::use_debug, debug is allow for debug log
     clippy::verbose_file_reads,
@@ -134,6 +134,7 @@
         clippy::shadow_unrelated,
         clippy::arithmetic_side_effects,
         clippy::let_underscore_untyped,
+        clippy::pedantic, 
     )
 )]
 use crate::{
@@ -217,6 +218,7 @@ pub struct Sge {
 }
 
 impl Sge {
+    #[must_use] 
     pub fn new(addr: u64, len: u32, key: Key) -> Self {
         Self { addr, len, key }
     }
@@ -224,11 +226,13 @@ impl Sge {
 
 impl Device {
     const MR_TABLE_EMPTY_ELEM: Option<MrCtx> = None;
-
+    /// # Errors
+    ///
+    /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_hardware(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
 
-        let adaptor = HardwareDevice::init().map_err(Error::Device)?;
+        let adaptor = HardwareDevice::init();
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
@@ -254,9 +258,12 @@ impl Device {
         Ok(dev)
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_software(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        let adaptor = SoftwareDevice::init(&network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
+        let adaptor = SoftwareDevice::init(network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
@@ -282,6 +289,9 @@ impl Device {
         Ok(dev)
     }
 
+    /// # Errors
+    ///
+    /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_emulated(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
@@ -323,26 +333,28 @@ impl Device {
         Ok(dev)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// RDMA write operation
+    /// 
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * failed to create a descriptor
+    /// * failed to send a descriptor
+    /// * failed to create a operation context
     pub fn write(
         &self,
         dqpn: &Qpn,
         raddr: u64,
         rkey: Key,
         flags: MemAccessTypeFlag,
-        sge0: Sge,
-        sge1: Option<Sge>,
-        sge2: Option<Sge>,
-        sge3: Option<Sge>,
+        sge0: Sge
     ) -> Result<WriteOpCtx, Error> {
         let msn = self.get_msn();
         let common = {
-            let total_len = sge0.len
-                + sge1.as_ref().map_or(0, |sge| sge.len)
-                + sge2.as_ref().map_or(0, |sge| sge.len)
-                + sge3.as_ref().map_or(0, |sge| sge.len);
-            let qp_guard = self.0.qp_table.read().unwrap();
-            let qp = qp_guard.get(dqpn).ok_or(Error::InvalidQpn)?;
+            let total_len = sge0.len;
+            let qp_guard = self.0.qp_table.read().map_err(|_| Error::LockPoisoned("qp table lock"))?;
+            let qp = qp_guard.get(dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
                 raddr,
@@ -358,7 +370,7 @@ impl Device {
             };
             let packet_cnt = calculate_packet_cnt(qp.pmtu, raddr, total_len);
             let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock().unwrap();
+                let mut send_psn = qp.sending_psn.lock().map_err(|_| Error::LockPoisoned("qp context sending_psn lock"))?;
                 let first_pkt_psn = *send_psn;
                 *send_psn = send_psn.wrapping_add(packet_cnt);
                 first_pkt_psn
@@ -370,9 +382,6 @@ impl Device {
         let desc = ToCardWorkRbDescBuilder::new_write()
             .with_common(common)
             .with_sge(sge0)
-            .with_option_sge(sge1)
-            .with_option_sge(sge2)
-            .with_option_sge(sge3)
             .build()?;
         self.send_work_desc(desc)?;
 
@@ -381,11 +390,20 @@ impl Device {
         self.0
             .write_op_ctx_map
             .write()
-            .unwrap()
+            .map_err(|_| Error::LockPoisoned("write_op_ctx_map lock"))?
             .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
         Ok(ctx)
     }
 
+    /// RDMA read operation
+    /// 
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * failed to create a read descriptor
+    /// * failed to send a read descriptor
+    /// * failed to create a operation context
     pub fn read(
         &self,
         dqpn: Qpn,
@@ -397,8 +415,8 @@ impl Device {
         let msn = self.get_msn();
         let common = {
             let total_len = sge.len;
-            let qp_guard = self.0.qp_table.read().unwrap();
-            let qp = qp_guard.get(&dqpn).ok_or(Error::InvalidQpn)?;
+            let qp_guard = self.0.qp_table.read().map_err(|_| Error::LockPoisoned("qp table lock"))?;
+            let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
                 raddr,
@@ -413,7 +431,7 @@ impl Device {
                 msn,
             };
             let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock().unwrap();
+                let mut send_psn = qp.sending_psn.lock().map_err(|_| Error::LockPoisoned("qp context sending_psn lock"))?;
                 let first_pkt_psn = *send_psn;
                 *send_psn = send_psn.wrapping_add(1);
                 first_pkt_psn
@@ -432,7 +450,7 @@ impl Device {
         self.0
             .read_op_ctx_map
             .write()
-            .unwrap()
+            .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?
             .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
 
         Ok(ctx)
@@ -479,9 +497,7 @@ impl Device {
             ctrl_op_ctx_map: Arc::<RwLock<HashMap<u32, CtrlOpCtx>>>::clone(&self.0.ctrl_op_ctx_map)
         };
         let ctrl_desc_poller = ControlPoller::new(ctrl_thread_ctx);
-        if self.0.ctrl_desc_poller.set(ctrl_desc_poller).is_err() {
-            panic!("ctrl_desc_poller has been set");
-        }
+        self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
 
         // enable responser module
         let ack_buf = self.init_ack_buf()?;
@@ -491,9 +507,8 @@ impl Device {
             ack_buf,
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
-        if self.0.responser.set(responser).is_err() {
-            panic!("responser has been set");
-        }
+        self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
+
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
             work_rb : self.0.adaptor.to_host_work_rb(),
@@ -503,9 +518,7 @@ impl Device {
             write_op_ctx_map : Arc::<RwLock<HashMap<Msn, WriteOpCtx>>>::clone(&self.0.write_op_ctx_map),
         };
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
-        if self.0.work_desc_poller.set(work_desc_poller).is_err() {
-            panic!("work_desc_poller has been set");
-        }
+        self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
@@ -513,9 +526,7 @@ impl Device {
             recv_pkt_map,
             Arc::<RwLock<HashMap<Msn, ReadOpCtx>>>::clone(&self.0.read_op_ctx_map),
         );
-        if self.0.pkt_checker_thread.set(pkt_checker_thread).is_err() {
-            panic!("pkt_checker_thread has been set");
-        }
+        self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
 
         // set card network
         self.set_network(&self.0.local_network)?;
@@ -533,7 +544,7 @@ impl Device {
             macaddr: network.macaddr,
         });
         let ctx = self.do_ctrl_op(op_id, desc)?;
-        let is_success = ctx.wait_result().ok_or_else(||Error::SetNetworkParamFailed)?;
+        let is_success = ctx.wait_result()?.ok_or_else(||Error::SetNetworkParamFailed)?;
         if !is_success {
             return Err(Error::SetNetworkParamFailed);
         };
@@ -551,7 +562,7 @@ impl From<Sge> for ToCardCtrlRbDescSge {
     }
 }
 
-/// A interface that allows DescResponser to push the work descriptor to the device
+/// A interface that allows `DescResponser` to push the work descriptor to the device
 pub(crate) trait WorkDescriptorSender: Send + Sync {
     fn send_work_desc(&self, desc_builder: ToCardWorkRbDesc) -> Result<(), Error>;
 }

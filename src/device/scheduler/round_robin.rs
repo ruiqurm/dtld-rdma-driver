@@ -7,6 +7,7 @@ use crate::types::Qpn;
 use super::SchedulerStrategy;
 
 /// The round-robin strategy for the scheduler.
+#[allow(clippy::module_name_repetitions, clippy::linkedlist)]
 pub struct RoundRobinStrategy {
     queue: Mutex<LinkedList<(u32, LinkedList<ToCardWorkRbDesc>)>>,
 }
@@ -63,7 +64,52 @@ impl SchedulerStrategy for RoundRobinStrategy {
 
 #[cfg(test)]
 mod tests {
-    use crate::{device::scheduler::{round_robin::RoundRobinStrategy, bench::generate_random_descriptors, SchedulerStrategy, get_to_card_desc_common}, types::Qpn};
+    use std::{collections::LinkedList, net::Ipv4Addr};
+
+    use eui48::MacAddress;
+
+    use crate::{
+        device::{
+            scheduler::{
+                get_to_card_desc_common, round_robin::RoundRobinStrategy, SchedulerStrategy,
+            },
+            ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
+        },
+        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
+    };
+
+    pub fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<ToCardWorkRbDesc> {
+        let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+            common: ToCardWorkRbDescCommon {
+                total_len: 512,
+                raddr: 0x0,
+                rkey: Key::new(1234_u32),
+                dqp_ip: Ipv4Addr::new(127, 0, 0, 1),
+                dqpn: Qpn::new(qpn),
+                mac_addr: MacAddress::default(),
+                pmtu: Pmtu::Mtu1024,
+                flags: MemAccessTypeFlag::IbvAccessNoFlags,
+                qp_type: QpType::Rc,
+                psn: Psn::new(1234),
+                msn: Msn::new(0),
+            },
+            is_last: true,
+            is_first: true,
+            sge0: ToCardCtrlRbDescSge {
+                addr: 0x1000,
+                len: 512,
+                key: Key::new(0x1234_u32),
+            },
+            sge1: None,
+            sge2: None,
+            sge3: None,
+        });
+        let mut ret = LinkedList::new();
+        for _ in 0..num {
+            ret.push_back(desc.clone());
+        }
+        ret
+    }
 
     #[test]
     fn test_round_robin() {

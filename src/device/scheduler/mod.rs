@@ -4,12 +4,15 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
 
-use crate::{types::{Pmtu, Psn, Qpn}, utils::get_first_packet_max_length};
+use crate::{
+    types::{Pmtu, Psn, Qpn},
+    utils::get_first_packet_max_length,
+};
 
-const SCHEDULER_SIZE: usize = 1024 * 32; // 32KB\
+const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
+const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
-pub mod bench;
 pub mod round_robin;
 
 /// A descriptor scheduler that cut descriptor into `SCHEDULER_SIZE` size and schedule with a strategy.
@@ -21,7 +24,9 @@ pub(crate) struct DescriptorScheduler {
     thread_handler: std::thread::JoinHandle<()>,
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub trait SchedulerStrategy: Send + Sync {
+    #[allow(clippy::linkedlist)]
     fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>);
 
     fn pop(&self) -> Option<ToCardWorkRbDesc>;
@@ -95,17 +100,19 @@ impl ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler {
     }
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn get_first_schedule_segment_length(va: u64) -> u32 {
     let offset = va % SCHEDULER_SIZE as u64;
+    // the `SCHEDULER_SIZE` is in range of u32 and offset is less than `SCHEDULER_SIZE`
+    // So is safe to convert
     (SCHEDULER_SIZE as u32) - offset as u32
 }
 
 fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
     match desc {
         ToCardWorkRbDesc::Read(req) => &req.common,
-        ToCardWorkRbDesc::Write(req) => &req.common,
+        ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => &req.common,
         ToCardWorkRbDesc::WriteWithImm(req) => &req.common,
-        ToCardWorkRbDesc::ReadResp(req) => &req.common,
     }
 }
 
@@ -113,7 +120,9 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
     let mut current_level = origin_sgl.cur_level as usize;
     let mut new_sgl = SGList::default();
     let mut new_sgl_level: usize = 0;
+    #[allow(clippy::cast_possible_truncation)]
     while (current_level as u32) < origin_sgl.len {
+        // if we can cut from current level, just cut and return
         if origin_sgl.data[current_level].len >= length {
             let addr = origin_sgl.data[current_level].addr;
             new_sgl.data[new_sgl_level] = ToCardCtrlRbDescSge {
@@ -122,39 +131,42 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
                 key: origin_sgl.data[current_level].key,
             };
             new_sgl.len = new_sgl_level as u32 + 1;
-            origin_sgl.data[current_level].addr += length as u64;
+            origin_sgl.data[current_level].addr += u64::from(length);
             origin_sgl.data[current_level].len -= length;
             if origin_sgl.data[current_level].len == 0 {
                 current_level += 1;
             }
             origin_sgl.cur_level = current_level as u32;
             return new_sgl;
-        } else {
-            // check next level
-            let addr = origin_sgl.data[current_level].addr as *mut u8;
-            new_sgl.data[new_sgl_level] = ToCardCtrlRbDescSge {
-                addr: addr as u64,
-                len: origin_sgl.data[current_level].len,
-                key: origin_sgl.data[current_level].key,
-            };
-            new_sgl_level += 1;
-            length -= origin_sgl.data[current_level].len;
-            origin_sgl.data[current_level].len = 0;
-            current_level += 1;
         }
+        // otherwise check next level
+        let addr = origin_sgl.data[current_level].addr as *mut u8;
+        new_sgl.data[new_sgl_level] = ToCardCtrlRbDescSge {
+            addr: addr as u64,
+            len: origin_sgl.data[current_level].len,
+            key: origin_sgl.data[current_level].key,
+        };
+        new_sgl_level += 1;
+        length -= origin_sgl.data[current_level].len;
+        origin_sgl.data[current_level].len = 0;
+        current_level += 1;
     }
     unreachable!("The length is too long");
 }
 
+fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
+    match desc {
+        ToCardWorkRbDesc::Read(req) => req.common.total_len,
+        ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => req.common.total_len,
+        ToCardWorkRbDesc::WriteWithImm(req) => req.common.total_len,
+    }
+}
+
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
+#[allow(clippy::linkedlist)]
 pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
     let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
-    let total_len = match &desc {
-        ToCardWorkRbDesc::Read(req) => req.common.total_len,
-        ToCardWorkRbDesc::Write(req) => req.common.total_len,
-        ToCardWorkRbDesc::WriteWithImm(req) => req.common.total_len,
-        ToCardWorkRbDesc::ReadResp(req) => req.common.total_len,
-    };
+    let total_len = get_total_len(&desc);
 
     if is_read || total_len < SCHEDULER_SIZE.try_into().unwrap() {
         let mut list = LinkedList::new();
@@ -164,18 +176,15 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
 
     let (raddr, pmtu, psn, sge) = match &desc {
         ToCardWorkRbDesc::Read(_) => unreachable!(),
-        ToCardWorkRbDesc::Write(req) => {
+        ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
             (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
         }
         ToCardWorkRbDesc::WriteWithImm(req) => {
             (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
         }
-        ToCardWorkRbDesc::ReadResp(req) => {
-            (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
-        }
     };
 
-    let mut sgl = SGList::new_from_sge(sge);
+    let mut sg_list = SGList::new_from_sge(sge);
 
     let mut descs = LinkedList::new();
     let mut this_length = get_first_schedule_segment_length(raddr);
@@ -184,10 +193,10 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
     let mut base_psn = psn;
     while remain_data_length > 0 {
         let mut new_desc = desc.clone();
-        let new_sge = cut_from_sgl(this_length, &mut sgl).data[0];
+        let new_sge = cut_from_sgl(this_length, &mut sg_list).data[0];
         match &mut new_desc {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
-            ToCardWorkRbDesc::Write(ref mut req) => {
+            ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.sge0 = new_sge;
                 req.common.total_len = this_length;
                 req.common.raddr = current_va;
@@ -203,21 +212,13 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
                 req.is_first = false;
                 req.is_last = false;
             }
-            ToCardWorkRbDesc::ReadResp(ref mut req) => {
-                req.sge0 = new_sge;
-                req.common.total_len = this_length;
-                req.common.raddr = current_va;
-                req.common.psn = base_psn;
-                req.is_first = false;
-                req.is_last = false;
-            }
         }
-        base_psn = recalculate_psn(current_va, &pmtu, this_length, base_psn);
+        base_psn = recalculate_psn(current_va, pmtu, this_length, base_psn);
         descs.push_back(new_desc);
-        current_va += this_length as u64;
+        current_va += u64::from(this_length);
         remain_data_length -= this_length;
-        this_length = if remain_data_length > SCHEDULER_SIZE as u32 {
-            SCHEDULER_SIZE as u32
+        this_length = if remain_data_length > SCHEDULER_SIZE_U32 {
+            SCHEDULER_SIZE_U32
         } else {
             remain_data_length
         };
@@ -226,15 +227,11 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
     if let Some(req) = descs.front_mut() {
         match req {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
-            ToCardWorkRbDesc::Write(req) => {
+            ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
                 req.is_first = true;
                 req.common.total_len = total_len;
             }
             ToCardWorkRbDesc::WriteWithImm(req) => {
-                req.is_first = true;
-                req.common.total_len = total_len;
-            }
-            ToCardWorkRbDesc::ReadResp(req) => {
                 req.is_first = true;
                 req.common.total_len = total_len;
             }
@@ -244,13 +241,10 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
     if let Some(req) = descs.back_mut() {
         match req {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
-            ToCardWorkRbDesc::Write(req) => {
+            ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
                 req.is_last = true;
             }
             ToCardWorkRbDesc::WriteWithImm(req) => {
-                req.is_last = true;
-            }
-            ToCardWorkRbDesc::ReadResp(req) => {
                 req.is_last = true;
             }
         }
@@ -262,17 +256,14 @@ pub fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> 
 /// Recalculate the PSN of the descriptor
 ///
 /// # Example
-/// base_psn = 0
-/// desc.raddr = 4095
-/// pmtu = 4096
-/// desc.common_header.total_len = 4096 * 4
+/// `base_psn` = 0 , `desc.raddr` = 4095,`pmtu` = 4096 and `desc.common_header.total_len` = 4096 * 4.
 ///
-/// so the first_packet_length = 4096 - 4095 = 1
-/// then the psn = 0 + ceil((4096 * 4 - first_packet_length),4096) = 4
+/// so the `first_packet_length` = 4096 - 4095 = 1
+/// then the psn = 0 + ceil((4096 * 4 - `first_packet_length`),4096) = 4
 /// That means we will send 5 packets in total(psn=0,1,2,3,4)
 /// And the next psn will be 5
-fn recalculate_psn(raddr: u64, pmtu: &Pmtu, total_len: u32, base_psn: Psn) -> Psn {
-    let pmtu = u32::from(pmtu);
+fn recalculate_psn(raddr: u64, pmtu: Pmtu, total_len: u32, base_psn: Psn) -> Psn {
+    let pmtu = u32::from(&pmtu);
     let first_packet_length = get_first_packet_max_length(raddr, pmtu);
     let first_packet_length = total_len.min(first_packet_length);
     // first packet psn = base_psn
@@ -280,7 +271,6 @@ fn recalculate_psn(raddr: u64, pmtu: &Pmtu, total_len: u32, base_psn: Psn) -> Ps
     let last_packet_psn = base_psn.wrapping_add((total_len - first_packet_length).div_ceil(pmtu));
     last_packet_psn.wrapping_add(1)
 }
-
 
 #[cfg(test)]
 mod test {
@@ -292,7 +282,8 @@ mod test {
 
     use crate::device::scheduler::SCHEDULER_SIZE;
     use crate::device::{
-        ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite
+        ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
+        ToCardWorkRbDescWrite,
     };
 
     use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn};

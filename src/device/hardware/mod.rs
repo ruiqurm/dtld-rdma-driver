@@ -1,11 +1,11 @@
-use thiserror::Error;
 
 use super::{
     DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc,
     ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
 };
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
+#[allow(clippy::struct_field_names)]
 pub(crate) struct HardwareDevice {
     to_card_ctrl_rb: ToCardCtrlRb,
     to_host_ctrl_rb: ToHostCtrlRb,
@@ -23,13 +23,13 @@ struct ToCardWorkRb;
 struct ToHostWorkRb;
 
 impl HardwareDevice {
-    pub(crate) fn init() -> Result<Self, Box<dyn Error>> {
-        Ok(Self {
+    pub(crate) fn init() -> Self {
+        Self {
             to_card_ctrl_rb: ToCardCtrlRb,
             to_host_ctrl_rb: ToHostCtrlRb,
             to_card_work_rb: ToCardWorkRb,
             to_host_work_rb: ToHostWorkRb,
-        })
+        }
     }
 }
 
@@ -86,6 +86,3 @@ impl ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb {
         todo!()
     }
 }
-
-#[derive(Debug, Error)]
-pub enum HardwareError {}

@@ -64,6 +64,10 @@ pub(crate) struct EmulatedDevice {
 impl EmulatedDevice {
     /// Initializing an emulated device.
     /// This function needs to be synchronized.
+    /// 
+    /// Here we allow the `cast_possible_truncation` lint because before every transcation 
+    /// we used an "AND" mask to perform truncation. 
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn init(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
@@ -106,7 +110,7 @@ impl EmulatedDevice {
         let pa_of_to_host_ctrl_rb_addr = dev.get_phys_addr(to_host_ctrl_rb_addr)?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_RESP_QUEUE_ADDR_LOW,
-            (pa_of_to_host_ctrl_rb_addr & 0xFFFFFFFF) as u32,
+            (pa_of_to_host_ctrl_rb_addr & 0xFFFF_FFFF) as u32,
         )?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_CMD_RESP_QUEUE_ADDR_HIGH,
@@ -116,7 +120,7 @@ impl EmulatedDevice {
         let pa_of_to_card_work_rb_addr = dev.get_phys_addr(to_card_work_rb_addr)?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_SEND_QUEUE_ADDR_LOW,
-            (pa_of_to_card_work_rb_addr & 0xFFFFFFFF) as u32,
+            (pa_of_to_card_work_rb_addr & 0xFFFF_FFFF) as u32,
         )?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_SEND_QUEUE_ADDR_HIGH,
@@ -126,7 +130,7 @@ impl EmulatedDevice {
         let pa_of_to_host_work_rb_addr = dev.get_phys_addr(to_host_work_rb_addr)?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_META_REPORT_QUEUE_ADDR_LOW,
-            (pa_of_to_host_work_rb_addr & 0xFFFFFFFF) as u32,
+            (pa_of_to_host_work_rb_addr & 0xFFFF_FFFF) as u32,
         )?;
         dev.rpc_cli.write_csr(
             constants::CSR_ADDR_META_REPORT_QUEUE_ADDR_HIGH,
@@ -139,7 +143,7 @@ impl EmulatedDevice {
                 let rb = Mutex::new(to_card_work_rb);
                 loop {
                     if let Some(desc) = scheduler.pop() {
-                        if let Err(e) = push_to_card_work_rb_desc(&rb, desc) {
+                        if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
                             error!("push to to_card_work_rb failed: {:?}", e);
                         }
                     }
@@ -231,7 +235,7 @@ impl ToCardRb<ToCardWorkRbDesc> for EmulatedDevice {
 
 fn push_to_card_work_rb_desc(
     rb: &Mutex<ToCardWorkRb>,
-    desc: ToCardWorkRbDesc,
+    desc: &ToCardWorkRbDesc,
 ) -> Result<(), DeviceError> {
     debug!("driver send to card SQ: {:?}", &desc);
     let mut guard = rb

@@ -19,7 +19,7 @@ use super::{
 pub(crate) struct PacketProcessor;
 
 impl PacketProcessor {
-    pub fn to_rdma_message(&self, buf: &[u8]) -> Result<RdmaMessage, PacketError> {
+    pub fn to_rdma_message(buf: &[u8]) -> Result<RdmaMessage, PacketError> {
         let opcode = ToHostWorkRbDescOpcode::try_from(BTH::from_bytes(buf).get_opcode());
         match opcode {
             Ok(ToHostWorkRbDescOpcode::RdmaWriteFirst) => {
@@ -74,10 +74,7 @@ impl PacketProcessor {
         }
     }
 
-    /// TODO: remove the `#[allow(unreachable_patterns)]`
-    #[allow(unreachable_patterns)]
     pub fn set_from_rdma_message(
-        &self,
         buf: &mut [u8],
         message: &RdmaMessage,
     ) -> Result<usize, PacketError> {
@@ -130,7 +127,6 @@ impl PacketProcessor {
                 let header = RdmaAcknowledgeHeader::from_bytes(buf);
                 Ok(header.set_from_rdma_message(message)?)
             }
-            _ => Err(PacketError::InvalidOpcode),
         }
     }
 }
@@ -154,6 +150,8 @@ pub(crate) enum PacketProcessorError {
     BufferNotLargeEnough(u32),
     #[error("packet error")]
     PacketError(#[from] PacketError),
+    #[error("Length too long :{0}")]
+    LengthTooLong(usize),
 }
 
 /// A builder for writing a packet
@@ -217,19 +215,19 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
     }
 
     pub fn write(&mut self) -> Result<usize, PacketProcessorError> {
-        let processor = PacketProcessor;
         // advance `size_of::<IpUdpHeaders>()` to write the rdma header
         let net_packet_offset = size_of::<IpUdpHeaders>();
         let message = self.message.ok_or(PacketProcessorError::MissingMessage)?;
         // write the rdma header
         let rdma_header_length =
-            processor.set_from_rdma_message(&mut self.buf[net_packet_offset..], message)?;
+            PacketProcessor::set_from_rdma_message(&mut self.buf[net_packet_offset..], message)?;
 
         // get the total length(include the ip,udp header and the icrc)
         let total_length = size_of::<IpUdpHeaders>()
             + rdma_header_length
             + message.payload.with_pad_length()
             + ICRC_SIZE;
+        let total_length_in_u16 = u16::try_from(total_length).map_err(|_|PacketProcessorError::LengthTooLong(total_length))?; 
 
         // write the payload
         let header_offset = size_of::<IpUdpHeaders>() + rdma_header_length;
@@ -253,11 +251,11 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
             src_port,
             dest_addr,
             dest_port,
-            total_length,
+            total_length_in_u16,
             ip_id,
         );
         // compute icrc
-        let icrc = compute_icrc(&self.buf[..total_length])?.to_le_bytes();
+        let icrc = compute_icrc(&self.buf[..total_length]).to_le_bytes();
         self.buf[total_length - ICRC_SIZE..total_length].copy_from_slice(&icrc);
         Ok(total_length)
     }
@@ -265,16 +263,13 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
 
 /// Assume the buffer is a packet, compute the icrc
 /// Return a u32 of the icrc
-pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
+pub(crate) fn compute_icrc(data: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
     hasher.update(&prefix);
 
     let mut common_hdr = *CommonPacketHeader::from_bytes(data);
-    // let length = common_hdr.net_header.ip_header.get_pad_cnt();
-    // if data.len() != length as usize {
-    //     return Err(PacketProcessorError::BufferNotLargeEnough(length as u32));
-    // }
+
     common_hdr.net_header.ip_header.dscp_ecn = 0xff;
     common_hdr.net_header.ip_header.ttl = 0xff;
     common_hdr.net_header.ip_header.set_checksum(0xffff);
@@ -285,7 +280,7 @@ pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     // SAFETY: the length is ensured
     let common_hdr_bytes = unsafe {
         std::slice::from_raw_parts(
-            &common_hdr as *const CommonPacketHeader as *const u8,
+            std::ptr::addr_of!(common_hdr).cast::<u8>(),
             size_of::<CommonPacketHeader>(),
         )
     };
@@ -293,7 +288,7 @@ pub(crate) fn compute_icrc(data: &[u8]) -> Result<u32, PacketProcessorError> {
     // the rest of header and payload
     hasher.update(&data[size_of::<CommonPacketHeader>()..data.len() - 4]);
 
-    Ok(hasher.finalize())
+    hasher.finalize()
 }
 
 /// Write the ip and udp header to the buffer
@@ -306,23 +301,24 @@ pub(crate) fn write_ip_udp_header(
     src_port: u16,
     dest_addr: Ipv4Addr,
     dest_port: u16,
-    total_length: usize,
+    total_length: u16,
     ip_identification: u16,
 ) {
     let common_hdr = IpUdpHeaders::from_bytes(buf);
     common_hdr.ip_header.set_default_header();
     common_hdr.ip_header.set_source(src_addr);
     common_hdr.ip_header.set_destination(dest_addr);
-    common_hdr.ip_header.set_total_length(total_length as u16);
+    common_hdr.ip_header.set_total_length(total_length);
     common_hdr.ip_header.set_flags_fragment_offset(0);
     common_hdr.ip_header.set_identification(ip_identification);
     common_hdr.ip_header.set_checksum(0);
 
     common_hdr.udp_header.set_source_port(src_port);
     common_hdr.udp_header.set_dest_port(dest_port);
+    #[allow(clippy::cast_possible_truncation)]
     common_hdr
         .udp_header
-        .set_length((total_length - size_of::<Ipv4Header>()) as u16);
+        .set_length(total_length - size_of::<Ipv4Header>() as u16);
     common_hdr.udp_header.set_checksum(0);
 }
 
@@ -334,12 +330,13 @@ pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProc
     // chcek the icrc
     let icrc_array: [u8; 4] = match received_data[length - ICRC_SIZE..length].try_into() {
         Ok(arr) => arr,
+        #[allow(clippy::cast_possible_truncation)]
         Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE as u32)),
     };
     let origin_icrc = u32::from_le_bytes(icrc_array);
     received_data[length - ICRC_SIZE..length].copy_from_slice(&[0u8; 4]);
     let our_icrc = compute_icrc(received_data);
-    Ok(!(our_icrc.is_err() || our_icrc.unwrap() != origin_icrc))
+    Ok(our_icrc == origin_icrc)
 }
 
 #[cfg(test)]
@@ -370,7 +367,7 @@ mod tests {
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xc6, 0x87, 0x22, 0x98,
         ];
-        let icrc = compute_icrc(&buf).unwrap();
+        let icrc = compute_icrc(&buf);
         assert!(
             icrc == u32::from_le_bytes([0xc6, 0x87, 0x22, 0x98]),
             "icrc: {:x}",
@@ -382,8 +379,7 @@ mod tests {
             183, 0, 32, 0, 0, 17, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0,
         ];
-        let icrc = compute_icrc(&buf).unwrap();
+        let icrc = compute_icrc(&buf);
         assert_eq!(icrc, u32::from_le_bytes([64, 33, 163, 207]));
-
     }
 }

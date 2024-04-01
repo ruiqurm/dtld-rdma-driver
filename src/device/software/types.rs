@@ -20,7 +20,7 @@ impl Qpn {
         Qpn(qpn)
     }
 
-    pub fn get(&self) -> u32 {
+    pub fn get(self) -> u32 {
         self.0
     }
 }
@@ -40,7 +40,7 @@ impl PDHandle {
     }
 }
 
-/// The general key type, like RKey, Lkey
+/// The general key type, like `RKey`, `Lkey`
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) struct Key(u32);
 
@@ -49,7 +49,7 @@ impl Key {
         Key(key)
     }
 
-    pub fn get(&self) -> u32 {
+    pub fn get(self) -> u32 {
         self.0
     }
 }
@@ -74,7 +74,7 @@ impl PKey {
         Self(key)
     }
 
-    pub fn get(&self) -> u16 {
+    pub fn get(self) -> u16 {
         self.0
     }
 }
@@ -154,11 +154,11 @@ impl PayloadInfo {
     }
 
     pub fn get_pad_cnt(&self) -> usize {
-        let mut pad_cnt = (RDMA_PAYLOAD_ALIGNMENT - self.total_len % RDMA_PAYLOAD_ALIGNMENT) as u8;
-        if pad_cnt as usize == RDMA_PAYLOAD_ALIGNMENT {
-            pad_cnt = 0
+        let mut pad_cnt = RDMA_PAYLOAD_ALIGNMENT - self.total_len % RDMA_PAYLOAD_ALIGNMENT;
+        if pad_cnt == RDMA_PAYLOAD_ALIGNMENT {
+            pad_cnt = 0;
         }
-        pad_cnt as usize
+        pad_cnt
     }
 
     pub fn with_pad_length(&self) -> usize {
@@ -189,9 +189,7 @@ impl PayloadInfo {
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
     pub fn direct_data_ptr(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(self.sg_list[0].data, self.sg_list[0].len)
-        }
+        unsafe { std::slice::from_raw_parts(self.sg_list[0].data, self.sg_list[0].len) }
     }
 }
 
@@ -263,7 +261,7 @@ impl RdmaGeneralMeta {
         Ok(RdmaGeneralMeta {
             common_meta: RdmaMessageMetaCommon::try_from(bth)?,
             reth: RethHeader::from(reth),
-            imm: imm.map(|v| v.get_immediate()),
+            imm: imm.map(Immediate::get),
             secondary_reth: secondary_reth.map(RethHeader::from),
         })
     }
@@ -436,25 +434,26 @@ impl SGList {
     pub(crate) fn cut(&mut self, mut length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
         let mut current_level = self.cur_level as usize;
         let mut payload = PayloadInfo::new();
+        // here the current level should be a very small number, so it is safe to cast it to u32
+        #[allow(clippy::cast_possible_truncation)]
         while (current_level as u32) < self.len {
             if self.data[current_level].len >= length {
                 let addr = self.data[current_level].addr as *mut u8;
                 payload.add(addr, length as usize);
-                self.data[current_level].addr += length as u64;
+                self.data[current_level].addr += u64::from(length);
                 self.data[current_level].len -= length;
                 if self.data[current_level].len == 0 {
                     current_level += 1;
                     self.cur_level = current_level as u32;
                 }
                 return Ok(payload);
-            } else {
-                // check next level
-                let addr = self.data[current_level].addr as *mut u8;
-                payload.add(addr, self.data[current_level].len as usize);
-                length -= self.data[current_level].len;
-                self.data[current_level].len = 0;
-                current_level += 1;
             }
+            // check next level
+            let addr = self.data[current_level].addr as *mut u8;
+            payload.add(addr, self.data[current_level].len as usize);
+            length -= self.data[current_level].len;
+            self.data[current_level].len = 0;
+            current_level += 1;
         }
         Err(BlueRdmaLogicError::Unreachable)
     }
@@ -558,8 +557,7 @@ impl ToCardWriteDescriptor {
         if self.is_first && self.is_last {
             // is_first = True and is_last = True, means only one packet
             match (self.is_resp(), self.has_imm()) {
-                (true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
-                (true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
+                (true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseOnly, None),
                 (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate, self.imm),
                 (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteOnly, None),
             }
@@ -573,8 +571,7 @@ impl ToCardWriteDescriptor {
         } else {
             // self.is_last = True
             match (self.is_resp(), self.has_imm()) {
-                (true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore
-                (true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
+                (true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
                 (false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
                 (false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
             }
@@ -600,17 +597,14 @@ impl ToCardWriteDescriptor {
 
     pub fn write_last_opcode_with_imm(&self) -> (ToHostWorkRbDescOpcode, Option<u32>) {
         match (self.is_last, self.is_resp(), self.has_imm()) {
-            (true, true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore
-            (true, true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None),
+            (true, true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseLast, None), // ignore read response last with imm
             (true, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate, self.imm),
             (true, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteLast, None),
-            (false, true, true) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
-            (false, true, false) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
-            (false, false, true) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
-            (false, false, false) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
+            (false, true, _) => (ToHostWorkRbDescOpcode::RdmaReadResponseMiddle, None),
+            (false, false, _) => (ToHostWorkRbDescOpcode::RdmaWriteMiddle, None),
         }
     }
-    
+
     pub fn is_resp(&self) -> bool {
         matches!(self.opcode, ToCardWorkRbDescOpcode::ReadResp)
     }
@@ -663,15 +657,13 @@ impl From<ToCardWorkRbDesc> for ToCardDescriptor {
     }
 }
 
-impl From<&QpType> for ToHostWorkRbDescTransType{
+impl From<&QpType> for ToHostWorkRbDescTransType {
     fn from(value: &QpType) -> Self {
         match value {
-            QpType::RawPacket => ToHostWorkRbDescTransType::Rc,
-            QpType::Rc => ToHostWorkRbDescTransType::Rc,
+            QpType::Rc | QpType::RawPacket => ToHostWorkRbDescTransType::Rc,
             QpType::Ud => ToHostWorkRbDescTransType::Ud,
             QpType::Uc => ToHostWorkRbDescTransType::Uc,
-            QpType::XrcRecv => ToHostWorkRbDescTransType::Xrc,
-            QpType::XrcSend => ToHostWorkRbDescTransType::Xrc,
+            QpType::XrcRecv | QpType::XrcSend => ToHostWorkRbDescTransType::Xrc,
         }
     }
 }

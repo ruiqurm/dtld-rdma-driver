@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::RwLock;
 use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 
@@ -10,13 +11,10 @@ use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 
 use crate::utils::calculate_packet_cnt;
-use crate::{
-    device::{
+use crate::device::{
         ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
         ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
-    },
-    Error,
-};
+    };
 use crate::{Sge, WorkDescriptorSender};
 
 /// Command about ACK and NACK
@@ -38,10 +36,10 @@ impl RespAckCommand {
         }
     }
 
-    pub(crate) fn new_nack(dpqn: Qpn, msn: Msn, psn: Psn, last_retry_psn: Psn) -> Self {
+    pub(crate) fn new_nack(dpqn: Qpn, msg_seq_num: Msn, psn: Psn, last_retry_psn: Psn) -> Self {
         Self {
             dpqn,
-            msn,
+            msn: msg_seq_num,
             psn,
             last_retry_psn: Some(last_retry_psn),
         }
@@ -72,113 +70,106 @@ impl DescResponser {
     pub fn new(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
-        ack_buffers: AcknowledgeBuffer,
+        ack_buffers: Arc<AcknowledgeBuffer>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     ) -> Self {
-        let _thread = spawn(|| Self::working_thread(device, recving_queue, ack_buffers, qp_table));
-        Self { _thread }
+        let thread = spawn(|| Self::working_thread(device, recving_queue, ack_buffers, qp_table));
+        Self { _thread: thread }
     }
 
+    fn create_to_card_work_rb_desc_common(
+        command: &RespAckCommand,
+        qp: &QpContext,
+        dst_ip: Ipv4Addr,
+    ) -> ToCardWorkRbDescCommon {
+        // `ACKPACKET_SIZE` is a constant, it is safe to cast it to u32
+        #[allow(clippy::cast_possible_truncation)]
+        ToCardWorkRbDescCommon {
+            total_len: ACKPACKET_SIZE as u32,
+            rkey: Key::default(),
+            raddr: 0,
+            dqp_ip: dst_ip,
+            dqpn: command.dpqn,
+            mac_addr: qp.dqp_mac_addr,
+            pmtu: qp.pmtu,
+            flags: MemAccessTypeFlag::IbvAccessNoFlags,
+            qp_type: QpType::RawPacket,
+            psn: Psn::default(),
+            msn: command.msn,
+        }
+    }
+
+    // may lead to false positive here
+    #[allow(clippy::needless_pass_by_value)]
     fn working_thread(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
-        ack_buffers: AcknowledgeBuffer,
+        ack_buffers: Arc<AcknowledgeBuffer>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     ) {
         loop {
-            match recving_queue.recv() {
+            let desc = match recving_queue.recv() {
                 Ok(RespCommand::Acknowledge(ack)) => {
                     // send ack to device
-                    let ack_buf = ack_buffers.alloc().unwrap();
-                    let (src_ip, dst_ip, common) = match qp_table.read().unwrap().get(&ack.dpqn) {
-                        Some(qp) => {
+                    let mut ack_buf = ack_buffers.alloc().unwrap();
+                    let (src_ip, dst_ip, common) =
+                        if let Some(qp) = qp_table.read().unwrap().get(&ack.dpqn) {
                             let dst_ip = qp.dqp_ip;
                             let src_ip = qp.local_ip;
-                            let common = ToCardWorkRbDescCommon {
-                                total_len: ACKPACKET_SIZE as u32,
-                                rkey: Key::default(),
-                                raddr: 0,
-                                dqp_ip: dst_ip,
-                                dqpn: ack.dpqn,
-                                mac_addr: qp.dqp_mac_addr,
-                                pmtu: qp.pmtu,
-                                flags: MemAccessTypeFlag::IbvAccessNoFlags,
-                                qp_type: QpType::RawPacket,
-                                psn: Psn::default(),
-                                msn: ack.msn,
-                            };
+                            let common = Self::create_to_card_work_rb_desc_common(&ack, qp, dst_ip);
                             (src_ip, dst_ip, common)
-                        }
-                        None => {
+                        } else {
                             error!("Failed to get QP from QP table: {:?}", ack.dpqn);
                             continue;
-                        }
-                    };
+                        };
 
                     let last_retry_psn = ack.last_retry_psn;
-                    if let Err(e) = write_packet(
-                        ack_buf,
+                    write_packet(
+                        ack_buf.as_mut_slice(),
                         src_ip,
                         dst_ip,
                         ack.dpqn,
                         ack.msn,
                         ack.psn,
                         last_retry_psn,
-                    ) {
-                        error!("Failed to write ack/nack packet: {:?}", e);
-                        continue;
-                    }
+                    );
+                    #[allow(clippy::cast_possible_truncation)]
                     let sge = ack_buffers.convert_buf_into_sge(&ack_buf, ACKPACKET_SIZE as u32);
-                    let desc = ToCardWorkRbDescBuilder::new_write()
+                    ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)
                         .with_sge(sge)
-                        .build();
-                    match desc {
-                        Ok(desc) => {
-                            if let Err(e) = device.send_work_desc(desc) {
-                                error!("Failed to push ack/nack packet: {:?}", e);
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to create descripotr: {:?}", e);
-                        }
-                    }
-
-                    ack_buffers.free(ack_buf);
+                        .build()
                 }
                 Ok(RespCommand::ReadResponse(resp)) => {
                     // send read response to device
                     let dpqn = resp.desc.common.dqpn;
-                    let common = match qp_table.read().unwrap().get(&dpqn) {
-                        Some(qp) => {
-                            let mut common = ToCardWorkRbDescCommon {
-                                total_len: resp.desc.len,
-                                rkey: resp.desc.rkey,
-                                raddr: resp.desc.raddr,
-                                dqp_ip: qp.dqp_ip,
-                                dqpn: dpqn,
-                                mac_addr: qp.dqp_mac_addr,
-                                pmtu: qp.pmtu,
-                                flags: MemAccessTypeFlag::IbvAccessNoFlags,
-                                qp_type: qp.qp_type,
-                                psn: Psn::default(),
-                                msn: resp.desc.common.msn,
-                            };
-                            let packet_cnt =
-                                calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
-                            let first_pkt_psn = {
-                                let mut send_psn = qp.sending_psn.lock().unwrap();
-                                let first_pkt_psn = *send_psn;
-                                *send_psn = send_psn.wrapping_add(packet_cnt);
-                                first_pkt_psn
-                            };
-                            common.psn = first_pkt_psn;
-                            common
-                        }
-                        None => {
-                            error!("Failed to get QP from QP table: {:?}", dpqn);
-                            continue;
-                        }
+                    let common = if let Some(qp) = qp_table.read().unwrap().get(&dpqn) {
+                        let mut common = ToCardWorkRbDescCommon {
+                            total_len: resp.desc.len,
+                            rkey: resp.desc.rkey,
+                            raddr: resp.desc.raddr,
+                            dqp_ip: qp.dqp_ip,
+                            dqpn: dpqn,
+                            mac_addr: qp.dqp_mac_addr,
+                            pmtu: qp.pmtu,
+                            flags: MemAccessTypeFlag::IbvAccessNoFlags,
+                            qp_type: qp.qp_type,
+                            psn: Psn::default(),
+                            msn: resp.desc.common.msn,
+                        };
+                        let packet_cnt =
+                            calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
+                        let first_pkt_psn = {
+                            let mut send_psn = qp.sending_psn.lock().unwrap();
+                            let first_pkt_psn = *send_psn;
+                            *send_psn = send_psn.wrapping_add(packet_cnt);
+                            first_pkt_psn
+                        };
+                        common.psn = first_pkt_psn;
+                        common
+                    } else {
+                        error!("Failed to get QP from QP table: {:?}", dpqn);
+                        continue;
                     };
 
                     let sge = Sge {
@@ -186,31 +177,72 @@ impl DescResponser {
                         len: resp.desc.len,
                         key: resp.desc.lkey,
                     };
-                    let desc = ToCardWorkRbDescBuilder::new_read_resp()
+                    ToCardWorkRbDescBuilder::new_read_resp()
                         .with_common(common)
                         .with_sge(sge)
-                        .build();
-                    match desc {
-                        Ok(desc) => {
-                            if let Err(e) = device.send_work_desc(desc) {
-                                error!("Failed to push read response: {:?}", e);
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to create descripotr: {:?}", e);
-                        }
-                    }
+                        .build()
                 }
                 Err(_) => {
                     // The only error is pipe broken, so just exit the thread
                     return;
+                }
+            };
+            match desc {
+                Ok(desc) => {
+                    if let Err(e) = device.send_work_desc(desc) {
+                        error!("Failed to push ack/nack packet: {:?}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create descripotr: {:?}", e);
                 }
             }
         }
     }
 }
 
-type Slot = &'static mut [u8];
+pub struct Slot {
+    buf: NonNull<u8>,
+    allocator: Arc<AcknowledgeBuffer>,
+}
+
+// We won't use the slot in multiple threads, so it is safe to implement Send and Sync
+unsafe impl Send for Slot {}
+unsafe impl Sync for Slot {}
+
+impl Slot {
+    pub(crate) fn new(buf: *mut u8, allocator: Arc<AcknowledgeBuffer>) -> Self {
+        let buf = unsafe { NonNull::new_unchecked(buf) };
+        Self { buf, allocator }
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe {
+            from_raw_parts_mut(
+                self.buf.as_ptr(),
+                AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE,
+            )
+        }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        // check if the buffer is within the range
+        let start = self.allocator.start_va as *mut u8;
+        let end = start.wrapping_add(self.allocator.length);
+        let buf_start = self.buf.as_ptr();
+        let buf_end = buf_start.wrapping_add(AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
+        assert!(
+            buf_start >= start && buf_end <= end,
+            "The buffer is out of range"
+        );
+        self.allocator.free_list.push(Some(Slot {
+            buf: self.buf,
+            allocator: Arc::<AcknowledgeBuffer>::clone(&self.allocator),
+        }));
+    }
+}
 
 /// A structure to hold the acknowledge buffer
 ///
@@ -228,7 +260,7 @@ pub(crate) struct AcknowledgeBuffer {
 impl AcknowledgeBuffer {
     pub const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
     /// Create a new acknowledge buffer
-    pub fn new(start_va: usize, length: usize, lkey: Key) -> Self {
+    pub fn new(start_va: usize, length: usize, lkey: Key) -> Arc<Self> {
         assert!(
             length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0,
             "The length should be multiple of 64"
@@ -236,61 +268,32 @@ impl AcknowledgeBuffer {
         let free_list = Queue::new();
         let mut va = start_va;
         let slots: usize = length / Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
-
-        for _ in 0..slots {
-            // SAFETY: the buffer given by the user should be valid, can be safely converted to array
-            let buf =
-                unsafe { from_raw_parts_mut(va as *mut u8, Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE) };
-            free_list.push(Some(buf));
-            va += Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
-        }
-        Self {
+        let this = Arc::new(Self {
             free_list,
             start_va,
             length,
             lkey,
+        });
+        for _ in 0..slots {
+            this.free_list
+                .push(Some(Slot::new(va as *mut u8, Arc::<Self>::clone(&this))));
+            va += Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
         }
+        this
     }
 
-    pub fn alloc(&self) -> Option<Slot> {
+    pub fn alloc(self: &Arc<Self>) -> Option<Slot> {
         // FIXME: currently, we just recycle all the buffer in the free list.
         let result = self.free_list.pop();
         match result {
             Some(Some(buf)) => Some(buf),
-            Some(None) => None,
-            None => {
-                // The buffer is already freed, so we just try to allocate another buffer
-                let mut va = self.start_va;
-                let slots: usize = self.length / Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
-                for _ in 0..slots {
-                    // SAFETY: the buffer given by the user should be valid, can be safely converted to array
-                    let buf = unsafe {
-                        from_raw_parts_mut(va as *mut u8, Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE)
-                    };
-                    self.free_list.push(Some(buf));
-                    va += Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
-                }
-                self.free_list.pop().map(|x| x.unwrap())
-            }
+            Some(None) | None => None,
         }
-    }
-
-    pub fn free(&self, buf: Slot) {
-        // check if the buffer is within the range
-        let start = self.start_va as *const u8;
-        let end = start.wrapping_add(self.length);
-        let buf_start = buf.as_ptr();
-        let buf_end = buf_start.wrapping_add(AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
-        assert!(
-            buf_start >= start && buf_end <= end && buf.len() == Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE,
-            "The buffer is out of range"
-        );
-        self.free_list.push(Some(buf));
     }
 
     pub fn convert_buf_into_sge(&self, buf: &Slot, real_length: u32) -> Sge {
         Sge {
-            addr: buf.as_ptr() as u64,
+            addr: buf.buf.as_ptr() as u64,
             len: real_length,
             key: self.lkey,
         }
@@ -303,15 +306,18 @@ fn write_packet(
     src_addr: Ipv4Addr,
     dst_addr: Ipv4Addr,
     dpqn: Qpn,
-    msn: Msn,
+    msg_seq_num: Msn,
     psn: Psn,
     last_retry_psn: Option<Psn>,
-) -> Result<(), Error> {
+) {
     let buf = &mut buf[..ACKPACKET_SIZE];
     // write a ip header
     let mut ip_header = Ipv4(buf);
-    ip_header.set_version_and_len(IP_DEFAULT_VERSION_AND_LEN as u32);
+    ip_header.set_version_and_len(u32::from(IP_DEFAULT_VERSION_AND_LEN));
     ip_header.set_dscp_ecn(0);
+
+    // The `total_length` take a 16 bits **big-endian** number as input.
+    // Only the third and forth bytes are used, so the we put the `ACKPACKET_SIZE` into the third byte.
     ip_header.set_total_length(u32::from_be_bytes([
         0,
         0,
@@ -320,8 +326,8 @@ fn write_packet(
     ]));
     ip_header.set_identification(0x27);
     ip_header.set_fragment_offset(0);
-    ip_header.set_ttl(IP_DEFAULT_TTL as u32);
-    ip_header.set_protocol(IP_DEFAULT_PROTOCOL as u32);
+    ip_header.set_ttl(u32::from(IP_DEFAULT_TTL));
+    ip_header.set_protocol(u32::from(IP_DEFAULT_PROTOCOL));
     let src_addr: u32 = src_addr.into();
     ip_header.set_source(src_addr.to_be());
     let dst_addr: u32 = dst_addr.into();
@@ -335,6 +341,7 @@ fn write_packet(
     let mut udp_header = Udp(udp_buf);
     udp_header.set_src_port(RDMA_DEFAULT_PORT.to_be());
     udp_header.set_dst_port(RDMA_DEFAULT_PORT.to_be());
+    #[allow(clippy::cast_possible_truncation)]
     udp_header.set_length((ACKPACKET_WITHOUT_IPV4_HEADER_SIZE as u16).to_be());
     // It might redundant to calculate checksum, as the ICRC will calculate the another checksum
     udp_header.set_checksum(0);
@@ -358,7 +365,7 @@ fn write_packet(
         aeth_header.set_aeth_code(ToHostWorkRbDescAethCode::Ack as u32);
     }
     aeth_header.set_aeth_value(0);
-    aeth_header.set_msn(msn.into_be().into());
+    aeth_header.set_msn(msg_seq_num.into_be().into());
 
     let mut nreth_header = NReth(
         &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..],
@@ -371,9 +378,8 @@ fn write_packet(
     }
     // calculate the ICRC
     let total_buf = &mut ip_header.0[..ACKPACKET_SIZE];
-    let icrc = calculate_icrc(total_buf)?;
+    let icrc = calculate_icrc(total_buf);
     total_buf[ACKPACKET_SIZE - 4..].copy_from_slice(&icrc.to_le_bytes());
-    Ok(())
 }
 
 const IPV4_HEADER_SIZE: usize = 20;
@@ -399,7 +405,7 @@ const RDMA_DEFAULT_PORT: u16 = 4791;
 /// Calculate the RDMA packet ICRC.
 ///
 /// the `data` passing in should include the space for the ICRC(4 bytes).
-fn calculate_icrc(data: &[u8]) -> Result<u32, Error> {
+fn calculate_icrc(data: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
     let mut buf = [0; IPV4_UDP_BTH_HEADER_SIZE];
@@ -420,28 +426,29 @@ fn calculate_icrc(data: &[u8]) -> Result<u32, Error> {
     hasher.update(&buf);
     // the rest of header and payload
     hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - 4]);
-    Ok(hasher.finalize())
+    hasher.finalize()
 }
 
 /// Calculate the checksum of the IPv4 header
 ///
 /// The `header` should be a valid IPv4 header, and the checksum field is set to 0.
+#[allow(clippy::cast_possible_truncation)]
 fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
     let mut sum = 0u32;
 
     for i in (0..IPV4_HEADER_SIZE).step_by(2) {
         let word = if i + 1 < header.len() {
-            ((header[i] as u16) << 8) | header[i + 1] as u16
+            (u16::from(header[i]) << 8) | u16::from(header[i + 1])
         } else {
-            (header[i] as u16) << 8
+            u16::from(header[i]) << 8
         };
-        sum += word as u32;
+        sum += u32::from(word);
     }
 
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
-
+    
     !sum as u16
 }
 
@@ -481,17 +488,15 @@ mod tests {
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xc6, 0x87, 0x22, 0x98,
         ];
-        let icrc = calculate_icrc(&packet).unwrap();
+        let icrc = calculate_icrc(&packet);
         assert_eq!(icrc, u32::from_le_bytes([0xc6, 0x87, 0x22, 0x98]));
         let packet = [
             69, 0, 0, 0, 0, 0, 0, 0, 64, 17, 124, 232, 127, 0, 0, 3, 127, 0, 0, 2, 18, 183, 18,
             183, 0, 32, 0, 0, 17, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0,
         ];
-        let icrc = calculate_icrc(&packet).unwrap();
+        let icrc = calculate_icrc(&packet);
         assert_eq!(icrc, u32::from_le_bytes([64, 33, 163, 207]));
-
-
     }
     #[test]
     fn test_calculate_ipv4_checksum() {
@@ -682,16 +687,22 @@ mod tests {
         let base_va = mem.as_ptr() as usize;
         let buffer = super::AcknowledgeBuffer::new(base_va, 1024 * 64, Key::new(0x1000));
         for i in 0..1024 {
-            let buf = buffer.alloc().unwrap();
+            let slot = buffer.alloc().unwrap();
             assert_eq!(
-                buf.as_ptr() as usize,
+                slot.buf.as_ptr() as usize,
                 mem.as_ptr() as usize + i * super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE
             );
+            let _sge = buffer.convert_buf_into_sge(
+                &slot,
+                super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE
+                    .try_into()
+                    .unwrap(),
+            );
         }
-        // Now the buffer is full, it recycles the buffer
-        for i in 0..1024 {
-            let buf = buffer.alloc().unwrap();
-            assert_eq!(buf.as_ptr() as usize, mem.as_ptr() as usize + i * 64);
-        }
+        // // Now the buffer is full, it recycles the buffer
+        // for i in 0..1024 {
+        //     let slot = buffer.alloc().unwrap();
+        //     assert_eq!(slot.buf.as_ptr() as usize, mem.as_ptr() as usize + i * 64);
+        // }
     }
 }

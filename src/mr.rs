@@ -5,12 +5,13 @@ use crate::{
     },
     responser::AcknowledgeBuffer,
     types::{Key, MemAccessTypeFlag, PAGE_SIZE},
+    utils::{allocate_aligned_memory, deallocate_aligned_memory},
     Device, Error, Pd,
 };
 use rand::RngCore as _;
 use std::{
     hash::{Hash, Hasher},
-    mem, ptr,
+    mem, ptr, sync::Arc,
 };
 
 const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
@@ -23,6 +24,7 @@ pub struct Mr {
 }
 
 impl Mr {
+    #[must_use]
     pub fn get_key(&self) -> Key {
         self.key
     }
@@ -54,52 +56,39 @@ struct MrPgtFreeBlk {
 }
 
 impl Device {
-    pub fn reg_mr(
-        &self,
-        pd: Pd,
-        addr: u64,
-        len: u32,
-        pg_size: u32,
-        acc_flags: MemAccessTypeFlag,
-    ) -> Result<Mr, Error> {
-        // FIXME: must call mlock to lock the pages, prevent form being swapped out.
-        let mut mr_table = self.0.mr_table.lock().unwrap();
-        let mut pd_pool = self.0.pd.lock().unwrap();
-
-        let mut mr_pgt = self.0.mr_pgt.lock().unwrap();
-
-        let Some(mr_idx) = mr_table
-            .iter()
-            .enumerate()
-            .find_map(|(idx, ctx)| ctx.is_none().then_some(idx))
-        else {
-            return Err(Error::NoAvailableMr);
-        };
-
-        let pd_ctx = pd_pool.get_mut(&pd).ok_or(Error::InvalidPd)?;
-
-        let pgte_cnt = len.div_ceil(pg_size) as usize;
+    fn register_page_table(&self, addr: u64, length: u32, pg_size: u32) -> Result<usize, Error> {
+        let mut mr_pgt = self
+            .0
+            .mr_pgt
+            .lock()
+            .map_err(|_| Error::LockPoisoned("MR page table lock"))?;
+        let pgte_cnt = length.div_ceil(pg_size) as usize;
         let pgt_offset = mr_pgt.alloc(pgte_cnt)?;
         for pgt_idx in 0..pgte_cnt {
             let va = addr + (pg_size as usize * pgt_idx) as u64;
+            // Should we support 32 bit system?
+            let va_in_usize =
+                usize::try_from(va).map_err(|_| Error::NotSupport("32 bit System"))?;
             let pa = self
                 .0
                 .adaptor
-                .get_phys_addr(va as usize)
+                .get_phys_addr(va_in_usize)
                 .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?;
             // If we run with hardware DMA,
             // we must make sure va and pa are all allign to pg_size
-            // if va as usize & (PAGE_SIZE - 1) != 0 {
-            //     return Err(Error::AddressNotAlign("va", va as usize));
-            // }
-            // if pa & (PAGE_SIZE - 1) != 0 {
-            //     return Err(Error::AddressNotAlign("pa", pa));
-            // }
+            if va_in_usize & (PAGE_SIZE - 1) != 0 {
+                return Err(Error::AddressNotAlign("va", va_in_usize));
+            }
+            if pa & (PAGE_SIZE - 1) != 0 {
+                return Err(Error::AddressNotAlign("pa", pa));
+            }
 
             mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
         }
 
         let update_pgt_op_id = self.get_ctrl_op_id();
+        // `pgt_offset` and `pg_size` are both derived from pg_size, which is a u32. So it's safe to covert
+        #[allow(clippy::cast_possible_truncation)]
         let update_pgt_desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
             common: ToCardCtrlRbDescCommon {
                 op_id: update_pgt_op_id,
@@ -118,14 +107,78 @@ impl Device {
         let update_pgt_ctx = self.do_ctrl_op(update_pgt_op_id, update_pgt_desc)?;
 
         let update_pgt_result = update_pgt_ctx
-            .wait_result()
+            .wait_result()?
             .ok_or(Error::DeviceReturnFailed)?;
 
         if !update_pgt_result {
             mr_pgt.dealloc(pgt_offset, pgte_cnt);
             return Err(Error::DeviceReturnFailed);
         }
+        Ok(pgt_offset)
+    }
 
+    fn deregister_page_table(&self, pgt_offset: usize, length: u32) -> Result<(), Error> {
+        let mut mr_pgt = self
+            .0
+            .mr_pgt
+            .lock()
+            .map_err(|_| Error::LockPoisoned("mr page table lock"))?;
+        mr_pgt.dealloc(
+            pgt_offset,
+            length
+                .try_into()
+                .map_err(|_| Error::NotSupport("Not 64 bit System"))?,
+        );
+        Ok(())
+    }
+
+    /// Register a Mr
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * not have enough resouce to allocate a new pagetable
+    /// * invalid pd
+    /// * failed to communicate with card(including creating page table and creating mr)
+    pub fn reg_mr(
+        &self,
+        pd: Pd,
+        addr: u64,
+        len: u32,
+        pg_size: u32,
+        acc_flags: MemAccessTypeFlag,
+    ) -> Result<Mr, Error> {
+        // FIXME: must call mlock to lock the pages, prevent form being swapped out.
+        let mut mr_table = self
+            .0
+            .mr_table
+            .lock()
+            .map_err(|_| Error::LockPoisoned("MR table lock"))?;
+
+        let mut pd_pool = self
+            .0
+            .pd
+            .lock()
+            .map_err(|_| Error::LockPoisoned("Pd table lock"))?;
+
+        let Some(mr_idx) = mr_table
+            .iter()
+            .enumerate()
+            .find_map(|(idx, ctx)| ctx.is_none().then_some(idx))
+        else {
+            return Err(Error::ResourceNoAvailable("MR".to_owned()));
+        };
+
+        let pd_ctx = pd_pool
+            .get_mut(&pd)
+            .ok_or(Error::Invalid(format!("PD :{pd:?}")))?;
+
+        let pgt_offset = self.register_page_table(addr, len, pg_size)?;
+
+        // mr_idx is smaller than `MR_TABLE_SIZE`. Currently, it's a relatively small number.
+        // And it's expected to smaller than 2^32 during transimission
+        #[allow(clippy::cast_possible_truncation)]
         let key_idx = (mr_idx as u32) << (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
         let key_secret = rand::thread_rng().next_u32() >> crate::MR_KEY_IDX_BIT_CNT;
         let key = Key::new(key_idx | key_secret);
@@ -143,6 +196,7 @@ impl Device {
 
         let update_mr_op_id = self.get_ctrl_op_id();
 
+        #[allow(clippy::cast_possible_truncation)]
         let update_mr_desc = ToCardCtrlRbDesc::UpdateMrTable(ToCardCtrlRbDescUpdateMrTable {
             common: ToCardCtrlRbDescCommon {
                 op_id: update_mr_op_id,
@@ -157,7 +211,9 @@ impl Device {
 
         let update_mr_ctx = self.do_ctrl_op(update_mr_op_id, update_mr_desc)?;
 
-        let update_mr_result = update_mr_ctx.wait_result().unwrap();
+        let update_mr_result = update_mr_ctx
+            .wait_result()?
+            .ok_or(Error::SetCtxResultFailed)?;
 
         if !update_mr_result {
             return Err(Error::DeviceReturnFailed);
@@ -166,42 +222,72 @@ impl Device {
         mr_table[mr_idx] = Some(mr_ctx);
 
         if !pd_ctx.mr.insert(mr) {
-            return Err(Error::MrAlreadyInPd);
+            return Err(Error::InsertFailed("Pd",format!("{mr:?}")));
         }
 
         Ok(mr)
     }
 
-    pub(crate) fn init_ack_buf(&self) -> Result<AcknowledgeBuffer, Error> {
-        let buffer = Box::leak(Box::new([0u8; ACKNOWLEDGE_BUFFER_SIZE + PAGE_SIZE]));
-        let buffer_addr = (buffer.as_mut_ptr() as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    pub(crate) fn init_ack_buf(&self) -> Result<Arc<AcknowledgeBuffer>, Error> {
+        // NOTE: this buffer should be free if any of the following operations failed
+        let buffer = allocate_aligned_memory(ACKNOWLEDGE_BUFFER_SIZE);
+        let buffer_addr = buffer.as_ptr() as usize;
         let pd = self.alloc_pd()?;
-        let mr = self.reg_mr(
+
+        // the `PAGE_SIZE` and `ACKNOWLEDGE_BUFFER_SIZE` is guaranteed to smaller than u32
+        #[allow(clippy::cast_possible_truncation)]
+        let create_mr_result = self.reg_mr(
             pd,
-            buffer_addr as u64,
+            u64::try_from(buffer_addr).map_err(|_| Error::NotSupport("Not 64 bit System"))?,
             ACKNOWLEDGE_BUFFER_SIZE as u32,
             PAGE_SIZE as u32, // 2MB
             MemAccessTypeFlag::IbvAccessLocalWrite
                 | MemAccessTypeFlag::IbvAccessRemoteRead
                 | MemAccessTypeFlag::IbvAccessRemoteWrite,
-        )?;
-        let ack_buf = AcknowledgeBuffer::new(buffer_addr, ACKNOWLEDGE_BUFFER_SIZE, mr.get_key());
-        Ok(ack_buf)
+        );
+        match create_mr_result {
+            Ok(mr) => {
+                let ack_buf =
+                    AcknowledgeBuffer::new(buffer_addr, ACKNOWLEDGE_BUFFER_SIZE, mr.get_key());
+                Ok(ack_buf)
+            }
+            Err(e) => {
+                deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE);
+                Err(e)
+            }
+        }
     }
 
+    /// Remove a Mr
+    ///
+    /// # Errors
+    ///
+    /// Will return `Err` if:
+    /// * lock poisoned
+    /// * failed to communicate with card(including remove page table and remove mr)
+    /// * Operating system not support
+    /// * Setted context result failed
     pub fn dereg_mr(&self, mr: Mr) -> Result<(), Error> {
-        let mut mr_table = self.0.mr_table.lock().unwrap();
-        let mut pd_pool = self.0.pd.lock().unwrap();
-
-        let mut mr_pgt = self.0.mr_pgt.lock().unwrap();
+        let mut mr_table = self
+            .0
+            .mr_table
+            .lock()
+            .map_err(|_| Error::LockPoisoned("mr_table lock"))?;
+        let mut pd_pool = self
+            .0
+            .pd
+            .lock()
+            .map_err(|_| Error::LockPoisoned("pd table lock"))?;
 
         let mr_idx = mr.key.get() >> (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
 
         let Some(mr_ctx) = mr_table[mr_idx as usize].as_mut() else {
-            return Err(Error::InvalidMr);
+            return Err(Error::Invalid(format!("MR :{mr_idx}")));
         };
 
-        let pd_ctx = pd_pool.get_mut(&mr_ctx.pd).ok_or(Error::InvalidPd)?;
+        let pd_ctx = pd_pool
+            .get_mut(&mr_ctx.pd)
+            .ok_or(Error::Invalid(format!("PD :{:?}", &mr_ctx.pd)))?;
 
         let op_id = self.get_ctrl_op_id();
 
@@ -217,19 +303,16 @@ impl Device {
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
 
-        let res = ctx.wait_result().unwrap();
+        let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
             return Err(Error::DeviceReturnFailed);
         }
 
-        mr_pgt.dealloc(
-            mr_ctx.pgt_offset,
-            mr_ctx.len.div_ceil(mr_ctx.pg_size) as usize,
-        );
+        self.deregister_page_table(mr_ctx.pgt_offset, mr_ctx.len.div_ceil(mr_ctx.pg_size))?;
 
         if !pd_ctx.mr.remove(&mr) {
-            return Err(Error::InvalidMr);
+            return Err(Error::Invalid(format!("MR :{mr_idx}")));
         }
         mr_table[mr_idx as usize] = None;
 
@@ -266,12 +349,12 @@ impl MrPgt {
                 blk.len -= len;
 
                 if blk.len == 0 {
-                    if !blk.prev.is_null() {
+                    if blk.prev.is_null() {
+                        self.free_blk_list = blk.next;
+                    } else {
                         let prev = unsafe { blk.prev.as_mut() };
                         let prev = unsafe { prev.unwrap_unchecked() };
                         prev.next = blk.next;
-                    } else {
-                        self.free_blk_list = blk.next;
                     }
 
                     if !blk.next.is_null() {
@@ -318,12 +401,12 @@ impl MrPgt {
         let new = unsafe { new_ptr.as_mut() };
         let new = unsafe { new.unwrap_unchecked() };
 
-        if !new.prev.is_null() {
+        if new.prev.is_null() {
+            self.free_blk_list = new_ptr;
+        } else {
             let new_prev = unsafe { new.prev.as_mut() };
             let new_prev = unsafe { new_prev.unwrap_unchecked() };
             new_prev.next = new_ptr;
-        } else {
-            self.free_blk_list = new_ptr;
         }
 
         if !new.next.is_null() {
@@ -346,12 +429,12 @@ impl MrPgt {
             let new_prev_prev_ptr = new_prev.prev;
             drop(unsafe { Box::from_raw(new.prev) });
 
-            if !new_prev_prev_ptr.is_null() {
+            if new_prev_prev_ptr.is_null() {
+                self.free_blk_list = new_ptr;
+            } else {
                 let new_prev_prev = unsafe { new_prev_prev_ptr.as_mut() };
                 let new_prev_prev = unsafe { new_prev_prev.unwrap_unchecked() };
                 new_prev_prev.next = new_ptr;
-            } else {
-                self.free_blk_list = new_ptr;
             }
 
             new.prev = new_prev_prev_ptr;

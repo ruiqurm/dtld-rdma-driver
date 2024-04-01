@@ -55,7 +55,7 @@ struct ToHostWorkRb(Arc<SegQueue<ToHostWorkRbDesc>>);
 
 impl SoftwareDevice {
     /// Initializing an software device.
-    pub(crate) fn init(addr: &Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn init(addr: Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new(addr, port)?;
         let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
         // The strategy is a global singleton, so we leak it

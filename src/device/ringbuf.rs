@@ -157,6 +157,8 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
         let new_head =
             Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(head, self.written_cnt);
         *self.head = new_head;
+        // since the head is got by wrapping_add, it's safe to cast to u32
+        #[allow(clippy::cast_possible_truncation)]
         self.proxy.write_head(new_head as u32).unwrap();
         self.written_cnt = 0;
     }
@@ -258,7 +260,13 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
 {
     fn drop(&mut self) {
         *self.tail += self.read_cnt;
-        self.proxy.write_tail(self.read_cnt as u32).unwrap();
+        let read_cnt = u32::try_from(self.read_cnt).unwrap_or_else(|_|{
+            log::error!("In read ringbuf, failed to convert from usize to u32");
+            0
+        });
+        if let Err(e) = self.proxy.write_tail(read_cnt) {
+            log::error!("failed to write tail pointer: {:?}", e);
+        }
     }
 }
 

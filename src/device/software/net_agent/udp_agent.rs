@@ -35,18 +35,19 @@ pub struct UDPSendAgent {
 }
 
 impl UDPSendAgent {
-    pub fn new(src_addr: &Ipv4Addr, src_port: u16) -> Result<Self, NetAgentError> {
+    #[allow(clippy::cast_possible_truncation,clippy::cast_sign_loss)]
+    pub fn new(src_addr: Ipv4Addr, src_port: u16) -> Result<Self, NetAgentError> {
         let sender = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
         let fd = sender.as_raw_fd();
         unsafe {
             let on = 1i32;
-            let on_ref = &on as *const i32 as *const libc::c_void;
+            let on_ref = std::ptr::addr_of!(on).cast::<libc::c_void>();
             let ret = libc::setsockopt(
                 fd,
                 libc::IPPROTO_IP,
                 libc::IP_HDRINCL,
                 on_ref,
-                std::mem::size_of_val(&on) as libc::socklen_t,
+                std::mem::size_of_val(&on) as u32, // size_of(int) is a u32 value
             );
             if ret != 0 {
                 return Err(NetAgentError::SetSockOptFailed(ret));
@@ -54,17 +55,18 @@ impl UDPSendAgent {
         }
 
         // We can use the `rand` crate as well.
+        
         let time_in_number = unsafe { libc::time(std::ptr::null_mut()) as u32 };
         unsafe {
             libc::srand(time_in_number);
         }
         let rand_val = unsafe { libc::rand() };
-        // it may truncation here.
+        // just truncation here, we don't care its exact value.
         let sending_id = AtomicU16::new(rand_val as u16);
         Ok(Self {
             sender,
             sending_id_counter: sending_id,
-            src_addr: *src_addr,
+            src_addr,
             src_port,
         })
     }
@@ -73,7 +75,7 @@ impl UDPSendAgent {
 impl UDPReceiveAgent {
     pub fn new(
         receiver: Arc<dyn for<'a> NetReceiveLogic<'a>>,
-        addr: &Ipv4Addr,
+        addr: Ipv4Addr,
         port: u16,
     ) -> Result<Self, NetAgentError> {
         let mut agent = Self {
@@ -86,15 +88,14 @@ impl UDPReceiveAgent {
 
     /// start a thread to listen to the corresponding port,
     /// and call the `recv` method of the receiver when a message is received.
-    pub fn init(&mut self, addr: &Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
+    pub fn init(&mut self, addr: Ipv4Addr, port: u16) -> Result<(), NetAgentError> {
         let receiver = Arc::<dyn for<'a> NetReceiveLogic<'a>>::clone(&self.receiver);
         let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::UDP))?;
-        let addr = SocketAddrV4::new(*addr, port);
+        let addr = SocketAddrV4::new(addr, port);
         socket.bind(&addr.into())?;
         info!("UDP server started at {}:{}", addr.ip(), addr.port());
         self.listen_thread = Some(thread::spawn(move || -> Result<(), NetAgentError> {
             let mut buf = [MaybeUninit::<u8>::uninit(); NET_SERVER_BUF_SIZE];
-            let processor = PacketProcessor;
             loop {
                 let (length, _src) = socket.recv_from(&mut buf)?;
                 if length < size_of::<CommonPacketHeader>() + 4 {
@@ -103,7 +104,7 @@ impl UDPReceiveAgent {
                 }
                 // SAFETY: `recv_from` ensures that the buffer is filled with `length` bytes.
                 let received_data =
-                    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, length) };
+                    unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), length) };
 
                 if !is_icrc_valid(received_data)? {
                     error!("ICRC check failed {:?}", received_data);
@@ -112,7 +113,7 @@ impl UDPReceiveAgent {
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
                 let received_data = &received_data[offset..length - ICRC_SIZE];
-                if let Ok(mut message) = processor.to_rdma_message(received_data) {
+                if let Ok(mut message) = PacketProcessor::to_rdma_message(received_data) {
                     receiver.recv(&mut message);
                 }
             }
