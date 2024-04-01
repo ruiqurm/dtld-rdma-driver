@@ -153,7 +153,11 @@ impl BTH {
     }
 
     /// convert the &`RdmaMessageMetaCommon` to `BTH`
-    pub(crate) fn set_from_common_meta(&mut self, common_meta: &RdmaMessageMetaCommon, pad_cnt: usize) {
+    pub(crate) fn set_from_common_meta(
+        &mut self,
+        common_meta: &RdmaMessageMetaCommon,
+        pad_cnt: usize,
+    ) {
         self.set_opcode_and_type(common_meta.opcode.clone(), common_meta.tran_type);
         self.set_flags_solicited(common_meta.solicited);
         self.set_pad_cnt(pad_cnt);
@@ -356,7 +360,10 @@ impl RdmaPacketHeader for RdmaHeaderReqBthDoubleReth {
                 self.bth
                     .set_from_common_meta(&header.common_meta, message.payload.get_pad_cnt());
                 self.reth.set_from_reth_header(&header.reth);
-                let sec_reth = header.secondary_reth.as_ref().unwrap();
+                let sec_reth = header
+                    .secondary_reth
+                    .as_ref()
+                    .ok_or(PacketError::InvalidMetadataType)?;
                 self.secondary_reth.set_from_reth_header(sec_reth);
                 Ok(size_of::<Self>())
             }
@@ -395,7 +402,8 @@ impl RdmaPacketHeader for RdmaHeaderReqBthRethImm {
                 self.bth
                     .set_from_common_meta(&header.common_meta, message.payload.get_pad_cnt());
                 self.reth.set_from_reth_header(&header.reth);
-                self.imm.set(header.imm.unwrap());
+                self.imm
+                    .set(header.imm.ok_or(PacketError::InvalidMetadataType)?);
                 Ok(size_of::<Self>())
             }
             Metadata::Acknowledge(_) => Err(PacketError::InvalidMetadataType),

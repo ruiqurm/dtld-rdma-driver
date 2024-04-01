@@ -41,7 +41,7 @@ impl PDHandle {
 }
 
 /// The general key type, like `RKey`, `Lkey`
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub(crate) struct Key(u32);
 
 impl Key {
@@ -199,7 +199,7 @@ pub(crate) struct RdmaMessage {
     pub(crate) payload: PayloadInfo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RethHeader {
     pub(crate) va: u64,
     pub(crate) rkey: Key,

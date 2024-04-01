@@ -15,7 +15,7 @@ use crate::{
     qp::QpContext,
     responser::{RespCommand, RespReadRespCommand},
     types::{Msn, Qpn},
-    RecvPktMap,
+    Error, RecvPktMap,
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -34,11 +34,6 @@ pub(crate) struct WorkDescPollerContext {
 
 unsafe impl Send for WorkDescPollerContext {}
 
-enum ThreadFlag {
-    Running,
-    Stopped(&'static str),
-}
-
 impl WorkDescPoller {
     pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
         let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(&ctx));
@@ -49,41 +44,42 @@ impl WorkDescPoller {
 impl WorkDescPollerContext {
     pub(crate) fn poll_working_thread(ctx: &Self) {
         loop {
-            let desc = ctx.work_rb.pop().unwrap();
-
+            let desc = match ctx.work_rb.pop() {
+                Ok(desc) => desc,
+                Err(e) => {
+                    error!("failed to fetch descriptor from work rb : {:?}", e);
+                    return;
+                }
+            };
             debug!("driver read from card RQ: {:?}", &desc);
             if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
                 error!("desc status is {:?}", desc.status());
                 continue;
             }
 
-            let flag = match desc {
+            let result = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
                 ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(&desc),
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
                 ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(&desc),
                 ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
             };
-            match flag {
-                ThreadFlag::Stopped(reason) => {
-                    error!("poll_work_rb stopped: {}", reason);
-                    return;
-                }
-                ThreadFlag::Running => {}
+            if let Err(reason) = result {
+                error!("poll_work_rb stopped: {}", reason);
+                return;
             }
         }
     }
 
-    fn handle_work_desc_read(&self, desc: ToHostWorkRbDescRead) -> ThreadFlag {
+    fn handle_work_desc_read(&self, desc: ToHostWorkRbDescRead) -> Result<(), Error> {
         let command = RespCommand::ReadResponse(RespReadRespCommand { desc });
-        if self.sending_queue.send(command).is_err() {
-            ThreadFlag::Stopped("receive queue closed")
-        } else {
-            ThreadFlag::Running
-        }
+        self.sending_queue
+            .send(command)
+            .map_err(|_| Error::PipeBroken("work polling thread to responser"))?;
+        Ok(())
     }
 
-    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) -> ThreadFlag {
+    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) -> Result<(), Error> {
         let msn = desc.common.msn;
 
         if matches!(
@@ -92,22 +88,26 @@ impl WorkDescPollerContext {
         ) {
             let real_payload_len = desc.len;
             let pmtu = {
-                let guard = self.qp_table.read().unwrap();
+                let guard = self
+                    .qp_table
+                    .read()
+                    .map_err(|_| Error::LockPoisoned("qp table lock"))?;
                 if let Some(qp_ctx) = guard.get(&desc.common.dqpn) {
                     qp_ctx.pmtu
                 } else {
                     error!("{:?} not found", desc.common.dqpn.get());
-                    return ThreadFlag::Running;
+                    return Ok(());
                 }
             };
 
             let pmtu = u32::from(&pmtu);
 
-            let first_pkt_len = u32::try_from(if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
+            #[allow(clippy::cast_possible_truncation)]
+            let first_pkt_len = if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
                 u64::from(pmtu) - (desc.addr & (u64::from(pmtu) - 1))
             } else {
                 u64::from(real_payload_len)
-            }).unwrap();
+            } as u32;
 
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
             let mut pkt_map = RecvPktMap::new(
@@ -117,7 +117,10 @@ impl WorkDescPollerContext {
                 desc.common.dqpn,
             );
             pkt_map.insert(desc.psn);
-            let mut recv_pkt_map_guard = self.recv_pkt_map.write().unwrap();
+            let mut recv_pkt_map_guard = self
+                .recv_pkt_map
+                .write()
+                .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
             if recv_pkt_map_guard
                 .insert(msn, Mutex::new(pkt_map).into())
                 .is_some()
@@ -128,36 +131,49 @@ impl WorkDescPollerContext {
                 );
             }
         } else {
-            let guard = self.recv_pkt_map.read().unwrap();
+            let guard = self
+                .recv_pkt_map
+                .read()
+                .map_err(|_| Error::LockPoisoned("map of recv_pkt_map lock"))?;
             if let Some(recv_pkt_map) = guard.get(&msn) {
-                let mut recv_pkt_map = recv_pkt_map.lock().unwrap();
+                let mut recv_pkt_map = recv_pkt_map
+                    .lock()
+                    .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
                 recv_pkt_map.insert(desc.psn);
             } else {
                 error!("recv_pkt_map not found for {:?}", msn);
             }
         }
-        ThreadFlag::Running
+        Ok(())
     }
 
-    fn handle_work_desc_write_with_imm(&self, _desc: &ToHostWorkRbDescWriteWithImm) -> ThreadFlag {
+    fn handle_work_desc_write_with_imm(
+        &self,
+        _desc: &ToHostWorkRbDescWriteWithImm,
+    ) -> Result<(), Error> {
         todo!()
     }
 
-    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) -> ThreadFlag {
-        let guard = self.write_op_ctx_map.read().unwrap();
+    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) -> Result<(), Error> {
+        let guard = self
+            .write_op_ctx_map
+            .read()
+            .map_err(|_| Error::LockPoisoned("write_op_ctx_map lock"))?;
         let key = desc.msn;
         if let Some(op_ctx) = guard.get(&key) {
-            op_ctx.set_result(());
+            if let Err(e) = op_ctx.set_result(()) {
+                error!("Set result failed {:?}", e);
+            }
         } else {
             error!("receive ack, but op_ctx not found for {:?}", key);
         }
 
-        ThreadFlag::Running
+        Ok(())
     }
 
     // This function is still under development
     #[allow(clippy::unused_self)]
-    fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> ThreadFlag {
+    fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> Result<(), Error> {
         panic!("receive a nack");
     }
 }

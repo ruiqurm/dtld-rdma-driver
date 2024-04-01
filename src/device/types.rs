@@ -576,7 +576,7 @@ impl ToCardCtrlRbDesc {
 }
 
 impl ToHostCtrlRbDesc {
-    pub(super) fn read(src: &[u8]) -> ToHostCtrlRbDesc {
+    pub(super) fn read(src: &[u8]) -> Result<ToHostCtrlRbDesc, DeviceError> {
         // typedef struct {
         //     Bit#(32)                userData;
         //     ReservedZero#(20)       reserved1;
@@ -601,12 +601,15 @@ impl ToHostCtrlRbDesc {
         // So we can safely cast it to u8.
         #[allow(clippy::cast_possible_truncation)]
         let opcode_raw = head.get_op_code() as u8;
-        let opcode = CtrlRbDescOpcode::try_from(opcode_raw).unwrap();
+
+        let opcode = CtrlRbDescOpcode::try_from(opcode_raw).map_err(|_| {
+            DeviceError::ParseDesc(format!("CtrlRbDescOpcode = {opcode_raw} can not be parsed"))
+        })?;
         let op_id = head.get_user_data().to_le();
 
         let common = ToHostCtrlRbDescCommon { op_id, is_success };
 
-        match opcode {
+        let desc = match opcode {
             CtrlRbDescOpcode::UpdateMrTable => {
                 ToHostCtrlRbDesc::UpdateMrTable(ToHostCtrlRbDescUpdateMrTable { common })
             }
@@ -624,7 +627,8 @@ impl ToHostCtrlRbDesc {
                     common,
                 })
             }
-        }
+        };
+        Ok(desc)
     }
 
     #[allow(unused)]
@@ -872,7 +876,7 @@ impl ToHostWorkRbDesc {
 
     // (last_psn, msn, value, code)
     #[allow(clippy::cast_possible_truncation)]
-    fn read_aeth(src: &[u8]) -> (Psn, Msn, u8, ToHostWorkRbDescAethCode) {
+    fn read_aeth(src: &[u8]) -> Result<(Psn, Msn, u8, ToHostWorkRbDescAethCode), DeviceError> {
         // typedef struct {
         //     AethCode                code;         // 3
         //     AethValue               value;        // 5
@@ -885,12 +889,18 @@ impl ToHostWorkRbDesc {
         let psn = Psn::new(frag_aeth.get_psn());
         let msg_seq_number = Msn::new(frag_aeth.get_msn() as u16);
         let value = frag_aeth.get_aeth_value() as u8;
-        let code = ToHostWorkRbDescAethCode::try_from(frag_aeth.get_aeth_code() as u8).unwrap();
+        let code = frag_aeth.get_aeth_code() as u8;
+        let code = ToHostWorkRbDescAethCode::try_from(code).map_err(|_| {
+            DeviceError::ParseDesc(format!("CtrlRbDescOpcode = {code} can not be parsed"))
+        })?;
 
-        (psn, msg_seq_number, value, code)
+        Ok((psn, msg_seq_number, value, code))
     }
 
     #[allow(clippy::cast_possible_truncation)]
+    // FIXME: The design of `IncompleteToHostWorkRbDesc` is not so good here. I will refactor later.
+    // FIXME: remove #[allow(clippy::unwrap_in_result)]
+    #[allow(clippy::unwrap_in_result, clippy::unwrap_used)]
     pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
@@ -996,7 +1006,7 @@ impl ToHostWorkRbDesc {
                 })
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src);
+                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src).unwrap();
 
                 match code {
                     ToHostWorkRbDescAethCode::Ack => {
@@ -1438,4 +1448,6 @@ pub(crate) enum DeviceError {
     LockPoisoned(String),
     #[error("Scheduler : {0}")]
     Scheduler(String),
+    #[error("Parse descriptor error : {0}")]
+    ParseDesc(String),
 }

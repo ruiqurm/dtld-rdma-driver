@@ -3,7 +3,7 @@ use std::{
     thread::{self, Thread},
 };
 
-use log::error;
+
 
 use crate::Error;
 
@@ -74,17 +74,22 @@ impl<Payload> OpCtx<Payload> {
         Ok(())
     }
 
-    pub(crate) fn set_result(&self, result: Payload) {
-        if self.0.payload.set(result).is_err() {
-            error!("set_result failed");
-            return;
-        }
+    pub(crate) fn set_result(&self, result: Payload) -> Result<(), Error> {
+        self.0
+            .payload
+            .set(result)
+            .map_err(|_| Error::SetCtxResultFailed)?;
         // set only once
-        let mut guard = self.0.inner.lock().unwrap();
+        let mut guard = self
+            .0
+            .inner
+            .lock()
+            .map_err(|_| Error::LockPoisoned("op context set result lock"))?;
         guard.status = CtxStatus::Finished;
         if let Some(thread) = guard.thread.take() {
             thread.unpark();
         }
+        Ok(())
     }
 
     #[must_use]
@@ -109,7 +114,7 @@ mod tests {
         let ctx_clone = ctx.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            ctx_clone.set_result(true);
+            ctx_clone.set_result(true).unwrap();
         });
         let _ = ctx.wait();
         assert_eq!(ctx.get_result(), Some(true).as_ref());
@@ -118,7 +123,7 @@ mod tests {
         let ctx_clone = ctx.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            ctx_clone.set_result(false);
+            ctx_clone.set_result(false).unwrap();
         });
         let _ = ctx.wait_result();
         assert_eq!(ctx.get_result(), Some(false).as_ref());

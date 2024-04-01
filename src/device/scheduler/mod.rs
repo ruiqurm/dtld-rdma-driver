@@ -1,6 +1,7 @@
 use std::{collections::LinkedList, fmt::Debug, sync::Arc, thread::spawn};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use log::error;
 
 use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
 
@@ -26,13 +27,11 @@ pub(crate) struct DescriptorScheduler {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub(crate) trait SchedulerStrategy: Send + Sync + Debug{
+pub(crate) trait SchedulerStrategy: Send + Sync + Debug {
     #[allow(clippy::linkedlist)]
-    fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>);
+    fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>) -> Result<(), DeviceError>;
 
-    fn pop(&self) -> Option<ToCardWorkRbDesc>;
-
-    fn is_empty(&self) -> bool;
+    fn pop(&self) -> Result<Option<ToCardWorkRbDesc>, DeviceError>;
 }
 
 struct SGList {
@@ -77,7 +76,9 @@ impl DescriptorScheduler {
             if let Some(desc) = desc {
                 let dqpn = get_to_card_desc_common(&desc).dqpn;
                 let splited_descs = split_descriptor(desc);
-                strategy.push(dqpn, splited_descs);
+                if let Err(e) = strategy.push(dqpn, splited_descs) {
+                    error!("failed to push descriptors: {:?}", e);
+                }
             }
         });
         Self {
@@ -88,7 +89,7 @@ impl DescriptorScheduler {
         }
     }
 
-    pub(crate) fn pop(self: &Arc<Self>) -> Option<ToCardWorkRbDesc> {
+    pub(crate) fn pop(self: &Arc<Self>) -> Result<Option<ToCardWorkRbDesc>, DeviceError> {
         self.strategy.pop()
     }
 }
@@ -168,8 +169,8 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
 pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
     let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
-
-    if is_read || total_len < SCHEDULER_SIZE.try_into().unwrap() {
+    #[allow(clippy::cast_possible_truncation)]
+    if is_read || total_len < SCHEDULER_SIZE as u32 {
         let mut list = LinkedList::new();
         list.push_back(desc);
         return list;
@@ -388,7 +389,7 @@ mod test {
         scheduler.push(desc).unwrap();
         // schedule the thread;
         sleep(std::time::Duration::from_millis(1));
-        let desc1 = scheduler.pop();
+        let desc1 = scheduler.pop().unwrap();
         assert!(desc1.is_some());
         let desc1 = match desc1.unwrap() {
             ToCardWorkRbDesc::Write(req) => req,
@@ -400,7 +401,7 @@ mod test {
         assert!(desc1.is_first);
         assert!(!desc1.is_last);
 
-        let desc2 = scheduler.pop();
+        let desc2 = scheduler.pop().unwrap();
         let desc2 = match desc2.unwrap() {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
@@ -411,7 +412,7 @@ mod test {
         assert!(!desc2.is_first);
         assert!(!desc2.is_last);
 
-        let desc3 = scheduler.pop();
+        let desc3 = scheduler.pop().unwrap();
         let desc3 = match desc3.unwrap() {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)

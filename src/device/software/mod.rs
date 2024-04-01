@@ -70,8 +70,16 @@ impl SoftwareDevice {
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
         let this_device = Arc::<BlueRDMALogic>::clone(&device);
         let polling_thread = spawn(move || loop {
-            if let Some(to_card_ctrl_rb_desc) = this_scheduler.pop() {
-                let _: Result<(), BlueRdmaLogicError> = this_device.send(to_card_ctrl_rb_desc);
+            match this_scheduler.pop() {
+                Ok(result) => {
+                    if let Some(to_card_ctrl_rb_desc) = result {
+                        let _: Result<(), BlueRdmaLogicError> =
+                            this_device.send(to_card_ctrl_rb_desc);
+                    }
+                }
+                Err(e) => {
+                    log::error!("polling scheduler thread error: {:?}", e);
+                }
             }
         });
         let to_card_work_rb = ToCardWorkRb(scheduler);
@@ -117,7 +125,8 @@ impl DeviceAdaptor for SoftwareDevice {
 
 impl ToCardRb<ToCardCtrlRbDesc> for BlueRDMALogic {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
-        self.update(desc).unwrap();
+        self.update(desc)
+            .map_err(|e| DeviceError::Device(e.to_string()))?;
         Ok(())
     }
 }

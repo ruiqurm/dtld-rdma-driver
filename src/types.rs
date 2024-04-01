@@ -315,6 +315,8 @@ pub enum Error {
     GetPhysAddrFailed(String),
     #[error("Not support environment : {0}")]
     NotSupport(&'static str),
+    #[error("Pipe brocken : {0}")]
+    PipeBroken(&'static str)
 }
 
 #[cfg(test)]

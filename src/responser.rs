@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::RwLock;
+use std::thread::sleep;
+use std::time::Duration;
 use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 
 use lockfree::queue::Queue;
@@ -10,12 +12,12 @@ use crate::device::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 
-use crate::utils::calculate_packet_cnt;
 use crate::device::{
-        ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
-        ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
-    };
-use crate::{Sge, WorkDescriptorSender};
+    ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
+    ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
+};
+use crate::utils::calculate_packet_cnt;
+use crate::{Error, Sge, WorkDescriptorSender};
 
 /// Command about ACK and NACK
 /// Typically, the message is sent by checker thread, which is responsible for checking the packet ordering.
@@ -78,7 +80,7 @@ impl DescResponser {
         Self { _thread: thread }
     }
 
-    fn create_to_card_work_rb_desc_common(
+    fn create_ack_common(
         command: &RespAckCommand,
         qp: &QpContext,
         dst_ip: Ipv4Addr,
@@ -100,6 +102,46 @@ impl DescResponser {
         }
     }
 
+    fn create_read_resp_common(
+        qp_table: &Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        resp: &RespReadRespCommand,
+    ) -> Result<ToCardWorkRbDescCommon, Error> {
+        let dpqn = resp.desc.common.dqpn;
+        if let Some(qp) = qp_table
+            .read()
+            .map_err(|_| Error::LockPoisoned("qp_table lock"))?
+            .get(&dpqn)
+        {
+            let mut common = ToCardWorkRbDescCommon {
+                total_len: resp.desc.len,
+                rkey: resp.desc.rkey,
+                raddr: resp.desc.raddr,
+                dqp_ip: qp.dqp_ip,
+                dqpn: resp.desc.common.dqpn,
+                mac_addr: qp.dqp_mac_addr,
+                pmtu: qp.pmtu,
+                flags: MemAccessTypeFlag::IbvAccessNoFlags,
+                qp_type: qp.qp_type,
+                psn: Psn::default(),
+                msn: resp.desc.common.msn,
+            };
+            let packet_cnt = calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
+            let first_pkt_psn = {
+                let mut send_psn = qp
+                    .sending_psn
+                    .lock()
+                    .map_err(|_| Error::LockPoisoned("qp context sending psn lock"))?;
+                let first_pkt_psn = *send_psn;
+                *send_psn = send_psn.wrapping_add(packet_cnt);
+                first_pkt_psn
+            };
+            common.psn = first_pkt_psn;
+            Ok(common)
+        } else {
+            Err(Error::Invalid(format!("QP {dpqn:?}")))
+        }
+    }
+
     // may lead to false positive here
     #[allow(clippy::needless_pass_by_value)]
     fn working_thread(
@@ -112,18 +154,30 @@ impl DescResponser {
             let desc = match recving_queue.recv() {
                 Ok(RespCommand::Acknowledge(ack)) => {
                     // send ack to device
-                    let mut ack_buf = ack_buffers.alloc().unwrap();
-                    let (src_ip, dst_ip, common) =
-                        if let Some(qp) = qp_table.read().unwrap().get(&ack.dpqn) {
+                    let mut ack_buf = loop {
+                        let buf = ack_buffers.alloc();
+                        match buf {
+                            Some(buf) => break buf,
+                            None => sleep(Duration::from_millis(1)),
+                        }
+                    };
+                    // if we can not read qp_table here
+                    #[allow(clippy::unwrap_used)]
+                    let (src_ip, dst_ip, common) = {
+                        let Ok(table) = qp_table.read() else {
+                            error!("Failed to get QP from QP table: because of PoisonError ");
+                            continue;
+                        };
+                        if let Some(qp) = table.get(&ack.dpqn) {
                             let dst_ip = qp.dqp_ip;
                             let src_ip = qp.local_ip;
-                            let common = Self::create_to_card_work_rb_desc_common(&ack, qp, dst_ip);
+                            let common = Self::create_ack_common(&ack, qp, dst_ip);
                             (src_ip, dst_ip, common)
                         } else {
                             error!("Failed to get QP from QP table: {:?}", ack.dpqn);
                             continue;
-                        };
-
+                        }
+                    };
                     let last_retry_psn = ack.last_retry_psn;
                     write_packet(
                         ack_buf.as_mut_slice(),
@@ -143,34 +197,12 @@ impl DescResponser {
                 }
                 Ok(RespCommand::ReadResponse(resp)) => {
                     // send read response to device
-                    let dpqn = resp.desc.common.dqpn;
-                    let common = if let Some(qp) = qp_table.read().unwrap().get(&dpqn) {
-                        let mut common = ToCardWorkRbDescCommon {
-                            total_len: resp.desc.len,
-                            rkey: resp.desc.rkey,
-                            raddr: resp.desc.raddr,
-                            dqp_ip: qp.dqp_ip,
-                            dqpn: dpqn,
-                            mac_addr: qp.dqp_mac_addr,
-                            pmtu: qp.pmtu,
-                            flags: MemAccessTypeFlag::IbvAccessNoFlags,
-                            qp_type: qp.qp_type,
-                            psn: Psn::default(),
-                            msn: resp.desc.common.msn,
-                        };
-                        let packet_cnt =
-                            calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
-                        let first_pkt_psn = {
-                            let mut send_psn = qp.sending_psn.lock().unwrap();
-                            let first_pkt_psn = *send_psn;
-                            *send_psn = send_psn.wrapping_add(packet_cnt);
-                            first_pkt_psn
-                        };
-                        common.psn = first_pkt_psn;
-                        common
-                    } else {
-                        error!("Failed to get QP from QP table: {:?}", dpqn);
-                        continue;
+                    let common = match Self::create_read_resp_common(&qp_table, &resp) {
+                        Ok(common) => common,
+                        Err(e) => {
+                            error!("responser failed to send read response: {:?}", e);
+                            continue;
+                        }
                     };
 
                     let sge = Sge {
@@ -319,10 +351,11 @@ fn write_packet(
 
     // The `total_length` take a 16 bits **big-endian** number as input.
     // Only the third and forth bytes are used, so the we put the `ACKPACKET_SIZE` into the third byte.
+    #[allow(clippy::cast_possible_truncation)]
     ip_header.set_total_length(u32::from_be_bytes([
         0,
         0,
-        ACKPACKET_SIZE.try_into().unwrap(),
+        ACKPACKET_SIZE as u8,
         0,
     ]));
     ip_header.set_identification(0x27);
@@ -372,6 +405,8 @@ fn write_packet(
         &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..],
     );
     if is_nak {
+        // we have checked the option before.
+        #[allow(clippy::unwrap_used)]
         let last_retry_psn = last_retry_psn.unwrap().into_be();
         nreth_header.set_last_retry_psn(last_retry_psn);
     } else {
@@ -449,7 +484,7 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
     while sum >> 16_i32 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16_i32);
     }
-    
+
     !sum as u16
 }
 

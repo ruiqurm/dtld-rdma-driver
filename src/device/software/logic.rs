@@ -102,7 +102,9 @@ impl BlueRDMALogic {
     }
 
     /// Get the queue that contains the received meta descriptor
-    pub(crate) fn get_to_host_descriptor_queue(&self) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
+    pub(crate) fn get_to_host_descriptor_queue(
+        &self,
+    ) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
         Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(
             &self.to_host_data_descriptor_queue,
         )
@@ -411,11 +413,11 @@ impl BlueRDMALogic {
         length: u32,
     ) -> Result<ToHostWorkRbDescStatus, BlueRdmaLogicError> {
         let mr_rkey_table = self.mr_rkey_table.read()?;
-        let mr = mr_rkey_table.get(&rkey);
-        if mr.is_none() {
+        let Some(mr) = mr_rkey_table.get(&rkey) else {
             return Ok(ToHostWorkRbDescStatus::InvMrKey);
-        }
-        let read_guard = mr.unwrap().read().unwrap();
+        };
+
+        let read_guard = mr.read()?;
 
         // check the permission.
         if !read_guard.acc_flags.contains(needed_permissions) {
@@ -452,18 +454,22 @@ unsafe impl Sync for BlueRDMALogic {}
 //     }
 // }
 
+fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
+    #[allow(clippy::cast_possible_truncation)]
+    ToHostWorkRbDescCommon {
+        status: ToHostWorkRbDescStatus::Unknown,
+        trans: ToHostWorkRbDescTransType::Rc,
+        dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
+        pad_cnt: message.payload.get_pad_cnt() as u8, // The cast here is safe, since we just want the lower part of the pad_cnt.
+        msn: Msn::new(message.meta_data.common_meta().pkey.get()),
+        expected_psn: crate::types::Psn::new(0),
+    }
+}
+
 impl NetReceiveLogic<'_> for BlueRDMALogic {
     fn recv(&self, message: &mut RdmaMessage) {
         let meta = &message.meta_data;
-        #[allow(clippy::cast_possible_truncation)]
-        let mut common = ToHostWorkRbDescCommon {
-            status: ToHostWorkRbDescStatus::Unknown,
-            trans: ToHostWorkRbDescTransType::Rc,
-            dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
-            pad_cnt: message.payload.get_pad_cnt() as u8, // The cast here is safe, since we just want the lower part of the pad_cnt.
-            msn: Msn::new(message.meta_data.common_meta().pkey.get()),
-            expected_psn: crate::types::Psn::new(0),
-        };
+        let mut common = recv_default_meta(message);
         let descriptor = match meta {
             Metadata::General(header) => {
                 // validate the rkey
@@ -471,16 +477,17 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 let needed_permissions = header.needed_permissions();
                 let va = header.reth.va;
                 let len = header.reth.len;
-                let status = self
-                    .validate_rkey(reky, needed_permissions, va, len)
-                    .unwrap();
+                let Ok(status) = self.validate_rkey(reky, needed_permissions, va, len) else {
+                    log::error!("Failed to validate the rkey");
+                    return;
+                };
 
                 // Copy the payload to the memory
                 if status.is_ok() && header.has_payload() {
                     message.payload.copy_to(va as *mut u8);
                 }
 
-                // The default value will not be used since the `write_type` will only appear 
+                // The default value will not be used since the `write_type` will only appear
                 // in those write related opcodes.
                 let write_type = header
                     .common_meta
@@ -517,14 +524,20 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             common,
                             write_type,
                             psn: header.common_meta.psn,
-                            imm: header.imm.unwrap(),
+                            imm: header.imm.unwrap_or_else(|| {
+                                log::error!("The immediate data is not found");
+                                0
+                            }),
                             addr: header.reth.va,
                             len: header.reth.len,
                             key: header.reth.rkey.into(),
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaReadRequest => {
-                        let sec_reth = header.secondary_reth.unwrap();
+                        let sec_reth = header.secondary_reth.unwrap_or({
+                            log::error!("The secondary reth is not found");
+                            RethHeader::default()
+                        });
                         ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
                             common,
                             len: header.reth.len,
@@ -544,7 +557,8 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                 match header.aeth_code {
                     ToHostWorkRbDescAethCode::Ack => ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                         common,
-                        msn: crate::types::Msn::new(u16::try_from(header.msn).unwrap()),
+                        #[allow(clippy::cast_possible_truncation)]
+                        msn: crate::types::Msn::new(header.msn as u16), // msn is u16 currently. So we can just truncate it.
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
                     }),

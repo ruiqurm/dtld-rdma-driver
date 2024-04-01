@@ -8,6 +8,7 @@ use crate::{
     recv_pkt_map::RecvPktMap,
     responser::{RespAckCommand, RespCommand},
     types::{Msn, Psn},
+    Error,
 };
 
 use log::{error, info};
@@ -41,27 +42,22 @@ struct PacketCheckerContext {
     read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
 }
 
-enum ThreadFlag {
-    Running,
-    Stopped(&'static str),
-}
-
 impl PacketCheckerContext {
     fn working_thread(ctx: &Self) {
         loop {
-            match ctx.check_pkt_map() {
-                ThreadFlag::Running => {}
-                ThreadFlag::Stopped(reason) => {
-                    error!("PacketChecker stopped: {}", reason);
-                    break;
-                }
+            if let Err(e) = ctx.check_pkt_map() {
+                error!("PacketChecker stopped: {:?}", e);
+                break;
             }
         }
     }
-    fn check_pkt_map(&self) -> ThreadFlag {
+    fn check_pkt_map(&self) -> Result<(), Error> {
         let mut remove_list = LinkedList::new();
         let iter_maps = {
-            let guard = self.recv_pkt_map.read().unwrap();
+            let guard = self
+                .recv_pkt_map
+                .read()
+                .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?;
             guard
                 .iter()
                 .map(|(k, v)| (*k, Arc::clone(v)))
@@ -69,7 +65,9 @@ impl PacketCheckerContext {
         };
         for (msn, map) in iter_maps {
             let (is_complete, is_read_resp, is_out_of_order, dqpn, end_psn) = {
-                let guard = map.lock().unwrap();
+                let guard = map
+                    .lock()
+                    .map_err(|_| Error::LockPoisoned("recv packet map lock"))?;
                 (
                     guard.is_complete(),
                     guard.is_read_resp(),
@@ -85,12 +83,18 @@ impl PacketCheckerContext {
                     // If we are not in read response, we should send ack
                     let command =
                         RespCommand::Acknowledge(RespAckCommand::new_ack(dqpn, msn, end_psn));
-                    if self.send_queue.send(command).is_err() {
-                        error!("Failed to send ack command");
-                        return ThreadFlag::Stopped("Send queue is broken");
+                    self.send_queue
+                        .send(command)
+                        .map_err(|_| Error::PipeBroken("packet checker send queue"))?;
+                } else if let Some(ctx) = self
+                    .read_op_ctx_map
+                    .read()
+                    .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?
+                    .get(&msn)
+                {
+                    if let Err(e) = ctx.set_result(()) {
+                        error!("Set result failed {:?}", e);
                     }
-                } else if let Some(ctx) = self.read_op_ctx_map.read().unwrap().get(&msn) {
-                    ctx.set_result(());
                 } else {
                     error!("No read op ctx found for {:?}", msn);
                 }
@@ -103,10 +107,9 @@ impl PacketCheckerContext {
                     end_psn,
                     Psn::default(),
                 ));
-                if self.send_queue.send(command).is_err() {
-                    error!("Failed to send nack command");
-                    return ThreadFlag::Stopped("Send queue is broken");
-                }
+                self.send_queue
+                    .send(command)
+                    .map_err(|_| Error::PipeBroken("packet checker send queue"))?;
                 panic!("send nack command")
             } else {
                 // everthing is fine, do nothing
@@ -115,12 +118,15 @@ impl PacketCheckerContext {
 
         // remove the completed recv_pkt_map
         if !remove_list.is_empty() {
-            let mut guard = self.recv_pkt_map.write().unwrap();
+            let mut guard = self
+                .recv_pkt_map
+                .write()
+                .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
             for dqpn in &remove_list {
-                let _ : Option<Arc<Mutex<RecvPktMap>>> = guard.remove(dqpn);
+                let _: Option<Arc<Mutex<RecvPktMap>>> = guard.remove(dqpn);
             }
         }
-        ThreadFlag::Running
+        Ok(())
     }
 }
 

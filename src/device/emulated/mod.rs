@@ -65,9 +65,9 @@ pub(crate) struct EmulatedDevice {
 impl EmulatedDevice {
     /// Initializing an emulated device.
     /// This function needs to be synchronized.
-    /// 
-    /// Here we allow the `cast_possible_truncation` lint because before every transcation 
-    /// we used an "AND" mask to perform truncation. 
+    ///
+    /// Here we allow the `cast_possible_truncation` lint because before every transcation
+    /// we used an "AND" mask to perform truncation.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn init(
         rpc_server_addr: SocketAddr,
@@ -140,12 +140,19 @@ impl EmulatedDevice {
 
         #[cfg(feature = "scheduler")]
         {
-            let _ : std::thread::JoinHandle<_> = spawn(move || {
+            let _: std::thread::JoinHandle<_> = spawn(move || {
                 let rb = Mutex::new(to_card_work_rb);
                 loop {
-                    if let Some(desc) = scheduler.pop() {
-                        if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
-                            error!("push to to_card_work_rb failed: {:?}", e);
+                    match scheduler.pop() {
+                        Ok(result) => {
+                            if let Some(desc) = result {
+                                if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
+                                    error!("push to to_card_work_rb failed: {:?}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("scheduler pop failed:{:?}", e);
                         }
                     }
                 }
@@ -199,7 +206,7 @@ impl ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice {
             .to_card_ctrl_rb
             .lock()
             .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
-        let mut writer = guard.write();
+        let mut writer = guard.write()?;
 
         let mem = writer.next().ok_or(DeviceError::Overflow)?;
         debug!("{:?}", &desc);
@@ -215,11 +222,11 @@ impl ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice {
             .to_host_ctrl_rb
             .lock()
             .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
-        let mut reader = guard.read();
+        let mut reader = guard.read()?;
         let mem = reader.next().ok_or(DeviceError::Device(
             "Failed to read from ringbuf".to_owned(),
         ))?;
-        let desc = ToHostCtrlRbDesc::read(mem);
+        let desc = ToHostCtrlRbDesc::read(mem)?;
         debug!("{:?}", &desc);
         Ok(desc)
     }
@@ -243,7 +250,7 @@ fn push_to_card_work_rb_desc(
         .lock()
         .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
     let desc_cnt = desc.serialized_desc_cnt();
-    let mut writer = guard.write();
+    let mut writer = guard.write()?;
     desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
     desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
     desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
@@ -261,7 +268,7 @@ impl ToHostRb<ToHostWorkRbDesc> for EmulatedDevice {
             .to_host_work_rb
             .lock()
             .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
-        let mut reader = guard.read();
+        let mut reader = guard.read()?;
 
         let mem = reader.next().ok_or(DeviceError::Device(
             "Failed to read from ringbuf".to_owned(),

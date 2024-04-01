@@ -232,7 +232,7 @@ impl Device {
 
     pub(crate) fn init_ack_buf(&self) -> Result<Arc<AcknowledgeBuffer>, Error> {
         // NOTE: this buffer should be free if any of the following operations failed
-        let buffer = allocate_aligned_memory(ACKNOWLEDGE_BUFFER_SIZE);
+        let buffer = allocate_aligned_memory(ACKNOWLEDGE_BUFFER_SIZE)?;
         let buffer_addr = buffer.as_ptr() as usize;
         let pd = self.alloc_pd()?;
 
@@ -254,7 +254,7 @@ impl Device {
                 Ok(ack_buf)
             }
             Err(e) => {
-                deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE);
+                deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE)?;
                 Err(e)
             }
         }

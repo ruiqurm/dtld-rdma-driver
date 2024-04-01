@@ -3,7 +3,10 @@ use std::{
     slice::from_raw_parts_mut,
 };
 
-use crate::types::{Pmtu, PAGE_SIZE};
+use crate::{
+    types::{Pmtu, PAGE_SIZE},
+    Error,
+};
 
 /// Get the length of the first packet.
 ///
@@ -29,17 +32,20 @@ pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
     slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
-pub(crate) fn allocate_aligned_memory(size: usize) -> &'static mut [u8] {
-    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+pub(crate) fn allocate_aligned_memory(size: usize) -> Result<&'static mut [u8], Error> {
+    let layout = Layout::from_size_align(size, PAGE_SIZE)
+        .map_err(|_| Error::ResourceNoAvailable(format!("size is too large,which is {size:?}")))?;
     let ptr = unsafe { alloc(layout) };
-    unsafe { from_raw_parts_mut(ptr, size) }
+    Ok(unsafe { from_raw_parts_mut(ptr, size) })
 }
 
-pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) {
-    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) -> Result<(), Error> {
+    let layout = Layout::from_size_align(size, PAGE_SIZE)
+        .map_err(|_| Error::ResourceNoAvailable(format!("size is too large,which is {size:?}")))?;
     unsafe {
         dealloc(buf.as_mut_ptr(), layout);
     }
+    Ok(())
 }
 
 #[cfg(test)]

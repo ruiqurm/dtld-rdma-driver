@@ -111,14 +111,19 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     /// Get space for writing `desc_cnt` descriptors to the ring buffer.
-    pub(super) fn write(&mut self) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
-        RingbufWriter {
-            buf: self.buf.lock().unwrap(),
+    pub(super) fn write(
+        &mut self,
+    ) -> Result<RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>, DeviceError> {
+        Ok(RingbufWriter {
+            buf: self
+                .buf
+                .lock()
+                .map_err(|_| DeviceError::LockPoisoned("read_op_ctx_map lock".to_owned()))?,
             head: &mut self.head,
             tail: &mut self.tail,
             written_cnt: 0,
             proxy: &self.proxy,
-        }
+        })
     }
 }
 
@@ -126,14 +131,19 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     /// Prepare to read some descriptors from the ring buffer.
-    pub(super) fn read(&mut self) -> RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
-        RingbufReader {
-            buf: self.buf.lock().unwrap(),
+    pub(super) fn read(
+        &mut self,
+    ) -> Result<RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>, DeviceError> {
+        Ok(RingbufReader {
+            buf: self
+                .buf
+                .lock()
+                .map_err(|_| DeviceError::LockPoisoned("buf lock".to_owned()))?,
             head: &mut self.head,
             tail: &mut self.tail,
             read_cnt: 0,
             proxy: &self.proxy,
-        }
+        })
     }
 }
 
@@ -141,27 +151,32 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
     for Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
-        let buf = self.buf.get_mut().unwrap().as_mut_ptr();
-        let buf_start = unsafe { buf.sub(self.buf_padding) };
-        let raw_buf =
-            unsafe { slice::from_raw_parts_mut(buf_start, DEPTH * ELEM_SIZE + PAGE_SIZE) };
+        if let Ok(buf) = self.buf.get_mut() {
+            let buf = buf.as_mut_ptr();
+            let buf_start = unsafe { buf.sub(self.buf_padding) };
+            let raw_buf =
+                unsafe { slice::from_raw_parts_mut(buf_start, DEPTH * ELEM_SIZE + PAGE_SIZE) };
 
-        drop(unsafe { Box::from_raw(raw_buf) });
+            drop(unsafe { Box::from_raw(raw_buf) });
+        } else {
+            log::error!("failed to get ringbuf buffer");
+        }
     }
 }
 
 impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
-    fn advance(&mut self) {
+    fn advance(&mut self) -> Result<(), DeviceError> {
         let head = *self.head;
         let new_head =
             Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(head, self.written_cnt);
         *self.head = new_head;
         // since the head is got by wrapping_add, it's safe to cast to u32
         #[allow(clippy::cast_possible_truncation)]
-        self.proxy.write_head(new_head as u32).unwrap();
+        self.proxy.write_head(new_head as u32)?;
         self.written_cnt = 0;
+        Ok(())
     }
 }
 
@@ -179,7 +194,7 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
         // FIXME: we may return an overflow here later?
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(idx, *self.tail) {
             // write back first
-            self.advance();
+            let _: Result<(), DeviceError> = self.advance();
             loop {
                 let new_tail = self.proxy.read_tail();
                 match new_tail {
@@ -214,7 +229,7 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     for RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
-        self.advance();
+        let _: Result<(), DeviceError> = self.advance();
     }
 }
 
@@ -261,7 +276,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
 {
     fn drop(&mut self) {
         *self.tail += self.read_cnt;
-        let read_cnt = u32::try_from(self.read_cnt).unwrap_or_else(|_|{
+        let read_cnt = u32::try_from(self.read_cnt).unwrap_or_else(|_| {
             log::error!("In read ringbuf, failed to convert from usize to u32");
             0
         });
@@ -337,11 +352,11 @@ mod test {
             thread_proxy.consume();
         });
         let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
-        let mut writer = ringbuf.write();
+        let mut writer = ringbuf.write().unwrap();
 
         for i in 0..127 {
             let desc = writer.next().unwrap();
-            desc.fill(i as u8);
+            desc.fill(i);
         }
         drop(writer);
         assert!(proxy.0.head.load(Ordering::Relaxed) == 127);
@@ -351,10 +366,10 @@ mod test {
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 127);
         // test if blocking?
 
-        let mut writer = ringbuf.write();
-        for i in 0..256 {
+        let mut writer = ringbuf.write().unwrap();
+        for i in 0..=255 {
             let desc = writer.next().unwrap();
-            desc.fill(i as u8);
+            desc.fill(i);
         }
         drop(writer);
     }
@@ -371,7 +386,7 @@ mod test {
             sleep(std::time::Duration::from_millis(10));
         });
         let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
-        let mut reader = ringbuf.read();
+        let mut reader = ringbuf.read().unwrap();
 
         for _i in 0..50 {
             let _desc = reader.next().unwrap();
@@ -380,7 +395,7 @@ mod test {
         assert!(proxy.0.head.load(Ordering::Relaxed) == 50);
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 50);
 
-        let mut reader = ringbuf.read();
+        let mut reader = ringbuf.read().unwrap();
 
         let finish_flag = Arc::new(AtomicBool::new(false));
         let finish_flag_clone = Arc::<AtomicBool>::clone(&finish_flag);

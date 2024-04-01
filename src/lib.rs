@@ -25,7 +25,7 @@
     single_use_lifetimes,
     // trivial_casts, // We allow trivial_casts for casting a pointer
     trivial_numeric_casts,
-    unreachable_pub, // TODO:
+    unreachable_pub,
     // unsafe_code, // we need unsafe when managing memory
     unsafe_op_in_unsafe_fn,
     unstable_features,
@@ -82,8 +82,8 @@
     clippy::unnecessary_self_imports,
     clippy::unneeded_field_pattern,
     // clippy::unreachable, // the unreachable code should unreachable otherwise it's a bug
-    // clippy::unwrap_in_result,
-    // clippy::unwrap_used, 
+    clippy::unwrap_in_result,
+    clippy::unwrap_used, 
     clippy::use_debug,
     clippy::verbose_file_reads,
     clippy::wildcard_enum_match_arm,
@@ -128,6 +128,7 @@
         clippy::indexing_slicing,
         unused_results,
         clippy::unwrap_used,
+        clippy::unwrap_in_result,
         clippy::expect_used,
         clippy::as_conversions,
         clippy::shadow_unrelated,
@@ -460,7 +461,7 @@ impl Device {
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
-            let mut ctx = self.0.ctrl_op_ctx_map.write().unwrap();
+            let mut ctx = self.0.ctrl_op_ctx_map.write().map_err(|_| Error::LockPoisoned("ctrl_op_ctx_map lock"))?;
             let ctrl_ctx = CtrlOpCtx::new_running();
 
             if ctx.insert(id, ctrl_ctx.clone()).is_some() {
