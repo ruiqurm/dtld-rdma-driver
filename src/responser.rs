@@ -8,7 +8,7 @@ use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
 use lockfree::queue::Queue;
 use log::error;
 
-use crate::device::{Aeth, Bth, Ipv4, NReth, Udp};
+use crate::device::descriptor::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 
@@ -334,6 +334,11 @@ impl AcknowledgeBuffer {
 }
 
 /// Write the IP header and UDP header
+///
+/// # Panic
+/// We assume the `buf` is large enough to hold the packet, in other words, the length should
+/// at least be `ACKPACKET_SIZE`. If the length is less than `ACKPACKET_SIZE`, it will panic.
+#[allow(clippy::indexing_slicing)]
 fn write_packet(
     buf: &mut [u8],
     src_addr: Ipv4Addr,
@@ -352,12 +357,7 @@ fn write_packet(
     // The `total_length` take a 16 bits **big-endian** number as input.
     // Only the third and forth bytes are used, so the we put the `ACKPACKET_SIZE` into the third byte.
     #[allow(clippy::cast_possible_truncation)]
-    ip_header.set_total_length(u32::from_be_bytes([
-        0,
-        0,
-        ACKPACKET_SIZE as u8,
-        0,
-    ]));
+    ip_header.set_total_length(u32::from_be_bytes([0, 0, ACKPACKET_SIZE as u8, 0]));
     ip_header.set_identification(0x27);
     ip_header.set_fragment_offset(0);
     ip_header.set_ttl(u32::from(IP_DEFAULT_TTL));
@@ -441,6 +441,11 @@ const RDMA_DEFAULT_PORT: u16 = 4791;
 /// Calculate the RDMA packet ICRC.
 ///
 /// the `data` passing in should include the space for the ICRC(4 bytes).
+///
+/// # Panic
+/// We assume the `data` is large enough to hold the RDMA packet, in other words, the length should
+/// contain the space for IP header, UDP header, BTH header and the ICRC.
+#[allow(clippy::indexing_slicing)]
 fn calculate_icrc(data: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
@@ -468,7 +473,11 @@ fn calculate_icrc(data: &[u8]) -> u32 {
 /// Calculate the checksum of the IPv4 header
 ///
 /// The `header` should be a valid IPv4 header, and the checksum field is set to 0.
-#[allow(clippy::cast_possible_truncation)]
+///
+/// # Panic
+/// The header is considered as a standard IPv4 header, so the length should be 20 bytes.
+/// Otherwise it will panic.
+#[allow(clippy::cast_possible_truncation, clippy::indexing_slicing)]
 fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
     let mut sum = 0u32;
 

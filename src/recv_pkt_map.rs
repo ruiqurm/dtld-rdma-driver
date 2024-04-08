@@ -54,6 +54,7 @@ impl RecvPktMap {
         }
     }
 
+    #[allow(clippy::indexing_slicing)] // we will refactor this structure later
     pub(crate) fn insert(&mut self, new_psn: Psn) {
         let psn = (new_psn.wrapping_abs(self.start_psn)) as usize;
         let stage_0_idx = psn >> Self::FULL_CHUNK_DIV_BIT_SHIFT_CNT; // which u64 in stage 0

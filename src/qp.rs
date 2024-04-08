@@ -189,8 +189,11 @@ impl QpManager {
             (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
 
         // by IB spec, QP0 and QP1 are reserved, so qpn should start with 2
-        qp_availability[0].store(false, Ordering::Relaxed);
-        qp_availability[1].store(false, Ordering::Relaxed);
+        #[allow(clippy::indexing_slicing)]
+        {
+            qp_availability[0].store(false, Ordering::Relaxed);
+            qp_availability[1].store(false, Ordering::Relaxed);
+        }
 
         Self {
             qp_availability: qp_availability.into_boxed_slice(),
@@ -217,7 +220,9 @@ impl QpManager {
     }
 
     pub fn free(&self, qpn: Qpn) {
-        self.qp_availability[qpn.get() as usize].store(true, Ordering::Relaxed);
+        if let Some(qp_availability) = self.qp_availability.get(qpn.get() as usize){
+            qp_availability.store(true, Ordering::Relaxed);
+        }
     }
 }
 

@@ -176,20 +176,23 @@ impl PayloadInfo {
     }
 
     pub(crate) fn copy_to(&self, mut dst: *mut u8) {
-        for i in 0..self.sg_list.len() {
+        for element in &self.sg_list {
             unsafe {
-                std::ptr::copy_nonoverlapping(self.sg_list[i].data, dst, self.sg_list[i].len);
+                std::ptr::copy_nonoverlapping(element.data, dst, element.len);
             }
             unsafe {
-                dst = dst.add(self.sg_list[i].len);
+                dst = dst.add(element.len);
             }
         }
     }
 
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
-    pub(crate) fn direct_data_ptr(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.sg_list[0].data, self.sg_list[0].len) }
+    pub(crate) fn direct_data_ptr(&self) -> Option<&[u8]> {
+        let buf = self.sg_list.first();
+        buf.map(|first|{
+            unsafe { std::slice::from_raw_parts(first.data, first.len) }
+        }) 
     }
 }
 
@@ -431,6 +434,7 @@ impl SGList {
     /// The function iterate from `cur_level` of the scatter-gather list and cut the buffer of `length` from the list.
     /// If current level is not enough, it will move to the next level.
     /// All the slice will be added to the `payload`.
+    #[allow(clippy::indexing_slicing)]
     pub(crate) fn cut(&mut self, mut length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
         let mut current_level = self.cur_level as usize;
         let mut payload = PayloadInfo::new();
@@ -460,11 +464,11 @@ impl SGList {
 
     pub(crate) fn cut_all_levels(&mut self) -> PayloadInfo {
         let mut payload = PayloadInfo::new();
-        for i in 0..self.len as usize {
-            let addr = self.data[i].addr as *mut u8;
-            let length = self.data[i].len as usize;
+        for data in &mut self.data {
+            let addr = data.addr as *mut u8;
+            let length = data.len as usize;
             payload.add(addr, length);
-            self.data[i].len = 0;
+            data.len = 0;
         }
         payload
     }

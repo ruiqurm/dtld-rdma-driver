@@ -1,13 +1,13 @@
-use bitfield::bitfield;
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use std::{net::Ipv4Addr, ops::Range};
-
 use crate::{
     types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
     utils::u8_slice_to_u64,
-    Error, Sge,
+    Error, Sge, device::descriptor::{CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT, CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam, MeatReportQueueDescFragSecondaryRETH, CmdQueueReqDescSetRawPacketReceiveMeta},
 };
+
+use super::descriptor::{CmdQueueDescCommonHead, SendQueueDescCommonHead, SendQueueReqDescSeg0, SendQueueReqDescSeg1, SendQueueReqDescFragSGE, MeatReportQueueDescFragRETH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragAETH, MeatReportQueueDescBthReth, MeatReportQueueDescFragBTH};
 
 #[allow(unused)]
 #[derive(Debug)]
@@ -750,6 +750,7 @@ impl ToCardWorkRbDesc {
         }
     }
 
+    #[allow(clippy::indexing_slicing)]
     pub(super) fn write_2(&self, dst: &mut [u8]) {
         // typedef struct {
         //     ADDR   laddr;         // 64 bits
@@ -785,6 +786,7 @@ impl ToCardWorkRbDesc {
         }
     }
 
+    #[allow(clippy::indexing_slicing)]
     pub(super) fn write_3(&self, dst: &mut [u8]) {
         // typedef struct {
         //     ADDR   laddr;         // 64 bits
@@ -851,6 +853,7 @@ impl ToHostWorkRbDesc {
         // } MeatReportQueueDescFragRETH deriving(Bits, FShow);
 
         // first 12 bytes are desc type, status and bth
+        #[allow(clippy::indexing_slicing)]
         let frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
         let addr = frag_reth.get_va();
         // bitfield restricts the field is not longer than 32 bits.
@@ -869,6 +872,7 @@ impl ToHostWorkRbDesc {
         // } MeatReportQueueDescFragImmDT deriving(Bits, FShow);
 
         // first 28 bytes are desc type, status, bth and reth
+        #[allow(clippy::indexing_slicing)]
         let imm = MeatReportQueueDescFragImmDT(&src[28..32]);
         // call the `to_be` to convert order
         imm.get_imm()
@@ -885,6 +889,7 @@ impl ToHostWorkRbDesc {
         // } MeatReportQueueDescFragAETH deriving(Bits, FShow);
 
         // first 12 bytes are desc type, status and bth
+        #[allow(clippy::indexing_slicing)]
         let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
         let psn = Psn::new(frag_aeth.get_psn());
         let msg_seq_number = Msn::new(frag_aeth.get_msn() as u16);
@@ -897,7 +902,7 @@ impl ToHostWorkRbDesc {
         Ok((psn, msg_seq_number, value, code))
     }
 
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation,clippy::indexing_slicing)]
     // FIXME: The design of `IncompleteToHostWorkRbDesc` is not so good here. I will refactor later.
     // FIXME: remove #[allow(clippy::unwrap_in_result)]
     #[allow(clippy::unwrap_in_result, clippy::unwrap_used)]
@@ -1077,244 +1082,6 @@ impl IncompleteToHostWorkRbDesc {
     }
 }
 
-bitfield! {
-    struct CmdQueueDescCommonHead([u8]);
-    u32;
-    get_valid , set_valid: 0;
-    get_is_success_or_need_signal_cplt, set_is_success_or_need_signal_cplt: 1;
-    get_op_code, set_op_code: 7, 2;
-    get_extra_segment_cnt, set_extra_segment_cnt: 11, 8;
-    _reserverd, set_reserverd: 31, 12;
-    get_user_data, set_user_data: 63, 32;
-}
-
-bitfield! {
-    struct CmdQueueReqDescUpdateMrTable([u8]);
-    u64;
-    _cmd_queue_desc_common_head,_: 63, 0;      // 64bits
-    get_mr_base_va, set_mr_base_va: 127, 64;   // 64bits
-    get_mr_length, set_mr_length: 159, 128;    // 32bits
-    get_mr_key, set_mr_key: 191, 160;          // 32bits
-    get_pd_handler, set_pd_handler: 223, 192;  // 32bits
-    get_acc_flags, set_acc_flags: 231, 224;    // 8bits
-    get_pgt_offset, set_pgt_offset: 248, 232;  // 17bits
-    _reserved0, _: 255, 249;                   // 7bits
-}
-
-bitfield! {
-    struct CmdQueueReqDescUpdatePGT([u8]);
-    u64;
-    __cmd_queue_desc_common_head,_ : 63, 0;             // 64bits
-    get_dma_addr, set_dma_addr: 127, 64;                // 64bits
-    get_start_index, set_start_index: 159, 128;         // 32bits
-    get_dma_read_length, set_dma_read_length: 191, 160; // 32bits
-    _reserved0, _: 255, 192;                            // 64bits
-}
-
-bitfield! {
-    struct CmdQueueReqDescQpManagementSeg0([u8]);
-    u64;
-    _cmd_queue_desc_common_head,_: 63, 0;                                       // 64bits
-    get_is_valid, set_is_valid: 64;                                             // 1bit
-    get_is_error, set_is_error: 65;                                             // 1bit
-    _reserverd4, _: 71, 66;                                                     // 6bits
-    get_qpn, set_qpn: 95, 72;                                                   // 24bits
-    get_pd_handler, set_pd_handler: 127, 96;                                    // 32bits
-    get_qp_type, set_qp_type: 131, 128;                                         // 4bits
-    _reserverd3, _: 135, 132;                                                   // 4bits
-    get_rq_access_flags, set_rq_access_flags: 143, 136;                         // 8bits
-    get_pmtu, set_pmtu: 146, 144;                                               // 3bits
-    _reserverd2, _: 151, 147;                                                   // 5bits
-    _reserverd1, _: 255, 152;                                                   // 104bits
-}
-
-bitfield! {
-    struct CmdQueueReqDescSetNetworkParam([u8]);
-    u64;
-    _cmd_queue_desc_common_head,_:          63 ,   0;                                       // 64bits
-    get_ip_gateway, set_ip_gateway:         95 ,  64;                                       // 32bits
-    get_ip_netmask, set_ip_netmask:         127,  96;                                       // 32bit
-    get_ip_addr, set_ip_addr:               159, 128;                                       // 32bit
-    _reserverd1, _:                         191, 160;                                       // 32bit
-    get_eth_mac_addr, set_eth_mac_addr:     239, 192;                                       // 48bit
-    _reserverd2, _:                         255, 240;                                       // 16bit
-}
-
-bitfield! {
-    struct CmdQueueReqDescSetRawPacketReceiveMeta([u8]);
-    u64;
-    _cmd_queue_desc_common_head,_:              63 ,   0;                                   // 64bits
-    get_write_base_addr, set_write_base_addr:   127,  64;                                   // 64bits
-    get_write_mr_key, set_write_mr_key:         159, 128;                                   // 32bits
-    _reserverd1, _:                             191, 160;                                   // 32bits
-    _reserverd2, _:                             255, 240;                                   // 64bits
-}
-
-bitfield! {
-    struct SendQueueDescCommonHead([u8]);
-    u32;
-    get_valid , set_valid: 0;                                                  // 1bit
-    get_is_success_or_need_signal_cplt, set_is_success_or_need_signal_cplt: 1; // 1bit
-    get_is_first, set_is_first: 2;                                             // 1bit
-    get_is_last, set_is_last: 3;                                               // 1bit
-    get_op_code, set_op_code: 7, 4;                                            // 4bits
-    get_extra_segment_cnt, set_extra_segment_cnt: 11, 8;                       // 4bits
-    _reserverd, _: 31, 12;                                                     // 20bits
-    get_total_len, set_total_len: 63, 32;                                      // 32bits
-}
-
-bitfield! {
-    struct SendQueueReqDescSeg0([u8]);
-    u64;
-    _common_header, _: 63, 0;         // 64bits
-    get_raddr, set_raddr: 127, 64;    // 64bits
-    get_rkey, set_rkey: 159, 128;     // 32bits
-    get_dqp_ip, set_dqp_ip: 191, 160; // 32bits
-    get_pkey, set_pkey: 207, 192;     // 16bits
-    _reserverd, _: 255, 208;          // 48bits
-}
-
-bitfield! {
-    struct SendQueueReqDescSeg1([u8]);
-    u64;
-    get_pmtu, set_pmtu: 2, 0;             // 3bits
-    _reserved8 , _: 7, 3;                 // 5bits
-    get_flags, set_flags: 12, 8;          // 5bits
-    _reserved7 , _: 15, 13;               // 3bits
-    get_qp_type, set_qp_type: 19, 16;     // 4bits
-    _reserved6 , _: 23, 20;               // 4bits
-    get_seg_cnt, set_seg_cnt: 26, 24;     // 3bits
-    _reserved5 , _: 31, 27;               // 5bits
-    get_psn, set_psn: 55, 32;             // 24bits
-    _reserved4 , _: 63, 56;               // 8bits
-    get_mac_addr, set_mac_addr: 111, 64;  // 48bits
-    _reserved3 , _: 127, 112;             // 16bits
-    get_dqpn, set_dqpn: 151, 128;         // 24bits
-    _reserved2 , _: 159, 152;             // 8bits
-    get_imm, set_imm: 191, 160;           // 32bits
-    _reserved1 , _: 255, 192;             // 64bits
-}
-
-bitfield! {
-    struct SendQueueReqDescFragSGE([u8]);
-    u64;
-    get_lkey, set_lkey: 31, 0;     // 32bits
-    get_len, set_len: 63, 32;      // 32bits
-    get_laddr, set_laddr: 127, 64; // 64bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescFragRETH([u8]);
-    u64;
-    get_va, set_va: 63, 0;          // 64bits
-    get_rkey, set_rkey: 95, 64;     // 32bits
-    get_dlen, set_dlen: 127, 96;    // 32bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescFragImmDT([u8]);
-    u32;
-    get_imm, set_imm: 32, 0;          // 32bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescFragAETH([u8]);
-    u32;
-    get_psn, set_psn: 23, 0;          // 24bits
-    get_msn, set_msn: 47, 24;         // 24bits
-    get_aeth_value, set_aeth_value: 52, 48; // 5bits
-    get_aeth_code, set_aeth_code: 55, 53;   // 3bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescBthReth([u8]);
-    u64;
-    get_expected_psn, _: 23,0;      // 24bits
-    get_req_status, _: 31,24;       // 8bit
-    get_bth, _: 95, 32;             // 64bits
-    get_reth, _: 223, 96;           // 128bits
-    get_msn, _: 247,224;            // 24bits
-    reserved1,_ : 255, 248;         // 8bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescFragBTH([u8]);
-    u32;
-    get_trans_type,set_trans_type: 2, 0; // 3bits
-    get_opcode,set_opcode: 7, 3;         // 5bits
-    get_qpn,set_qpn: 31, 8;              // 24bits
-    get_psn,set_psn: 55, 32;             // 24bits
-    get_solicited,set_solicited: 56;     // 1bit
-    get_ack_req,set_ack_req: 57;         // 1bit
-    get_pad_cnt,set_pad_cnt: 63, 58;     // 4bits
-}
-
-bitfield! {
-    struct MeatReportQueueDescFragSecondaryRETH([u8]);
-    u64;
-    get_secondary_va,set_secondary_va: 63, 0; // 64bits
-    get_secondary_rkey,set_secondary_rkey: 95, 64; // 32bits
-}
-
-bitfield! {
-    /// IPv4 layout
-    pub struct Ipv4([u8]);
-    u32;
-    pub get_version_and_len,set_version_and_len: 7, 0;         // 8bits
-    pub get_dscp_ecn,set_dscp_ecn: 15, 8;                      // 8bits
-    pub get_total_length,set_total_length: 31, 16;             // 16bits
-    pub get_identification,set_identification: 47, 32;         // 16bits
-    pub get_fragment_offset,set_fragment_offset: 63, 48;       // 16bits
-    pub get_ttl,set_ttl: 71, 64;                               // 8bits
-    pub get_protocol,set_protocol: 79, 72;                     // 8bits
-    pub get_checksum,set_checksum: 95, 80;                     // 16bits
-    pub get_source,set_source: 127, 96;                        // 32bits
-    pub get_destination,set_destination: 159, 128;             // 32bits
-}
-
-bitfield! {
-    /// UDP layout
-    pub struct Udp([u8]);
-    u16;
-    pub get_src_port,set_src_port: 15, 0;                      // 16bits
-    pub get_dst_port,set_dst_port: 31, 16;                     // 16bits
-    pub get_length,set_length: 47, 32;                         // 16bits
-    pub get_checksum,set_checksum: 63, 48;                     // 16bits
-}
-
-bitfield! {
-    /// BTH layout
-    pub struct Bth([u8]);
-    u32;
-    pub get_opcode,set_opcode: 7, 0;         // 8bits
-    _padding_0,_ : 9, 8;                 // 2bits
-    pub get_pad_count,set_pad_count: 11, 10; // 2bits
-    _padding_1,_ : 15, 12;               // 4bits
-    pub get_pkey,set_pkey: 31, 16;           // 16bits
-    pub _,set_ecn_and_resv6: 39, 32;         // 8bits
-    pub get_dqpn,set_dqpn: 63, 40;           // 24bits
-    _padding_2,_ : 71, 64;               // 8bits
-    pub get_psn,set_psn: 95, 72;             // 24bits
-}
-
-bitfield! {
-    /// Aeth layout
-    pub struct Aeth([u8]);
-    u32;
-    _padding_0,_ : 0;                     // 1bits
-    pub get_aeth_code,set_aeth_code: 2, 1;    // 2bits
-    pub get_aeth_value,set_aeth_value: 7, 3;  // 5bits
-    _padding_1,_ :   15,8;               // 8bits
-    pub get_msn,set_msn: 31,16;               // 16bits
-}
-
-bitfield! {
-    /// Nak Retry Eth layout
-    pub struct NReth([u8]);
-    u32;
-    pub get_last_retry_psn,set_last_retry_psn: 23, 0; // 24bits
-    _padding_0,_: 31, 24;                         // 8its
-}
 
 pub(crate) struct ToCardWorkRbDescBuilder {
     type_: ToCardWorkRbDescOpcode,

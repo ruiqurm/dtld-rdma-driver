@@ -8,6 +8,7 @@ mod hardware;
 mod ringbuf;
 mod software;
 mod types;
+pub(crate) mod descriptor;
 
 pub(crate) mod scheduler;
 pub(crate) use types::ToCardWorkRbDesc;

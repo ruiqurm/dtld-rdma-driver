@@ -44,4 +44,6 @@ pub(crate) enum NetAgentError {
     SetSockOptFailed(i32),
     #[error("Expected {0} bytes, but sended {1} bytes")]
     WrongBytesSending(usize, usize),
+    #[error("Invalid RDMA message :{0}")]
+    InvalidRdmaMessage(String),
 }

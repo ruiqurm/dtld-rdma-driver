@@ -239,7 +239,7 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
         )?;
         message
             .payload
-            .copy_to(self.buf[header_offset..].as_mut_ptr());
+            .copy_to(header_buf.as_mut_ptr());
 
         // write the ip,udp header
         let ip_id = self.ip_id.ok_or(PacketProcessorError::MissingIpId)?;
@@ -261,7 +261,9 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
             ip_id,
         );
         // compute icrc
-        let icrc = compute_icrc(&self.buf[..total_length]).to_le_bytes();
+        let icrc_buf = self.buf.get(0..total_length).ok_or(PacketProcessorError::BufferNotLargeEnough(total_length))?;
+        let icrc = compute_icrc(icrc_buf).to_le_bytes();
+        #[allow(clippy::indexing_slicing)] // we have checked it is large enough
         self.buf[total_length - ICRC_SIZE..total_length].copy_from_slice(&icrc);
         Ok(total_length)
     }
@@ -269,6 +271,11 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
 
 /// Assume the buffer is a packet, compute the icrc
 /// Return a u32 of the icrc
+/// 
+/// # Panic
+/// The function made an assumption that the buffer is a valid RDMA packet, in other words, 
+/// it should at least contain the common header, ip header, udp header, bth header and the icrc.
+#[allow(clippy::indexing_slicing)]
 pub(crate) fn compute_icrc(data: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
     let prefix = [0xffu8; 8];
@@ -330,7 +337,11 @@ pub(crate) fn write_ip_udp_header(
 
 /// Assume the buffer is a packet, check if the icrc is valid
 /// Return a bool if the icrc is valid
-///
+/// 
+/// # Panic
+/// The function made an assumption that the buffer is a valid RDMA packet, in other words, 
+/// it should at least contain the common header, ip header, udp header, bth header and the icrc.
+#[allow(clippy::indexing_slicing)]
 pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProcessorError> {
     let length = received_data.len();
     // chcek the icrc

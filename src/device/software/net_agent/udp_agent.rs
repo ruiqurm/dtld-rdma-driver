@@ -113,6 +113,8 @@ impl UDPReceiveAgent {
                 }
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
+
+                #[allow(clippy::indexing_slicing)] // if we pass the CRC check, it should be ok
                 let received_data = &received_data[offset..length - ICRC_SIZE];
                 if let Ok(mut message) = PacketProcessor::to_rdma_message(received_data) {
                     receiver.recv(&mut message);
@@ -162,7 +164,9 @@ impl NetSendAgent for UDPSendAgent {
         dest_port: u16,
         payload: &PayloadInfo,
     ) -> Result<(), NetAgentError> {
-        let buf = payload.direct_data_ptr();
+        let buf = payload.direct_data_ptr().ok_or(NetAgentError::InvalidRdmaMessage(
+            "PayloadInfo should have at least one item".to_owned(),
+        ))?;
         let sended_size = self
             .sender
             .send_to(buf, &SocketAddrV4::new(dest_addr, dest_port).into())?;

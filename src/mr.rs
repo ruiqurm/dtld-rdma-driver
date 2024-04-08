@@ -84,8 +84,11 @@ impl Device {
             if pa & (PAGE_SIZE - 1) != 0 {
                 return Err(Error::AddressNotAlign("pa", pa));
             }
-
-            mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
+            // `mr_pgt.alloc(pgte_cnt)` has already checked that `pgt_offset + pgt_idx` is in range
+            #[allow(clippy::indexing_slicing)]
+            {
+                mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
+            }
         }
 
         let update_pgt_op_id = self.get_ctrl_op_id();
@@ -221,7 +224,11 @@ impl Device {
             return Err(Error::DeviceReturnFailed);
         }
 
-        mr_table[mr_idx] = Some(mr_ctx);
+        #[allow(clippy::indexing_slicing)]
+        // `mr_idx` is allocated by `find_map` above, so it's safe to index
+        {
+            mr_table[mr_idx] = Some(mr_ctx);
+        }
 
         if !pd_ctx.mr.insert(mr) {
             return Err(Error::InsertFailed("Pd",format!("{mr:?}")));
@@ -282,8 +289,8 @@ impl Device {
             .map_err(|_| Error::LockPoisoned("pd table lock"))?;
 
         let mr_idx = mr.key.get() >> (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
-
-        let Some(mr_ctx) = mr_table[mr_idx as usize].as_mut() else {
+        let ctx_option = mr_table.get_mut(mr_idx as usize).ok_or(Error::Invalid(format!("MR :{mr_idx}")))?;
+        let Some(mr_ctx) = ctx_option else {
             return Err(Error::Invalid(format!("MR :{mr_idx}")));
         };
 
@@ -316,7 +323,7 @@ impl Device {
         if !pd_ctx.mr.remove(&mr) {
             return Err(Error::Invalid(format!("MR :{mr_idx}")));
         }
-        mr_table[mr_idx as usize] = None;
+        *ctx_option = None;
 
         Ok(())
     }
