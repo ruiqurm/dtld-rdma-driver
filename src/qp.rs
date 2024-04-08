@@ -104,12 +104,12 @@ impl Device {
         }
 
         let pd_res = pd_ctx.qp.insert(qp.qpn);
-        if pd_res{
+        if !pd_res{
             return Err(Error::InsertFailed("Pd",format!("{0:?}", qp.qpn)));
         }
 
         let qp_res = qp_pool.insert(qp.qpn, qpc);
-        if qp_res.is_none(){
+        if qp_res.is_some(){
             return Err(Error::InsertFailed("Qp",format!("{0:?}", qp.qpn)));
         }
 

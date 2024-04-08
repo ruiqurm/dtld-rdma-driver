@@ -145,6 +145,7 @@ impl NetSendAgent for UDPSendAgent {
             .ip_id(ip_id)
             .message(message)
             .write()?;
+        #[allow(clippy::indexing_slicing)] // We are sure that the total_length is less than the buffer size.
         let sended_size = self.sender.send_to(
             &buf[0..total_length],
             &SocketAddrV4::new(dest_addr, dest_port).into(),

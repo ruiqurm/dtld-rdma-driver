@@ -59,7 +59,7 @@
     clippy::get_unwrap,
     clippy::if_then_some_else_none,
     // clippy::implicit_return, it's idiomatic Rust code.
-    // clippy::indexing_slicing, //TODO:
+    clippy::indexing_slicing,
     clippy::inline_asm_x86_intel_syntax,
     // clippy::arithmetic_side_effects, //TODO:
  
@@ -183,6 +183,7 @@ mod utils;
 
 pub use crate::{mr::Mr, pd::Pd};
 pub use types::Error;
+pub use utils::AlignedMemory;
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;

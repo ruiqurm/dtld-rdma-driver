@@ -1,16 +1,14 @@
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
+    qp::QpManager, types::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
         RdmaDeviceNetworkBuilder, PAGE_SIZE,
-    },
-    Device, Mr, Pd, Sge,
+    }, AlignedMemory, Device, Mr, Pd, Sge
 };
 use std::net::Ipv4Addr;
 
-use crate::common::{init_logging, AlignedMemory};
+use crate::common::init_logging;
 
 const BUFFER_LENGTH: usize = 1024 * 128;
 const SEND_CNT: usize = 1024 * 64;
@@ -29,7 +27,7 @@ fn create_and_init_card<'a>(
     let pd = dev.alloc_pd().unwrap();
     info!("[{}] PD allocated", card_id);
 
-    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH);
+    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH).unwrap();
 
     let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
         | MemAccessTypeFlag::IbvAccessRemoteWrite

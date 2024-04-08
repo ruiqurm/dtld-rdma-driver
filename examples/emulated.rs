@@ -8,11 +8,11 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
         RdmaDeviceNetworkBuilder, PAGE_SIZE,
     },
-    Device, Mr, Pd, Sge,
+    AlignedMemory, Device, Mr, Pd, Sge,
 };
 use std::{ffi::c_void, net::Ipv4Addr};
 
-use crate::common::{init_logging, AlignedMemory};
+use crate::common::init_logging;
 
 const ORDER: usize = 32;
 const SHM_PATH: &str = "/bluesim1\0";
@@ -78,7 +78,7 @@ fn create_and_init_card<'a>(
     let pd = dev.alloc_pd().unwrap();
     info!("[{}] PD allocated", card_id);
 
-    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH);
+    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH).unwrap();
 
     unsafe {
         info!(
@@ -124,7 +124,7 @@ fn main() {
         .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(192, 168, 0, 2))
-        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
+        .macaddr(MacAddress::new([0xAB, 0xAB, 0xAC, 0xAD, 0xAE, 0xFE]))
         .build()
         .unwrap();
     let b_network = RdmaDeviceNetworkBuilder::default()

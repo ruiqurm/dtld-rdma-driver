@@ -147,7 +147,7 @@ pub(crate) enum PacketProcessorError {
     #[error("missing ip identification")]
     MissingIpId,
     #[error("Needs a buffer of at least {0} bytes")]
-    BufferNotLargeEnough(u32),
+    BufferNotLargeEnough(usize),
     #[error("packet error")]
     PacketError(#[from] PacketError),
     #[error("Length too long :{0}")]
@@ -219,18 +219,24 @@ impl<'buf, 'message> PacketWriter<'buf, 'message> {
         let net_packet_offset = size_of::<IpUdpHeaders>();
         let message = self.message.ok_or(PacketProcessorError::MissingMessage)?;
         // write the rdma header
-        let rdma_header_length =
-            PacketProcessor::set_from_rdma_message(&mut self.buf[net_packet_offset..], message)?;
+        let rdma_header_buf = self.buf.get_mut(net_packet_offset..).ok_or(
+            PacketProcessorError::BufferNotLargeEnough(net_packet_offset),
+        )?;
+        let rdma_header_length = PacketProcessor::set_from_rdma_message(rdma_header_buf, message)?;
 
         // get the total length(include the ip,udp header and the icrc)
         let total_length = size_of::<IpUdpHeaders>()
             + rdma_header_length
             + message.payload.with_pad_length()
             + ICRC_SIZE;
-        let total_length_in_u16 = u16::try_from(total_length).map_err(|_|PacketProcessorError::LengthTooLong(total_length))?; 
+        let total_length_in_u16 = u16::try_from(total_length)
+            .map_err(|_| PacketProcessorError::LengthTooLong(total_length))?;
 
         // write the payload
         let header_offset = size_of::<IpUdpHeaders>() + rdma_header_length;
+        let header_buf = self.buf.get_mut(header_offset..).ok_or(
+            PacketProcessorError::BufferNotLargeEnough(net_packet_offset),
+        )?;
         message
             .payload
             .copy_to(self.buf[header_offset..].as_mut_ptr());
@@ -331,7 +337,7 @@ pub(crate) fn is_icrc_valid(received_data: &mut [u8]) -> Result<bool, PacketProc
     let icrc_array: [u8; 4] = match received_data[length - ICRC_SIZE..length].try_into() {
         Ok(arr) => arr,
         #[allow(clippy::cast_possible_truncation)]
-        Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE as u32)),
+        Err(_) => return Err(PacketProcessorError::BufferNotLargeEnough(ICRC_SIZE)),
     };
     let origin_icrc = u32::from_le_bytes(icrc_array);
     received_data[length - ICRC_SIZE..length].copy_from_slice(&[0u8; 4]);

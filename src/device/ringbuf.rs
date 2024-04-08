@@ -71,6 +71,8 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         assert!(DEPTH * ELEM_SIZE >= PAGE_SIZE, "invalid ringbuf size");
 
     /// Return (ringbuf, ringbuf virtual memory address)
+    /// 
+    #[allow(clippy::indexing_slicing)] // we have allocate additional space in advance to avoid overflow
     pub(super) fn new(proxy: T) -> (Self, usize) {
         let raw_buf = Box::leak(vec![0; DEPTH * ELEM_SIZE + PAGE_SIZE].into_boxed_slice());
         let buf_padding = raw_buf.as_ptr() as usize & (PAGE_SIZE - 1);

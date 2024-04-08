@@ -1,5 +1,6 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
+    ops::{Deref, DerefMut},
     slice::from_raw_parts_mut,
 };
 
@@ -46,6 +47,39 @@ pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) -> Result<(
         dealloc(buf.as_mut_ptr(), layout);
     }
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct AlignedMemory<'a>(&'a mut [u8]);
+
+impl AlignedMemory<'_> {
+    /// # Errors
+    /// Return an error if the size is too large.
+    pub fn new(size: usize) -> Result<Self, Error> {
+        Ok(AlignedMemory(allocate_aligned_memory(size)?))
+    }
+}
+
+impl Drop for AlignedMemory<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = deallocate_aligned_memory(self.0, self.0.len()){
+            log::error!("Failed to deallocate aligned memory: {:?}", e);
+        }
+    }
+}
+
+impl Deref for AlignedMemory<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl DerefMut for AlignedMemory<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
 }
 
 #[cfg(test)]

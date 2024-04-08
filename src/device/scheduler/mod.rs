@@ -118,6 +118,10 @@ fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
     }
 }
 
+// We allow indexing_slicing because
+// * `new_sgl_level` will always smaller than `origin_sgl` sgl level, which is less than `MAX_SGL_LENGTH`
+// * `current_level` won't be greater than `origin_sgl.len`, which is less than `MAX_SGL_LENGTH`
+#[allow(clippy::indexing_slicing)]
 fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
     let mut current_level = origin_sgl.cur_level as usize;
     let mut new_sgl = SGList::default();
