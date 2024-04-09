@@ -6,12 +6,13 @@ use eui48::MacAddress;
 use libc::c_void;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager, types::{
+    qp::QpManager,
+    types::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
         RdmaDeviceNetworkBuilder, PAGE_SIZE,
-    }, AlignedMemory, Device, Mr, Pd
+    },
+    AlignedMemory, Device, Mr, Pd, Sge,
 };
-
 
 mod common;
 
@@ -57,7 +58,7 @@ fn init_global_allocator() {
     }
 }
 
-fn create_and_init_card<'a>(
+fn create_and_init_emulated_card<'a>(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
@@ -115,6 +116,51 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
+fn create_and_init_software_card<'a>(
+    card_id: usize,
+    qpn: Qpn,
+    local_network: &RdmaDeviceNetwork,
+    remote_network: &RdmaDeviceNetwork,
+) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+    let dev = Device::new_software(local_network).unwrap();
+    info!("[{}] Device created", card_id);
+
+    let pd = dev.alloc_pd().unwrap();
+    info!("[{}] PD allocated", card_id);
+
+    let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH).unwrap();
+
+    let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
+        | MemAccessTypeFlag::IbvAccessRemoteWrite
+        | MemAccessTypeFlag::IbvAccessLocalWrite;
+    let mr = dev
+        .reg_mr(
+            pd,
+            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.len() as u32,
+            PAGE_SIZE as u32,
+            access_flag,
+        )
+        .unwrap();
+    info!("[{}] MR registered", card_id);
+    let qp = QpBuilder::default()
+        .pd(pd)
+        .qpn(qpn)
+        .qp_type(QpType::Rc)
+        .rq_acc_flags(access_flag)
+        .pmtu(Pmtu::Mtu1024)
+        .dqp_ip(remote_network.ipaddr)
+        .dqp_mac(remote_network.macaddr)
+        .build()
+        .unwrap();
+    dev.create_qp(&qp).unwrap();
+    info!("[{}] QP created", card_id);
+
+    (dev, pd, mr, mr_buffer)
+}
+
+const SEND_CNT: usize = 1024;
+
 fn main() {
     init_logging().unwrap();
 
@@ -125,17 +171,43 @@ fn main() {
         .gateway(Ipv4Addr::new(127, 0, 0, 1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
-        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
+        .macaddr(MacAddress::new([0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB]))
         .build()
         .unwrap();
     let b_network = RdmaDeviceNetworkBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 3))
-        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
+        .macaddr(MacAddress::new([0xCD, 0xCD, 0xCD, 0xCD, 0xCD, 0xCD]))
         .build()
         .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-        
+        create_and_init_emulated_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
+    let (dev_b, _pd_b, mr_b, mut mr_buffer_b) =
+        create_and_init_software_card(1, qpn, &b_network, &a_network);
+    let dpqn = qpn;
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
+    }
+    for item in mr_buffer_b[0..].iter_mut() {
+        *item = 0
+    }
+
+    let sge0 = Sge::new(
+        &mr_buffer_a[0] as *const u8 as u64,
+        SEND_CNT.try_into().unwrap(),
+        mr_a.get_key(),
+    );
+    let ctx1 = dev_a
+        .write(
+            &dpqn,
+            &mr_buffer_b[0] as *const u8 as u64,
+            mr_b.get_key(),
+            MemAccessTypeFlag::empty(),
+            sge0,
+        )
+        .unwrap();
+
+    let _ = ctx1.wait();
+    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
 }

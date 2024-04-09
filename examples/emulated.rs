@@ -152,24 +152,7 @@ fn main() {
         mr_a.get_key(),
     );
 
-    // let sge1 = Sge::new(
-    //     &mr_buffer_a[1024 * 8] as *const u8 as u64,
-    //     1024 * 8,
-    //     mr_a.get_key(),
-    // );
 
-    // let sge2 = Sge {
-    //     addr: &mr_buffer_a[2] as *const u8 as u64,
-    //     len: 1,
-    //     key: mr_a.get_key(),
-    // };
-
-    // let sge3 = Sge {
-    //     addr: &mr_buffer_a[3] as *const u8 as u64,
-    //     // len: 32767 - 3,
-    //     len: SEND_CNT as u32 - 3,
-    //     key: mr_a.get_key(),
-    // };
     let ctx1 = dev_a
         .write(
             &dpqn,
@@ -180,20 +163,6 @@ fn main() {
         )
         .unwrap();
 
-    // let ctx2 = dev_a
-    //     .write(
-    //         &dpqn,
-    //         &mr_buffer_b[1024 * 8] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessRemoteRead
-    //             | MemAccessTypeFlag::IbvAccessRemoteWrite
-    //             | MemAccessTypeFlag::IbvAccessLocalWrite,
-    //         sge1,
-    //         None,
-    //         None,
-    //         None,
-    //     )
-    //     .unwrap();
     let _ = ctx1.wait();
     // ctx2.wait();
     assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
