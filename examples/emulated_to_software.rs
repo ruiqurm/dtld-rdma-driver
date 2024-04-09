@@ -148,7 +148,7 @@ fn create_and_init_software_card<'a>(
         .qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu1024)
+        .pmtu(Pmtu::Mtu4096)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
         .build()
@@ -159,7 +159,7 @@ fn create_and_init_software_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
-const SEND_CNT: usize = 1024;
+const SEND_CNT: usize = 1024 * 12;
 
 fn main() {
     init_logging().unwrap();
@@ -186,28 +186,122 @@ fn main() {
     let (dev_b, _pd_b, mr_b, mut mr_buffer_b) =
         create_and_init_software_card(1, qpn, &b_network, &a_network);
     let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
-    for item in mr_buffer_b[0..].iter_mut() {
-        *item = 0
+
+    // emulator write to software
+    {
+        for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+            *item = idx as u8;
+        }
+        for item in mr_buffer_b.iter_mut() {
+            *item = 0
+        }
+
+        // emulator write to software
+        let sge0 = Sge::new(
+            &mr_buffer_a[0] as *const u8 as u64,
+            SEND_CNT.try_into().unwrap(),
+            mr_a.get_key(),
+        );
+        let ctx1 = dev_a
+            .write(
+                dpqn,
+                &mr_buffer_b[0] as *const u8 as u64,
+                mr_b.get_key(),
+                MemAccessTypeFlag::empty(),
+                sge0,
+            )
+            .unwrap();
+
+        let _ = ctx1.wait();
+        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        info!("Emulator write to software success");
     }
 
-    let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
-        SEND_CNT.try_into().unwrap(),
-        mr_a.get_key(),
-    );
-    let ctx1 = dev_a
-        .write(
-            &dpqn,
+    // emulator read from software
+    {
+        for item in mr_buffer_a.iter_mut() {
+            *item = 0
+        }
+
+        for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
+            *item = idx as u8;
+        }
+
+        let sge0 = Sge::new(
+            &mr_buffer_a[0] as *const u8 as u64,
+            SEND_CNT.try_into().unwrap(),
+            mr_a.get_key(),
+        );
+        let ctx1 = dev_a
+            .read(
+                dpqn,
+                &mr_buffer_b[0] as *const u8 as u64,
+                mr_b.get_key(),
+                MemAccessTypeFlag::empty(),
+                sge0,
+            )
+            .unwrap();
+
+        let _ = ctx1.wait();
+        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        info!("Emulator read from software success");
+    }
+
+    // Software write to emulator
+    {
+        for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
+            *item = idx as u8;
+        }
+        for item in mr_buffer_a.iter_mut() {
+            *item = 0
+        }
+
+        let sge0 = Sge::new(
             &mr_buffer_b[0] as *const u8 as u64,
+            SEND_CNT.try_into().unwrap(),
             mr_b.get_key(),
-            MemAccessTypeFlag::empty(),
-            sge0,
-        )
-        .unwrap();
+        );
+        let ctx1 = dev_b
+            .write(
+                dpqn,
+                &mr_buffer_a[0] as *const u8 as u64,
+                mr_a.get_key(),
+                MemAccessTypeFlag::empty(),
+                sge0,
+            )
+            .unwrap();
 
-    let _ = ctx1.wait();
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        let _ = ctx1.wait();
+        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        info!("Software write to emulator success");
+    }
+
+    // Software read from emulator
+    {
+        for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+            *item = idx as u8;
+        }
+        for item in mr_buffer_b.iter_mut() {
+            *item = 0
+        }
+
+        let sge0 = Sge::new(
+            &mr_buffer_b[0] as *const u8 as u64,
+            SEND_CNT.try_into().unwrap(),
+            mr_b.get_key(),
+        );
+        let ctx1 = dev_b
+            .read(
+                dpqn,
+                &mr_buffer_a[0] as *const u8 as u64,
+                mr_a.get_key(),
+                MemAccessTypeFlag::empty(),
+                sge0,
+            )
+            .unwrap();
+
+        let _ = ctx1.wait();
+        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        info!("Software read from emulator success");
+    }
 }

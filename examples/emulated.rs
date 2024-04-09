@@ -155,7 +155,7 @@ fn main() {
 
     let ctx1 = dev_a
         .write(
-            &dpqn,
+            dpqn,
             &mr_buffer_b[0] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),

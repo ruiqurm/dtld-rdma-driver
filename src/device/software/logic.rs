@@ -437,22 +437,6 @@ impl BlueRDMALogic {
 unsafe impl Send for BlueRDMALogic {}
 unsafe impl Sync for BlueRDMALogic {}
 
-// fn opcode_write_type(opcode: &ToHostWorkRbDescOpcode) -> Option<ToHostWorkRbDescWriteType> {
-//     match opcode {
-//         ToHostWorkRbDescOpcode::RdmaWriteFirst | ToHostWorkRbDescOpcode::RdmaReadResponseFirst => {
-//             Some(ToHostWorkRbDescWriteType::First)
-//         }
-//         ToHostWorkRbDescOpcode::RdmaWriteMiddle
-//         | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle => Some(ToHostWorkRbDescWriteType::Middle),
-//         ToHostWorkRbDescOpcode::RdmaWriteLast
-//         | ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
-//         | ToHostWorkRbDescOpcode::RdmaReadResponseLast => Some(ToHostWorkRbDescWriteType::Last),
-//         ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate
-//         | ToHostWorkRbDescOpcode::RdmaWriteOnly
-//         | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => Some(ToHostWorkRbDescWriteType::Only),
-//         ToHostWorkRbDescOpcode::RdmaReadRequest | ToHostWorkRbDescOpcode::Acknowledge => None,
-//     }
-// }
 
 fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
     #[allow(clippy::cast_possible_truncation)]
@@ -534,10 +518,10 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaReadRequest => {
-                        let sec_reth = header.secondary_reth.unwrap_or({
+                        let Some(sec_reth) = header.secondary_reth else {
                             log::error!("The secondary reth is not found");
-                            RethHeader::default()
-                        });
+                            return;
+                        };
                         ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
                             common,
                             len: header.reth.len,

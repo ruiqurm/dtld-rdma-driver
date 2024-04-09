@@ -347,7 +347,7 @@ impl Device {
     /// * failed to create a operation context
     pub fn write(
         &self,
-        dqpn: &Qpn,
+        dqpn: Qpn,
         raddr: u64,
         rkey: Key,
         flags: MemAccessTypeFlag,
@@ -357,7 +357,7 @@ impl Device {
         let common = {
             let total_len = sge0.len;
             let qp_guard = self.0.qp_table.read().map_err(|_| Error::LockPoisoned("qp table lock"))?;
-            let qp = qp_guard.get(dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
+            let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
                 raddr,

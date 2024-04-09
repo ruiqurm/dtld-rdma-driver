@@ -102,7 +102,7 @@ fn main() {
     // test write
     let ctx1 = dev_a
         .write(
-            &dpqn,
+            dpqn,
             &mr_buffer_b[0] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),
@@ -111,7 +111,7 @@ fn main() {
         .unwrap();
     let ctx2 = dev_a
         .write(
-            &dpqn,
+            dpqn,
             &mr_buffer_b[SEND_CNT] as *const u8 as u64,
             mr_b.get_key(),
             MemAccessTypeFlag::empty(),

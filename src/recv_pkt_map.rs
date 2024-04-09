@@ -2,6 +2,7 @@ use std::mem;
 
 use crate::types::{Psn, Qpn};
 
+#[derive(Debug)]
 pub(crate) struct RecvPktMap {
     is_read_resp: bool,
     start_psn: Psn,
