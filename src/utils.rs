@@ -56,6 +56,7 @@ pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) -> Result<(
     Ok(())
 }
 
+/// An aligned memory buffer.
 #[derive(Debug)]
 pub struct AlignedMemory<'a>(&'a mut [u8]);
 

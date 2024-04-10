@@ -2,6 +2,12 @@
 name = "open-rdma-driver"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/datenlord/open-rdma-driver"
+description = "A user space RDMA driver for BlueRDMA and its software protocol stack"
+readme = "README.md"
+license = "GPL 2.0"
+keywords = ["rdma", "driver"]
+categories = ["Command line utilities", "Hardware support"]
 
 [features]
 default = ["scheduler"]

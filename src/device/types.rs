@@ -2,9 +2,9 @@ use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use std::{net::Ipv4Addr, ops::Range};
 use crate::{
-    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
+    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge},
     utils::u8_slice_to_u64,
-    Error, Sge, device::descriptor::{CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT, CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam, MeatReportQueueDescFragSecondaryRETH, CmdQueueReqDescSetRawPacketReceiveMeta},
+    Error, device::descriptor::{CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT, CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam, MeatReportQueueDescFragSecondaryRETH, CmdQueueReqDescSetRawPacketReceiveMeta},
 };
 
 use super::descriptor::{CmdQueueDescCommonHead, SendQueueDescCommonHead, SendQueueReqDescSeg0, SendQueueReqDescSeg1, SendQueueReqDescFragSGE, MeatReportQueueDescFragRETH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragAETH, MeatReportQueueDescBthReth, MeatReportQueueDescFragBTH};

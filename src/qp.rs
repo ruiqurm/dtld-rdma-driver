@@ -16,6 +16,7 @@ use std::{
 
 const QP_MAX_CNT: usize = 1024;
 
+/// QP context
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub struct QpContext {
@@ -35,6 +36,9 @@ pub struct QpContext {
 }
 
 impl QpContext {
+    /// create a qp context
+    /// 
+    /// currently, `sending_psn` is set to 0
     #[must_use]
     pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
         Self {
@@ -100,17 +104,17 @@ impl Device {
         let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
-            return Err(Error::DeviceReturnFailed);
+            return Err(Error::DeviceReturnFailed("create qp"));
         }
 
         let pd_res = pd_ctx.qp.insert(qp.qpn);
         if !pd_res{
-            return Err(Error::InsertFailed("Pd",format!("{0:?}", qp.qpn)));
+            return Err(Error::Invalid(format!("qp :{0:?}", qp.qpn)));
         }
 
         let qp_res = qp_pool.insert(qp.qpn, qpc);
         if qp_res.is_some(){
-            return Err(Error::InsertFailed("Qp",format!("{0:?}", qp.qpn)));
+            return Err(Error::Invalid(format!("qp :{0:?}", qp.qpn)));
         }
 
         Ok(())
@@ -153,7 +157,7 @@ impl Device {
         let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
-            return Err(Error::DeviceReturnFailed);
+            return Err(Error::DeviceReturnFailed("destroy qp"));
         }
 
         let _: bool = pd_ctx.qp.remove(&qp);
@@ -177,6 +181,11 @@ impl PartialEq for Qp {
 
 impl Eq for Qp {}
 
+/// QP manager
+/// 
+/// The QP manager is used to allocate and free QP numbers(QPN).
+/// 
+/// The max QP number is `QP_MAX_CNT`, and QP0 and QP1 are reserved.
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub struct QpManager {
@@ -184,7 +193,9 @@ pub struct QpManager {
 }
 
 impl QpManager {
-    #[must_use] pub fn new() -> Self {
+    /// create a QP manager
+    #[must_use]
+    pub fn new() -> Self {
         let qp_availability: Vec<AtomicBool> =
             (0..QP_MAX_CNT).map(|_| AtomicBool::new(true)).collect();
 
@@ -219,6 +230,9 @@ impl QpManager {
             .ok_or_else(|| Error::ResourceNoAvailable("QP".to_owned()))
     }
 
+    /// free a qp number
+    /// 
+    /// If the QP number is not allocated, it will be ignored.
     pub fn free(&self, qpn: Qpn) {
         if let Some(qp_availability) = self.qp_availability.get(qpn.get() as usize){
             qp_availability.store(true, Ordering::Relaxed);

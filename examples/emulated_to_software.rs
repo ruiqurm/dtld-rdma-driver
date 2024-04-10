@@ -8,10 +8,10 @@ use log::info;
 use open_rdma_driver::{
     qp::QpManager,
     types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
-        RdmaDeviceNetworkBuilder, PAGE_SIZE,
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
+        RdmaDeviceNetworkParamBuilder, PAGE_SIZE, Sge,
     },
-    AlignedMemory, Device, Mr, Pd, Sge,
+    AlignedMemory, Device, Mr, Pd,
 };
 
 mod common;
@@ -62,8 +62,8 @@ fn create_and_init_emulated_card<'a>(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetwork,
-    remote_network: &RdmaDeviceNetwork,
+    local_network: &RdmaDeviceNetworkParam,
+    remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let dev = Device::new_emulated(
@@ -119,8 +119,8 @@ fn create_and_init_emulated_card<'a>(
 fn create_and_init_software_card<'a>(
     card_id: usize,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetwork,
-    remote_network: &RdmaDeviceNetwork,
+    local_network: &RdmaDeviceNetworkParam,
+    remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let dev = Device::new_software(local_network).unwrap();
     info!("[{}] Device created", card_id);
@@ -167,14 +167,14 @@ fn main() {
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
 
-    let a_network = RdmaDeviceNetworkBuilder::default()
+    let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
         .macaddr(MacAddress::new([0xAB, 0xAB, 0xAB, 0xAB, 0xAB, 0xAB]))
         .build()
         .unwrap();
-    let b_network = RdmaDeviceNetworkBuilder::default()
+    let b_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 3))

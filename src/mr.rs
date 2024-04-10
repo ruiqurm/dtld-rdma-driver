@@ -19,12 +19,16 @@ const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
 const ACKNOWLEDGE_BUFFER_SIZE: usize =
     ACKNOWLEDGE_BUFFER_SLOT_CNT * AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
 
+/// Memory Region
+///
+/// User use `Device::alloc_mr(..)` to allocate a `Mr` and use `Device::dereg_mr(..)` to deallocate a `Mr`.
 #[derive(Debug, Clone, Copy)]
 pub struct Mr {
     pub(crate) key: Key,
 }
 
 impl Mr {
+    /// Get the key of the Mr
     #[must_use]
     pub fn get_key(&self) -> Key {
         self.key
@@ -94,7 +98,7 @@ impl Device {
 
         let update_pgt_op_id = self.get_ctrl_op_id();
         // `pgt_offset` and `pg_size` are both derived from pg_size, which is a u32. So it's safe to covert
-        #[allow(clippy::cast_possible_truncation,clippy::arithmetic_side_effects)]
+        #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
         let update_pgt_desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
             common: ToCardCtrlRbDescCommon {
                 op_id: update_pgt_op_id,
@@ -114,11 +118,11 @@ impl Device {
 
         let update_pgt_result = update_pgt_ctx
             .wait_result()?
-            .ok_or(Error::DeviceReturnFailed)?;
+            .ok_or(Error::SetCtxResultFailed)?;
 
         if !update_pgt_result {
             mr_pgt.dealloc(pgt_offset, pgte_cnt);
-            return Err(Error::DeviceReturnFailed);
+            return Err(Error::DeviceReturnFailed("update page table"));
         }
         Ok(pgt_offset)
     }
@@ -184,7 +188,7 @@ impl Device {
 
         // mr_idx is smaller than `MR_TABLE_SIZE`. Currently, it's a relatively small number.
         // And it's expected to smaller than 2^32 during transimission
-        #[allow(clippy::cast_possible_truncation,clippy::arithmetic_side_effects)]
+        #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
         let key_idx = (mr_idx as u32) << (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
         let key_secret = rand::thread_rng().next_u32() >> crate::MR_KEY_IDX_BIT_CNT;
         let key = Key::new(key_idx | key_secret);
@@ -222,7 +226,7 @@ impl Device {
             .ok_or(Error::SetCtxResultFailed)?;
 
         if !update_mr_result {
-            return Err(Error::DeviceReturnFailed);
+            return Err(Error::DeviceReturnFailed("register mr table"));
         }
 
         #[allow(clippy::indexing_slicing)]
@@ -232,7 +236,7 @@ impl Device {
         }
 
         if !pd_ctx.mr.insert(mr) {
-            return Err(Error::InsertFailed("Pd", format!("{mr:?}")));
+            return Err(Error::Invalid(format!("mr :{mr:?}")));
         }
 
         Ok(mr)
@@ -318,7 +322,7 @@ impl Device {
         let res = ctx.wait_result()?.ok_or(Error::SetCtxResultFailed)?;
 
         if !res {
-            return Err(Error::DeviceReturnFailed);
+            return Err(Error::DeviceReturnFailed("deregister mr table"));
         }
 
         self.deregister_page_table(mr_ctx.pgt_offset, mr_ctx.len.div_ceil(mr_ctx.pg_size))?;
@@ -347,7 +351,7 @@ impl MrPgt {
         }
     }
 
-    #[allow(clippy::arithmetic_side_effects)] 
+    #[allow(clippy::arithmetic_side_effects)]
     fn alloc(&mut self, len: usize) -> Result<usize, Error> {
         let mut ptr = self.free_blk_list;
 
@@ -385,7 +389,7 @@ impl MrPgt {
             ptr = blk.next;
         }
 
-        Err(Error::AllocPageTable)
+        Err(Error::ResourceNoAvailable("MR page table".to_owned()))
     }
 
     fn dealloc(&mut self, idx: usize, len: usize) {
@@ -432,7 +436,7 @@ impl MrPgt {
             let new_prev = unsafe { new.prev.as_mut() };
             let new_prev = unsafe { new_prev.unwrap_unchecked() };
 
-            if new_prev.idx.wrapping_add(new_prev.len) != new.len { 
+            if new_prev.idx.wrapping_add(new_prev.len) != new.len {
                 break;
             }
 

@@ -2,9 +2,9 @@ use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
     qp::QpManager, types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
-        RdmaDeviceNetworkBuilder, PAGE_SIZE,
-    }, AlignedMemory, Device, Mr, Pd, Sge
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
+        RdmaDeviceNetworkParamBuilder, PAGE_SIZE, Sge,
+    }, AlignedMemory, Device, Mr, Pd
 };
 use std::net::Ipv4Addr;
 
@@ -18,8 +18,8 @@ mod common;
 fn create_and_init_card<'a>(
     card_id: usize,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetwork,
-    remote_network: &RdmaDeviceNetwork,
+    local_network: &RdmaDeviceNetworkParam,
+    remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let dev = Device::new_software(local_network).unwrap();
     info!("[{}] Device created", card_id);
@@ -59,14 +59,14 @@ fn create_and_init_card<'a>(
 }
 fn main() {
     init_logging().unwrap();
-    let a_network = RdmaDeviceNetworkBuilder::default()
+    let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 0, 0, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
         .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
         .build()
         .unwrap();
-    let b_network = RdmaDeviceNetworkBuilder::default()
+    let b_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 0, 0, 0))
         .ipaddr(Ipv4Addr::new(127, 0, 0, 3))

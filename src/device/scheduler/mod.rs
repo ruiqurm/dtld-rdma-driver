@@ -8,7 +8,6 @@ use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCard
 use crate::{
     types::{Pmtu, Psn, Qpn},
     utils::get_first_packet_max_length,
-    Device,
 };
 
 const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB

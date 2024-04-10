@@ -279,8 +279,6 @@ impl Drop for Slot {
 
 /// A structure to hold the acknowledge buffer
 ///
-/// TODO: currently, it does not support the auto buffer recycling.
-///
 /// The element is `Option<Slot>` because the `Queue` need to initialize some nodes as Sentinel
 /// while the reference can not be initialized as `None`.
 pub(crate) struct AcknowledgeBuffer {
@@ -310,7 +308,7 @@ impl AcknowledgeBuffer {
         for _ in 0..slots {
             this.free_list
                 .push(Some(Slot::new(va as *mut u8, Arc::<Self>::clone(&this))));
-            va.wrapping_add(Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
+            va = va.wrapping_add(Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
         }
         this
     }

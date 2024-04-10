@@ -22,6 +22,12 @@ pub enum CtxStatus {
     Finished,
 }
 
+/// The operation context.
+/// 
+/// The operation context is track to manage the status of operations.
+/// When calling the `read`,`write` or some `control` command, you get an operation context.
+/// 
+/// You can wait for the operation to finish by calling the `wait` method and get the result by calling the `get_result` method.
 #[derive(Debug, Clone)]
 pub struct OpCtx<Payload>(Arc<OpCtxWrapper<Payload>>);
 
@@ -37,14 +43,20 @@ struct OpCtxInner {
     status: CtxStatus,
 }
 
+/// The control command operation context.
 #[allow(clippy::module_name_repetitions)]
 pub type CtrlOpCtx = OpCtx<bool>; // `is_sucess`
+
+/// The write command operation context.
 #[allow(clippy::module_name_repetitions)]
 pub type WriteOpCtx = OpCtx<()>;
+
+/// The read command operation context.
 #[allow(clippy::module_name_repetitions)]
 pub type ReadOpCtx = OpCtx<()>;
 
 impl<Payload> OpCtx<Payload> {
+    /// Create a new operation context with the status of `Running`.
     #[must_use]
     pub fn new_running() -> Self {
         let inner = OpCtxInner {
@@ -92,6 +104,9 @@ impl<Payload> OpCtx<Payload> {
         Ok(())
     }
 
+    /// Get the result of the operation.
+    /// 
+    /// Returns `None` if the operation is not finished.
     #[must_use]
     pub fn get_result(&self) -> Option<&Payload> {
         self.0.payload.get()

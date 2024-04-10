@@ -5,10 +5,10 @@ use log::info;
 use open_rdma_driver::{
     qp::QpManager,
     types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetwork,
-        RdmaDeviceNetworkBuilder, PAGE_SIZE,
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
+        RdmaDeviceNetworkParamBuilder, PAGE_SIZE, Sge,
     },
-    AlignedMemory, Device, Mr, Pd, Sge,
+    AlignedMemory, Device, Mr, Pd
 };
 use std::{ffi::c_void, net::Ipv4Addr};
 
@@ -63,8 +63,8 @@ fn create_and_init_card<'a>(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetwork,
-    remote_network: &RdmaDeviceNetwork,
+    local_network: &RdmaDeviceNetworkParam,
+    remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let dev = Device::new_emulated(
@@ -120,14 +120,14 @@ fn main() {
     init_logging().unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
-    let a_network = RdmaDeviceNetworkBuilder::default()
+    let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(192, 168, 0, 2))
         .macaddr(MacAddress::new([0xAB, 0xAB, 0xAC, 0xAD, 0xAE, 0xFE]))
         .build()
         .unwrap();
-    let b_network = RdmaDeviceNetworkBuilder::default()
+    let b_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(192, 168, 0, 3))

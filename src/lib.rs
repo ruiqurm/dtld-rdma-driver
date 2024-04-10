@@ -13,7 +13,7 @@
     missing_copy_implementations,
     missing_debug_implementations, 
     // must_not_suspend, unstable
-    // missing_docs, // TODO:
+    missing_docs,
     non_ascii_idents,
     // non_exhaustive_omitted_patterns, unstable
     noop_method_call,
@@ -38,7 +38,7 @@
 
     clippy::all,
     clippy::pedantic,
-    // clippy::cargo, // TODO:
+    clippy::cargo,
 
     // The followings are selected restriction lints for rust 1.57
     // clippy::as_conversions, // we allow lossless "as" conversion, it has checked by clippy::cast_possible_truncation
@@ -77,8 +77,8 @@
     clippy::str_to_string,
     clippy::string_add,
     clippy::string_to_string,
-    // clippy::todo, // We still have some unclear todos
-    // clippy::unimplemented, // We still have some unimplemented functions
+    // clippy::todo, // TODO: We still have some unclear todos
+    // clippy::unimplemented, // TODO: We still have some unimplemented functions
     clippy::unnecessary_self_imports,
     clippy::unneeded_field_pattern,
     // clippy::unreachable, // the unreachable code should unreachable otherwise it's a bug
@@ -165,20 +165,31 @@ use std::{
     },
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetwork};
+use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
 use utils::calculate_packet_cnt;
 
+/// memory region
 pub mod mr;
+/// op context for user to track the status of the write/read/control operation
 pub mod op_ctx;
+/// protection domain
 pub mod pd;
+/// queue pair related structs and functions
 pub mod qp;
+/// types exported to user
 pub mod types;
 
+/// adaptor device: hardware, software, emulated
 mod device;
+/// pakcet check thread: checking if the packet is received correctly
 mod pkt_checker;
+/// poll thread: polling the work descriptor and control descriptor
 mod poll;
+/// receive packet map: a map struct to count the received packets
 mod recv_pkt_map;
+/// responser thread: sending the response(read resp or ack) to the device
 mod responser;
+/// utility functions
 mod utils;
 
 pub use crate::{mr::Mr, pd::Pd};
@@ -190,6 +201,11 @@ const MR_TABLE_SIZE: usize = 64;
 const MR_PGT_SIZE: usize = 1024;
 const DEFAULT_RMDA_PORT : u16 = 4791;
 
+/// A user space RDMA device.
+/// 
+/// The device provides a general interface, like `write`, `read`, `register_mr/qp/pd`, etc.
+/// 
+/// The device has an adaptor, which can be hardware, software, or emulated. 
 #[derive(Debug,Clone)]
 pub struct Device(Arc<DeviceInner<dyn DeviceAdaptor>>);
 
@@ -208,23 +224,8 @@ struct DeviceInner<D: ?Sized> {
     work_desc_poller: OnceLock<WorkDescPoller>,
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
-    local_network : RdmaDeviceNetwork,
+    local_network : RdmaDeviceNetworkParam,
     adaptor: D,
-}
-
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
-pub struct Sge {
-    pub addr: u64,
-    pub len: u32,
-    pub key: Key,
-}
-
-impl Sge {
-    #[must_use] 
-    pub fn new(addr: u64, len: u32, key: Key) -> Self {
-        Self { addr, len, key }
-    }
 }
 
 impl Device {
@@ -232,7 +233,7 @@ impl Device {
     /// # Errors
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_hardware(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
+    pub fn new_hardware(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
 
         let adaptor = HardwareDevice::init();
@@ -264,7 +265,7 @@ impl Device {
     /// # Errors
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_software(network: &RdmaDeviceNetwork) -> Result<Self, Error> {
+    pub fn new_software(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let adaptor = SoftwareDevice::init(network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
 
@@ -298,7 +299,7 @@ impl Device {
     pub fn new_emulated(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
-        network: &RdmaDeviceNetwork,
+        network: &RdmaDeviceNetworkParam,
     ) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         #[cfg(feature = "scheduler")]
@@ -466,7 +467,7 @@ impl Device {
             let ctrl_ctx = CtrlOpCtx::new_running();
 
             if ctx.insert(id, ctrl_ctx.clone()).is_some() {
-                return Err(Error::OpIdUsed(id));
+                return Err(Error::CreateOpCtxFailed);
             }
 
             ctrl_ctx
@@ -537,7 +538,7 @@ impl Device {
         Ok(())
     }
 
-    fn set_network(&self, network: &RdmaDeviceNetwork) -> Result<(), Error> {
+    fn set_network(&self, network: &RdmaDeviceNetworkParam) -> Result<(), Error> {
         let op_id = self.get_ctrl_op_id();
         let desc = ToCardCtrlRbDesc::SetNetworkParam(ToCardCtrlRbDescSetNetworkParam {
             common: ToCardCtrlRbDescCommon { op_id },
@@ -547,9 +548,9 @@ impl Device {
             macaddr: network.macaddr,
         });
         let ctx = self.do_ctrl_op(op_id, desc)?;
-        let is_success = ctx.wait_result()?.ok_or_else(||Error::SetNetworkParamFailed)?;
+        let is_success = ctx.wait_result()?.ok_or_else(||Error::SetCtxResultFailed)?;
         if !is_success {
-            return Err(Error::SetNetworkParamFailed);
+            return Err(Error::DeviceReturnFailed("Network param"));
         };
         Ok(())
     }
