@@ -197,7 +197,6 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
 
         // currently, we not allow the writer to overflow
         // Instead, we wait and polling.
-        // FIXME: we may return an overflow here later?
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(idx, *self.tail) {
             // write back first
             let _: Result<(), DeviceError> = self.advance();

@@ -334,7 +334,6 @@ impl AcknowledgeBuffer {
     }
 
     pub(crate) fn alloc(&self) -> Option<Slot> {
-        // FIXME: currently, we just recycle all the buffer in the free list.
         let result = self.free_list.pop();
         match result {
             Some(Some(buf)) => Some(buf),

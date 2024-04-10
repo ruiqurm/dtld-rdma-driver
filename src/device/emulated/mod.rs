@@ -6,7 +6,7 @@ use self::rpc_cli::{
 };
 use super::{
     constants, ringbuf::Ringbuf, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb,
-    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
+    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
 use std::{
     net::SocketAddr,
@@ -286,17 +286,14 @@ impl ToHostRb<ToHostWorkRbDesc> for EmulatedDevice {
         loop {
             match read_res {
                 Ok(desc) => break Ok(desc),
-                Err(incomplete_desc) => {
+                Err(ToHostWorkRbDescError::DeviceError(e))=>{
+                    return Err(e);
+                }
+                Err(ToHostWorkRbDescError::Incomplete(incomplete_desc)) => {
                     let next_mem = reader.next().ok_or(DeviceError::Device(
                         "Failed to read from ringbuf".to_owned(),
                     ))?;
                     read_res = incomplete_desc.read(next_mem);
-                    match read_res {
-                        Ok(desc) => break Ok(desc),
-                        Err(_) => {
-                            todo!();
-                        }
-                    }
                 }
             }
         }

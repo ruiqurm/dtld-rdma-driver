@@ -1,13 +1,23 @@
+// TODO: implement for handling in big-endian machine
+use crate::{
+    device::descriptor::{
+        CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam,
+        CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateMrTable,
+        CmdQueueReqDescUpdatePGT, MeatReportQueueDescFragSecondaryRETH,
+    },
+    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge},
+    utils::u8_slice_to_u64,
+    Error,
+};
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use std::{net::Ipv4Addr, ops::Range};
-use crate::{
-    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge},
-    utils::u8_slice_to_u64,
-    Error, device::descriptor::{CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT, CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam, MeatReportQueueDescFragSecondaryRETH, CmdQueueReqDescSetRawPacketReceiveMeta},
-};
 
-use super::descriptor::{CmdQueueDescCommonHead, SendQueueDescCommonHead, SendQueueReqDescSeg0, SendQueueReqDescSeg1, SendQueueReqDescFragSGE, MeatReportQueueDescFragRETH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragAETH, MeatReportQueueDescBthReth, MeatReportQueueDescFragBTH};
+use super::descriptor::{
+    CmdQueueDescCommonHead, MeatReportQueueDescBthReth, MeatReportQueueDescFragAETH,
+    MeatReportQueueDescFragBTH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragRETH,
+    SendQueueDescCommonHead, SendQueueReqDescFragSGE, SendQueueReqDescSeg0, SendQueueReqDescSeg1,
+};
 
 #[allow(unused)]
 #[derive(Debug)]
@@ -291,9 +301,14 @@ pub(crate) enum ToHostWorkRbDescWriteType {
     Only,
 }
 
-pub(super) struct IncompleteToHostWorkRbDesc {
+pub(crate) struct IncompleteToHostWorkRbDesc {
     parsed: ToHostWorkRbDesc,
     parsed_cnt: usize,
+}
+
+pub(crate) enum ToHostWorkRbDescError {
+    Incomplete(IncompleteToHostWorkRbDesc),
+    DeviceError(DeviceError),
 }
 
 #[derive(TryFromPrimitive)]
@@ -495,7 +510,8 @@ impl ToCardCtrlRbDesc {
             let mut update_pgt = CmdQueueReqDescUpdatePGT(dst);
             update_pgt.set_dma_addr(desc.start_addr);
             update_pgt.set_start_index(desc.pgt_idx.into());
-            #[allow(clippy::arithmetic_side_effects)] // this will less than MR_PGT_SIZE * 8, which will not overflow
+            #[allow(clippy::arithmetic_side_effects)]
+            // this will less than MR_PGT_SIZE * 8, which will not overflow
             update_pgt.set_dma_read_length((desc.pgte_cnt * 8).into());
         }
 
@@ -670,8 +686,9 @@ impl ToCardWorkRbDesc {
         head.set_is_first(is_first);
         head.set_is_last(is_last);
         head.set_op_code(opcode as u32);
-        
-        #[allow(clippy::arithmetic_side_effects)] // self.serialized_desc_cnt() always greater than 1
+
+        #[allow(clippy::arithmetic_side_effects)]
+        // self.serialized_desc_cnt() always greater than 1
         let extra_segment_cnt = self.serialized_desc_cnt() - 1;
         head.set_extra_segment_cnt(extra_segment_cnt);
         head.set_total_len(common.total_len);
@@ -719,7 +736,7 @@ impl ToCardWorkRbDesc {
         //     ReservedZero#(5)        reserved8;          // 5  bits
         //     PMTU                    pmtu;               // 3  bits
         // } SendQueueReqDescSeg1 deriving(Bits, FShow);
-        
+
         #[allow(clippy::arithmetic_side_effects)]
         let (common, sge_cnt) = match self {
             ToCardWorkRbDesc::Read(desc) => (&desc.common, 1),
@@ -906,11 +923,8 @@ impl ToHostWorkRbDesc {
         Ok((psn, msg_seq_number, value, code))
     }
 
-    #[allow(clippy::cast_possible_truncation,clippy::indexing_slicing)]
-    // FIXME: The design of `IncompleteToHostWorkRbDesc` is not so good here. I will refactor later.
-    // FIXME: remove #[allow(clippy::unwrap_in_result)]
-    #[allow(clippy::unwrap_in_result, clippy::unwrap_used)]
-    pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
+    #[allow(clippy::cast_possible_truncation, clippy::indexing_slicing,clippy::too_many_lines)]
+    pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
         //     MSN                             msn;            // 24
@@ -923,7 +937,12 @@ impl ToHostWorkRbDesc {
 
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
-        let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).unwrap();
+        let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).map_err(
+            |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                "CtrlRbDescOpcode = {} can not be parsed",
+                desc_bth.get_req_status()
+            ))),
+        )?;
 
         // typedef struct {
         //     ReservedZero#(4)                reserved1;    // 4
@@ -938,8 +957,18 @@ impl ToHostWorkRbDesc {
 
         let desc_frag_bth = MeatReportQueueDescFragBTH(&src[4..12]);
         let trans =
-            ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8).unwrap();
-        let opcode = ToHostWorkRbDescOpcode::try_from(desc_frag_bth.get_opcode() as u8).unwrap();
+            ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8).map_err(
+                |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                    "ToHostWorkRbDescTransType = {} can not be parsed",
+                    desc_frag_bth.get_trans_type()
+                ))),
+            )?;
+        let opcode = ToHostWorkRbDescOpcode::try_from(desc_frag_bth.get_opcode() as u8).map_err(
+            |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                "ToHostWorkRbDescOpcode = {} can not be parsed",
+                desc_frag_bth.get_opcode()
+            ))),
+        )?;
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
         let pad_cnt = desc_frag_bth.get_pad_cnt() as u8;
@@ -1002,20 +1031,22 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::RdmaReadRequest => {
                 let (addr, key, len) = Self::read_reth(src);
 
-                Err(IncompleteToHostWorkRbDesc {
-                    parsed: ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
-                        common,
-                        len,
-                        laddr: addr,
-                        lkey: key,
-                        raddr: 0,
-                        rkey: Key::default(),
-                    }),
-                    parsed_cnt: 1,
-                })
+                Err(ToHostWorkRbDescError::Incomplete(
+                    IncompleteToHostWorkRbDesc {
+                        parsed: ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
+                            common,
+                            len,
+                            laddr: addr,
+                            lkey: key,
+                            raddr: 0,
+                            rkey: Key::default(),
+                        }),
+                        parsed_cnt: 1,
+                    },
+                ))
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src).unwrap();
+                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
 
                 match code {
                     ToHostWorkRbDescAethCode::Ack => {
@@ -1055,7 +1086,7 @@ impl ToHostWorkRbDesc {
 
 impl IncompleteToHostWorkRbDesc {
     #[allow(clippy::cast_possible_truncation)]
-    pub(super) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, IncompleteToHostWorkRbDesc> {
+    pub(super) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         fn read_second_reth(src: &[u8]) -> (u64, Key) {
             // typedef struct {
             //     RKEY                            secondaryRkey;   // 32
@@ -1085,7 +1116,6 @@ impl IncompleteToHostWorkRbDesc {
         }
     }
 }
-
 
 pub(crate) struct ToCardWorkRbDescBuilder {
     type_: ToCardWorkRbDescOpcode,
