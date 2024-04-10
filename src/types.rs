@@ -150,11 +150,13 @@ impl ThreeBytesStruct {
     }
 
     #[must_use]
+    #[allow(clippy::arithmetic_side_effects)] 
     pub fn wrapping_add(&self, rhs: u32) -> Self {
         Self((self.0 + rhs) % Self::MAX)
     }
 
     #[must_use]
+    #[allow(clippy::arithmetic_side_effects)] 
     pub fn wrapping_sub(&self, rhs: u32) -> Self {
         let rhs = rhs % Self::MAX;
         if self.0 > rhs {
@@ -168,6 +170,7 @@ impl ThreeBytesStruct {
     /// We assume that the bigger PSN should not exceed the
     /// smaller PSN by more than 2^23(that half of the range)
     #[must_use]
+    #[allow(clippy::arithmetic_side_effects)] 
     pub fn wrapping_abs(&self, rhs: Psn) -> u32 {
         if self.0 >= rhs.0 {
             self.0 - rhs.get()

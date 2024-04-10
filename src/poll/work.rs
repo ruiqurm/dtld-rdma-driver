@@ -102,13 +102,14 @@ impl WorkDescPollerContext {
 
             let pmtu = u32::from(&pmtu);
 
-            #[allow(clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
             let first_pkt_len = if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
                 u64::from(pmtu) - (desc.addr & (u64::from(pmtu) - 1))
             } else {
                 u64::from(real_payload_len)
             } as u32;
 
+            #[allow(clippy::arithmetic_side_effects)] // real_payload_len must be greater than first_pkt_len
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
             let mut pkt_map = RecvPktMap::new(
                 desc.is_read_resp,

@@ -61,7 +61,7 @@
     // clippy::implicit_return, it's idiomatic Rust code.
     clippy::indexing_slicing,
     clippy::inline_asm_x86_intel_syntax,
-    // clippy::arithmetic_side_effects, //TODO:
+    clippy::arithmetic_side_effects,
  
     // clippy::pattern_type_mismatch, // cause some false postive and unneeded copy
     clippy::print_stderr,

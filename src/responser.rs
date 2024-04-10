@@ -310,7 +310,7 @@ impl AcknowledgeBuffer {
         for _ in 0..slots {
             this.free_list
                 .push(Some(Slot::new(va as *mut u8, Arc::<Self>::clone(&this))));
-            va += Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
+            va.wrapping_add(Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
         }
         this
     }
@@ -424,13 +424,13 @@ const BTH_HEADER_SIZE: usize = 12;
 const IPV4_UDP_BTH_HEADER_SIZE: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE;
 const AETH_HEADER_SIZE: usize = 4;
 const NRETH_HEADER_SIZE: usize = 4;
-const ICRCSIZE: usize = 4;
+const ICRC_SIZE: usize = 4;
 const ACKPACKET_SIZE: usize = IPV4_HEADER_SIZE
     + UDP_HEADER_SIZE
     + BTH_HEADER_SIZE
     + AETH_HEADER_SIZE
     + NRETH_HEADER_SIZE
-    + ICRCSIZE;
+    + ICRC_SIZE;
 const ACKPACKET_WITHOUT_IPV4_HEADER_SIZE: usize = ACKPACKET_SIZE - IPV4_HEADER_SIZE;
 
 const IP_DEFAULT_VERSION_AND_LEN: u8 = 0x45;
@@ -466,7 +466,8 @@ fn calculate_icrc(data: &[u8]) -> u32 {
 
     hasher.update(&buf);
     // the rest of header and payload
-    hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - 4]);
+    #[allow(clippy::arithmetic_side_effects)]
+    hasher.update(&data[IPV4_UDP_BTH_HEADER_SIZE..data.len() - ICRC_SIZE]);
     hasher.finalize()
 }
 
@@ -477,7 +478,7 @@ fn calculate_icrc(data: &[u8]) -> u32 {
 /// # Panic
 /// The header is considered as a standard IPv4 header, so the length should be 20 bytes.
 /// Otherwise it will panic.
-#[allow(clippy::cast_possible_truncation, clippy::indexing_slicing)]
+#[allow(clippy::cast_possible_truncation, clippy::indexing_slicing,clippy::arithmetic_side_effects)]
 fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
     let mut sum = 0u32;
 

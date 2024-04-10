@@ -196,6 +196,14 @@ impl DeviceAdaptor for Arc<EmulatedDevice> {
     }
 
     fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError> {
+        if virt_addr < self.heap_mem_start_addr {
+            return Err(DeviceError::Device(format!(
+                "virt_addr is less than heap_mem_start_addr: {} < {}",
+                virt_addr, self.heap_mem_start_addr
+            )));
+        }
+        // this will never do downflow
+        #[allow(clippy::arithmetic_side_effects)]
         Ok(virt_addr - self.heap_mem_start_addr)
     }
 }

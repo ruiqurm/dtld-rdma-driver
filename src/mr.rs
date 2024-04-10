@@ -11,7 +11,8 @@ use crate::{
 use rand::RngCore as _;
 use std::{
     hash::{Hash, Hasher},
-    mem, ptr, sync::Arc,
+    mem, ptr,
+    sync::Arc,
 };
 
 const ACKNOWLEDGE_BUFFER_SLOT_CNT: usize = 1024;
@@ -67,7 +68,7 @@ impl Device {
         let pgte_cnt = length.div_ceil(pg_size) as usize;
         let pgt_offset = mr_pgt.alloc(pgte_cnt)?;
         for pgt_idx in 0..pgte_cnt {
-            let va = addr + (pg_size as usize * pgt_idx) as u64;
+            let va = addr.wrapping_add(((pg_size as usize).wrapping_mul(pgt_idx)) as u64);
             // Should we support 32 bit system?
             let va_in_usize =
                 usize::try_from(va).map_err(|_| Error::NotSupport("32 bit System"))?;
@@ -85,7 +86,7 @@ impl Device {
                 return Err(Error::AddressNotAlign("pa", pa));
             }
             // `mr_pgt.alloc(pgte_cnt)` has already checked that `pgt_offset + pgt_idx` is in range
-            #[allow(clippy::indexing_slicing)]
+            #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
             {
                 mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
             }
@@ -93,7 +94,7 @@ impl Device {
 
         let update_pgt_op_id = self.get_ctrl_op_id();
         // `pgt_offset` and `pg_size` are both derived from pg_size, which is a u32. So it's safe to covert
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation,clippy::arithmetic_side_effects)]
         let update_pgt_desc = ToCardCtrlRbDesc::UpdatePageTable(ToCardCtrlRbDescUpdatePageTable {
             common: ToCardCtrlRbDescCommon {
                 op_id: update_pgt_op_id,
@@ -183,7 +184,7 @@ impl Device {
 
         // mr_idx is smaller than `MR_TABLE_SIZE`. Currently, it's a relatively small number.
         // And it's expected to smaller than 2^32 during transimission
-        #[allow(clippy::cast_possible_truncation)]
+        #[allow(clippy::cast_possible_truncation,clippy::arithmetic_side_effects)]
         let key_idx = (mr_idx as u32) << (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
         let key_secret = rand::thread_rng().next_u32() >> crate::MR_KEY_IDX_BIT_CNT;
         let key = Key::new(key_idx | key_secret);
@@ -231,7 +232,7 @@ impl Device {
         }
 
         if !pd_ctx.mr.insert(mr) {
-            return Err(Error::InsertFailed("Pd",format!("{mr:?}")));
+            return Err(Error::InsertFailed("Pd", format!("{mr:?}")));
         }
 
         Ok(mr)
@@ -287,9 +288,11 @@ impl Device {
             .pd
             .lock()
             .map_err(|_| Error::LockPoisoned("pd table lock"))?;
-
+        #[allow(clippy::arithmetic_side_effects)]
         let mr_idx = mr.key.get() >> (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
-        let ctx_option = mr_table.get_mut(mr_idx as usize).ok_or(Error::Invalid(format!("MR :{mr_idx}")))?;
+        let ctx_option = mr_table
+            .get_mut(mr_idx as usize)
+            .ok_or(Error::Invalid(format!("MR :{mr_idx}")))?;
         let Some(mr_ctx) = ctx_option else {
             return Err(Error::Invalid(format!("MR :{mr_idx}")));
         };
@@ -344,6 +347,7 @@ impl MrPgt {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] 
     fn alloc(&mut self, len: usize) -> Result<usize, Error> {
         let mut ptr = self.free_blk_list;
 
@@ -354,7 +358,7 @@ impl MrPgt {
             if blk.len >= len {
                 let idx = blk.idx;
 
-                blk.idx += len;
+                blk.idx += len; // idx, len are all smaller than `MR_PGT_SIZE`
                 blk.len -= len;
 
                 if blk.len == 0 {
@@ -428,12 +432,12 @@ impl MrPgt {
             let new_prev = unsafe { new.prev.as_mut() };
             let new_prev = unsafe { new_prev.unwrap_unchecked() };
 
-            if new_prev.idx + new_prev.len != new.len {
+            if new_prev.idx.wrapping_add(new_prev.len) != new.len { 
                 break;
             }
 
             new.idx = new_prev.idx;
-            new.len += new_prev.len;
+            new.len = new.len.wrapping_add(new_prev.len);
 
             let new_prev_prev_ptr = new_prev.prev;
             drop(unsafe { Box::from_raw(new.prev) });
@@ -453,11 +457,11 @@ impl MrPgt {
             let new_next = unsafe { new.next.as_mut() };
             let new_next = unsafe { new_next.unwrap_unchecked() };
 
-            if new_next.idx != new.idx + new.len {
+            if new_next.idx != new.idx.wrapping_add(new.len) {
                 break;
             }
 
-            new.len += new_next.len;
+            new.len = new.len.wrapping_add(new_next.len);
 
             let new_next_next_ptr = new_next.next;
             drop(unsafe { Box::from_raw(new.next) });

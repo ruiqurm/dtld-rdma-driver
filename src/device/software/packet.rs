@@ -76,6 +76,7 @@ impl BTH {
         (self.flags & BTH_FLAGS_PAD_CNT_MASK) >> BTH_FLAGS_PAD_CNT_SHIFT
     }
 
+    #[allow(clippy::arithmetic_side_effects)]// pad_cnt is derived from payload_length,and will always be less than payload_length
     pub(crate) fn get_packet_real_length(&self, payload_length: usize) -> usize {
         let pad_cnt: usize = self.get_pad_cnt().into();
         payload_length - pad_cnt
@@ -308,7 +309,7 @@ impl RdmaPacketHeader for RdmaHeaderReqBthReth {
     fn to_rdma_message(&self, buf_size: usize) -> Result<RdmaMessage, PacketError> {
         let payload_length = self
             .bth
-            .get_packet_real_length(buf_size - size_of::<Self>());
+            .get_packet_real_length(buf_size.wrapping_sub(size_of::<Self>()));
         Ok(RdmaMessage {
             meta_data: Metadata::General(RdmaGeneralMeta::new_from_packet(
                 &self.bth, &self.reth, None, None,
@@ -342,7 +343,7 @@ impl RdmaPacketHeader for RdmaHeaderReqBthDoubleReth {
     fn to_rdma_message(&self, buf_size: usize) -> Result<RdmaMessage, PacketError> {
         let payload_length = self
             .bth
-            .get_packet_real_length(buf_size - size_of::<Self>());
+            .get_packet_real_length(buf_size.wrapping_sub(size_of::<Self>()));
         Ok(RdmaMessage {
             meta_data: Metadata::General(RdmaGeneralMeta::new_from_packet(
                 &self.bth,
@@ -384,7 +385,7 @@ impl RdmaPacketHeader for RdmaHeaderReqBthRethImm {
     fn to_rdma_message(&self, buf_size: usize) -> Result<RdmaMessage, PacketError> {
         let payload_length = self
             .bth
-            .get_packet_real_length(buf_size - size_of::<Self>());
+            .get_packet_real_length(buf_size.wrapping_sub(size_of::<Self>()));
         Ok(RdmaMessage {
             meta_data: Metadata::General(RdmaGeneralMeta::new_from_packet(
                 &self.bth,
@@ -422,7 +423,7 @@ impl RdmaPacketHeader for RdmaHeaderRespBthAeth {
     fn to_rdma_message(&self, buf_size: usize) -> Result<RdmaMessage, PacketError> {
         let payload_length = self
             .bth
-            .get_packet_real_length(buf_size - size_of::<Self>());
+            .get_packet_real_length(buf_size.wrapping_sub(size_of::<Self>()));
         Ok(RdmaMessage {
             meta_data: Metadata::Acknowledge(AethHeader::new_from_packet(&self.bth, &self.aeth)?),
             payload: PayloadInfo::new_with_data(self.get_data_ptr(), payload_length),

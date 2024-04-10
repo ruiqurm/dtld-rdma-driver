@@ -56,7 +56,7 @@ pub(super) struct RingbufReader<
 }
 
 const fn _is_power_of_2(v: usize) -> bool {
-    (v & (v - 1)) == 0
+    (v & (v.wrapping_sub(1))) == 0
 }
 
 impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
@@ -71,8 +71,8 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         assert!(DEPTH * ELEM_SIZE >= PAGE_SIZE, "invalid ringbuf size");
 
     /// Return (ringbuf, ringbuf virtual memory address)
-    /// 
-    #[allow(clippy::indexing_slicing)] // we have allocate additional space in advance to avoid overflow
+    ///
+    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects)] // we have allocate additional space in advance to avoid overflow
     pub(super) fn new(proxy: T) -> (Self, usize) {
         let raw_buf = Box::leak(vec![0; DEPTH * ELEM_SIZE + PAGE_SIZE].into_boxed_slice());
         let buf_padding = raw_buf.as_ptr() as usize & (PAGE_SIZE - 1);
@@ -91,7 +91,9 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         )
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn is_full(head: usize, tail: usize) -> bool {
+        // check if downflow
         let diff = if head >= tail {
             head - tail
         } else {
@@ -105,7 +107,7 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     }
 
     pub(crate) fn wrapping_add(cur: usize, cnt: usize) -> usize {
-        (cur + cnt) & Self::PTR_IDX_MASK
+        (cur.wrapping_add(cnt)) & Self::PTR_IDX_MASK
     }
 }
 
@@ -152,6 +154,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
 impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
     for Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
+    #[allow(clippy::arithmetic_side_effects)] // DEPTH * ELEM_SIZE + PAGE_SIZE is fixed
     fn drop(&mut self) {
         if let Ok(buf) = self.buf.get_mut() {
             let buf = buf.as_mut_ptr();
@@ -187,9 +190,10 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
 {
     type Item = &'a mut [u8];
 
+    #[allow(clippy::arithmetic_side_effects)] // We add comments on every arithmetic operation
     fn next(&mut self) -> Option<Self::Item> {
-        let idx = (*self.head + self.written_cnt)
-            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK;
+        let idx = (*self.head + self.written_cnt) 
+            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
 
         // currently, we not allow the writer to overflow
         // Instead, we wait and polling.
@@ -217,10 +221,10 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
-        let offset = idx * ELEM_SIZE;
+        let offset = idx * ELEM_SIZE; // ELEM_SIZE=32Byte, so offset < DEPTH * ELEM_SIZE, which will never flow
         let ptr = unsafe { self.buf.as_mut_ptr().add(offset) };
 
-        self.written_cnt += 1;
+        self.written_cnt += 1; // written_cnt < DEPTH
 
         Some(unsafe { std::slice::from_raw_parts_mut(ptr, ELEM_SIZE) })
     }
@@ -240,6 +244,7 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
 {
     type Item = &'a [u8];
 
+    #[allow(clippy::arithmetic_side_effects)]
     fn next(&mut self) -> Option<Self::Item> {
         let idx =
             (*self.tail + self.read_cnt) & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK;
@@ -277,7 +282,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     for RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
-        *self.tail += self.read_cnt;
+        *self.tail = Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(*self.tail, self.read_cnt);
         let read_cnt = u32::try_from(self.read_cnt).unwrap_or_else(|_| {
             log::error!("In read ringbuf, failed to convert from usize to u32");
             0

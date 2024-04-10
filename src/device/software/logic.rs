@@ -205,6 +205,7 @@ impl BlueRDMALogic {
             }
         };
 
+        #[allow(clippy::arithmetic_side_effects)]
         match desc {
             ToCardDescriptor::Write(mut req) => {
                 log::info!("{:?}", req);
@@ -251,7 +252,7 @@ impl BlueRDMALogic {
                 };
                 cur_len -= first_packet_length;
                 psn = psn.wrapping_add(1);
-                cur_va += u64::from(first_packet_length);
+                cur_va = cur_va.wrapping_add(u64::from(first_packet_length));
                 self.net_send_agent.send(req.common.dqp_ip, 4791, &msg)?;
 
                 // send the middle packets
@@ -267,7 +268,7 @@ impl BlueRDMALogic {
                     };
                     cur_len -= pmtu;
                     psn = psn.wrapping_add(1);
-                    cur_va += u64::from(pmtu);
+                    cur_va = cur_va.wrapping_add(u64::from(pmtu));
                     self.net_send_agent
                         .send(req.common.dqp_ip, 4791, &middle_msg)?;
                 }
@@ -426,7 +427,7 @@ impl BlueRDMALogic {
 
         // check if the va and length are valid.
         if read_guard.addr > va
-            || read_guard.addr + (read_guard.len as u64) < va + u64::from(length)
+            || read_guard.addr.wrapping_add(read_guard.len as u64) < va.wrapping_add(u64::from(length))
         {
             return Ok(ToHostWorkRbDescStatus::InvMrRegion);
         }

@@ -8,6 +8,7 @@ use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCard
 use crate::{
     types::{Pmtu, Psn, Qpn},
     utils::get_first_packet_max_length,
+    Device,
 };
 
 const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
@@ -102,11 +103,12 @@ impl ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler {
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
 fn get_first_schedule_segment_length(va: u64) -> u32 {
-    let offset = va % SCHEDULER_SIZE as u64;
+    let offset = va.wrapping_rem(SCHEDULER_SIZE as u64);
     // the `SCHEDULER_SIZE` is in range of u32 and offset is less than `SCHEDULER_SIZE`
     // So is safe to convert
+    // And the offset is less than `SCHEDULER_SIZE`, which will never downflow
     (SCHEDULER_SIZE as u32) - offset as u32
 }
 
@@ -121,7 +123,7 @@ fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
 // We allow indexing_slicing because
 // * `new_sgl_level` will always smaller than `origin_sgl` sgl level, which is less than `MAX_SGL_LENGTH`
 // * `current_level` won't be greater than `origin_sgl.len`, which is less than `MAX_SGL_LENGTH`
-#[allow(clippy::indexing_slicing)]
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
     let mut current_level = origin_sgl.cur_level as usize;
     let mut new_sgl = SGList::default();
@@ -137,8 +139,11 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
                 key: origin_sgl.data[current_level].key,
             };
             new_sgl.len = new_sgl_level as u32 + 1;
-            origin_sgl.data[current_level].addr += u64::from(length);
-            origin_sgl.data[current_level].len -= length;
+            origin_sgl.data[current_level].addr = origin_sgl.data[current_level]
+                .addr
+                .wrapping_add(u64::from(length));
+            origin_sgl.data[current_level].len =
+                origin_sgl.data[current_level].len.wrapping_sub(length);
             if origin_sgl.data[current_level].len == 0 {
                 current_level += 1;
             }
@@ -153,7 +158,7 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
             key: origin_sgl.data[current_level].key,
         };
         new_sgl_level += 1;
-        length -= origin_sgl.data[current_level].len;
+        length = length.wrapping_sub(origin_sgl.data[current_level].len);
         origin_sgl.data[current_level].len = 0;
         current_level += 1;
     }
@@ -221,8 +226,8 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkR
         }
         base_psn = recalculate_psn(current_va, pmtu, this_length, base_psn);
         descs.push_back(new_desc);
-        current_va += u64::from(this_length);
-        remain_data_length -= this_length;
+        current_va = current_va.wrapping_add(u64::from(this_length));
+        remain_data_length = remain_data_length.wrapping_sub(this_length);
         this_length = if remain_data_length > SCHEDULER_SIZE_U32 {
             SCHEDULER_SIZE_U32
         } else {
@@ -274,6 +279,7 @@ fn recalculate_psn(raddr: u64, pmtu: Pmtu, total_len: u32, base_psn: Psn) -> Psn
     let first_packet_length = total_len.min(first_packet_length);
     // first packet psn = base_psn
     // so the total psn = base_psn + (desc.common_header.total_len - first_packet_length) / pmtu + 1
+    #[allow(clippy::arithmetic_side_effects)] // total always greater than first_packet_length
     let last_packet_psn = base_psn.wrapping_add((total_len - first_packet_length).div_ceil(pmtu));
     last_packet_psn.wrapping_add(1)
 }

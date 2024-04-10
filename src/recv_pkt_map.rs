@@ -22,6 +22,7 @@ impl RecvPktMap {
     const FULL_CHUNK_DIV_BIT_SHIFT_CNT: u32 = 64usize.ilog2();
     const LAST_CHUNK_MOD_MASK: usize = mem::size_of::<u64>() * 8 - 1;
 
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn new(is_read_resp : bool,pkt_cnt: usize, start_psn: Psn, dqpn: Qpn) -> Self {
         let create_stage = |len| {
             // used-bit count in the last u64, len % 64
@@ -63,7 +64,7 @@ impl RecvPktMap {
         let stage_0_bit = 1 << stage_0_rem; // bit mask
         self.stage_0[stage_0_idx] |= stage_0_bit; // set bit in stage 0
 
-        let is_stage_0_last_chunk = stage_0_idx == self.stage_0.len() - 1; // is the bit in the last u64 in stage 0
+        let is_stage_0_last_chunk = stage_0_idx == self.stage_0.len().wrapping_sub(1); // is the bit in the last u64 in stage 0
         let stage_0_chunk_expected =
             u64::from(is_stage_0_last_chunk).wrapping_sub(1) | self.stage_0_last_chunk; // expected bit mask of the target u64 in stage 0
         let is_stage_0_chunk_complete = self.stage_0[stage_0_idx] == stage_0_chunk_expected; // is the target u64 in stage 0 full
@@ -73,7 +74,7 @@ impl RecvPktMap {
         let stage_1_bit = u64::from(is_stage_0_chunk_complete) << stage_1_rem; // bit mask
         self.stage_1[stage_1_idx] |= stage_1_bit; // set bit in stage 1
 
-        let is_stage_1_last_chunk = stage_1_idx == self.stage_1.len() - 1; // is the bit in the last u64 in stage 1
+        let is_stage_1_last_chunk = stage_1_idx == self.stage_1.len().wrapping_sub(1); // is the bit in the last u64 in stage 1
         let stage_1_chunk_expected =
             u64::from(is_stage_1_last_chunk).wrapping_sub(1) | self.stage_1_last_chunk; // expected bit mask of the target u64 in stage 1
         let is_stage_1_chunk_complete = self.stage_1[stage_1_idx] == stage_1_chunk_expected; // is the target u64 in stage 1 full
@@ -101,7 +102,7 @@ impl RecvPktMap {
             .iter()
             .enumerate()
             .fold(true, |acc, (idx, &bits)| {
-                let is_last_chunk = idx == self.stage_2.len() - 1;
+                let is_last_chunk = idx == self.stage_2.len().wrapping_sub(1);
                 let chunk_expected =
                     u64::from(is_last_chunk).wrapping_sub(1) | self.stage_2_last_chunk;
                 let is_chunk_complete = bits == chunk_expected;

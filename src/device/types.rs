@@ -495,6 +495,7 @@ impl ToCardCtrlRbDesc {
             let mut update_pgt = CmdQueueReqDescUpdatePGT(dst);
             update_pgt.set_dma_addr(desc.start_addr);
             update_pgt.set_start_index(desc.pgt_idx.into());
+            #[allow(clippy::arithmetic_side_effects)] // this will less than MR_PGT_SIZE * 8, which will not overflow
             update_pgt.set_dma_read_length((desc.pgte_cnt * 8).into());
         }
 
@@ -669,7 +670,8 @@ impl ToCardWorkRbDesc {
         head.set_is_first(is_first);
         head.set_is_last(is_last);
         head.set_op_code(opcode as u32);
-
+        
+        #[allow(clippy::arithmetic_side_effects)] // self.serialized_desc_cnt() always greater than 1
         let extra_segment_cnt = self.serialized_desc_cnt() - 1;
         head.set_extra_segment_cnt(extra_segment_cnt);
         head.set_total_len(common.total_len);
@@ -717,7 +719,8 @@ impl ToCardWorkRbDesc {
         //     ReservedZero#(5)        reserved8;          // 5  bits
         //     PMTU                    pmtu;               // 3  bits
         // } SendQueueReqDescSeg1 deriving(Bits, FShow);
-
+        
+        #[allow(clippy::arithmetic_side_effects)]
         let (common, sge_cnt) = match self {
             ToCardWorkRbDesc::Read(desc) => (&desc.common, 1),
             ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => (
@@ -830,6 +833,7 @@ impl ToCardWorkRbDesc {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     pub(super) fn serialized_desc_cnt(&self) -> u32 {
         let sge_desc_cnt = match self {
             ToCardWorkRbDesc::Read(_) => 1,

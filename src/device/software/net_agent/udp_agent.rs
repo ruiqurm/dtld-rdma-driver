@@ -99,6 +99,7 @@ impl UDPReceiveAgent {
             let mut buf = [MaybeUninit::<u8>::uninit(); NET_SERVER_BUF_SIZE];
             loop {
                 let (length, _src) = socket.recv_from(&mut buf)?;
+                #[allow(clippy::arithmetic_side_effects)]
                 if length < size_of::<CommonPacketHeader>() + 4 {
                     error!("Packet too short");
                     continue;
@@ -114,7 +115,7 @@ impl UDPReceiveAgent {
                 // skip the ip header and udp header and the icrc
                 let offset = size_of::<IpUdpHeaders>();
 
-                #[allow(clippy::indexing_slicing)] // if we pass the CRC check, it should be ok
+                #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects)] // if we pass the CRC check, it should be ok
                 let received_data = &received_data[offset..length - ICRC_SIZE];
                 if let Ok(mut message) = PacketProcessor::to_rdma_message(received_data) {
                     receiver.recv(&mut message);

@@ -154,6 +154,7 @@ impl PayloadInfo {
     }
 
     pub(crate) fn get_pad_cnt(&self) -> usize {
+        #[allow(clippy::arithmetic_side_effects)]
         let mut pad_cnt = RDMA_PAYLOAD_ALIGNMENT - self.total_len % RDMA_PAYLOAD_ALIGNMENT;
         if pad_cnt == RDMA_PAYLOAD_ALIGNMENT {
             pad_cnt = 0;
@@ -162,12 +163,12 @@ impl PayloadInfo {
     }
 
     pub(crate) fn with_pad_length(&self) -> usize {
-        self.total_len + self.get_pad_cnt()
+        self.total_len.wrapping_add(self.get_pad_cnt())
     }
 
     pub(crate) fn add(&mut self, data: *const u8, len: usize) {
         self.sg_list.push(SGListElement { data, len });
-        self.total_len += len;
+        self.total_len = self.total_len.wrapping_add(len);
     }
 
     #[cfg(test)]
@@ -408,6 +409,7 @@ impl SGList {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] //sge_counter is either 0 or 1
     pub(crate) fn new_with_sge_list(
         sge0: ToCardCtrlRbDescSge,
         sge1: Option<ToCardCtrlRbDescSge>,
@@ -434,7 +436,7 @@ impl SGList {
     /// The function iterate from `cur_level` of the scatter-gather list and cut the buffer of `length` from the list.
     /// If current level is not enough, it will move to the next level.
     /// All the slice will be added to the `payload`.
-    #[allow(clippy::indexing_slicing)]
+    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects)]
     pub(crate) fn cut(&mut self, mut length: u32) -> Result<PayloadInfo, BlueRdmaLogicError> {
         let mut current_level = self.cur_level as usize;
         let mut payload = PayloadInfo::new();
@@ -444,7 +446,7 @@ impl SGList {
             if self.data[current_level].len >= length {
                 let addr = self.data[current_level].addr as *mut u8;
                 payload.add(addr, length as usize);
-                self.data[current_level].addr += u64::from(length);
+                self.data[current_level].addr = self.data[current_level].addr.wrapping_add(u64::from(length));
                 self.data[current_level].len -= length;
                 if self.data[current_level].len == 0 {
                     current_level += 1;

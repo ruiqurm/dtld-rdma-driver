@@ -18,10 +18,15 @@ use crate::{
 pub(crate) fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
     // The offset is smaller than pmtu,which is smaller than 4096 currently.
     #[allow(clippy::cast_possible_truncation)]
-    let offset = (va % u64::from(pmtu)) as u32;
-    pmtu - offset
+    let offset = (va.wrapping_mul(u64::from(pmtu))) as u32;
+
+    #[allow(clippy::arithmetic_side_effects)] // pmtu > offset
+    {
+        pmtu - offset
+    }
 }
 
+#[allow(clippy::arithmetic_side_effects)] // total_len must be larger than first_pkt_len
 pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u32 {
     let first_pkt_max_len = get_first_packet_max_length(raddr, u32::from(&pmtu));
     let first_pkt_len = total_len.min(first_pkt_max_len);
@@ -29,7 +34,9 @@ pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u3
     1 + (total_len - first_pkt_len).div_ceil(u32::from(&pmtu))
 }
 
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
+    // this operation convert a [u8;8] to a u64. So it's safe to left shift
     slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
