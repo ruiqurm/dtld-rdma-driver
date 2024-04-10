@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     net::Ipv4Addr,
-    sync::Arc,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
     thread::{sleep, spawn, JoinHandle},
 };
 
@@ -44,7 +44,8 @@ mod types;
 pub(crate) struct SoftwareDevice {
     recv_agent: UDPReceiveAgent,
     device: Arc<BlueRDMALogic>,
-    polling_thread: JoinHandle<()>,
+    stop_flag : Arc<AtomicBool>,
+    polling_thread: Option<JoinHandle<()>>,
     to_card_work_rb: ToCardWorkRb,
     to_host_work_rb: ToHostWorkRb,
 }
@@ -69,7 +70,12 @@ impl SoftwareDevice {
 
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
         let this_device = Arc::<BlueRDMALogic>::clone(&device);
-        let polling_thread = spawn(move || loop {
+
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
+
+        let polling_thread = spawn(move || 
+            while !thread_stop_flag.load(Ordering::Relaxed) {
             match this_scheduler.pop() {
                 Ok(result) => {
                     if let Some(to_card_ctrl_rb_desc) = result {
@@ -85,11 +91,23 @@ impl SoftwareDevice {
         let to_card_work_rb = ToCardWorkRb(scheduler);
         Ok(Self {
             recv_agent,
-            polling_thread,
+            polling_thread : Some(polling_thread),
             device,
             to_card_work_rb,
             to_host_work_rb: ToHostWorkRb(to_host_queue),
+            stop_flag
         })
+    }
+}
+
+impl Drop for SoftwareDevice {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.polling_thread.take() {
+            if let Err(e) = thread.join() {
+                log::error!("Failed to join the polling thread: {:?}", e);
+            }
+        }
     }
 }
 

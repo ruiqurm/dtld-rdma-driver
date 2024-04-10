@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use std::thread::sleep;
 use std::time::Duration;
@@ -66,7 +67,8 @@ pub(crate) enum RespCommand {
 /// A thread that is responsible for sending the response to the other side
 #[derive(Debug)]
 pub(crate) struct DescResponser {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl DescResponser {
@@ -76,8 +78,13 @@ impl DescResponser {
         ack_buffers: Arc<AcknowledgeBuffer>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     ) -> Self {
-        let thread = spawn(|| Self::working_thread(device, recving_queue, ack_buffers, qp_table));
-        Self { _thread: thread }
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
+        let thread = spawn(move|| Self::working_thread(device, recving_queue, &ack_buffers, &qp_table,&thread_stop_flag));
+        Self {
+            thread : Some(thread),
+            stop_flag
+        }
     }
 
     fn create_ack_common(
@@ -103,7 +110,7 @@ impl DescResponser {
     }
 
     fn create_read_resp_common(
-        qp_table: &Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        qp_table: &RwLock<HashMap<Qpn, QpContext>>,
         resp: &RespReadRespCommand,
     ) -> Result<ToCardWorkRbDescCommon, Error> {
         let dpqn = resp.desc.common.dqpn;
@@ -147,10 +154,12 @@ impl DescResponser {
     fn working_thread(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
-        ack_buffers: Arc<AcknowledgeBuffer>,
-        qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        ack_buffers: &AcknowledgeBuffer,
+        qp_table: &RwLock<HashMap<Qpn, QpContext>>,
+        stop_flag: &AtomicBool,
     ) {
-        loop {
+        // We don't care the time stop_flag is set, so we use `Relaxed` ordering
+        while !stop_flag.load(Ordering::Relaxed) {
             let desc = match recving_queue.recv() {
                 Ok(RespCommand::Acknowledge(ack)) => {
                     // send ack to device
@@ -197,7 +206,7 @@ impl DescResponser {
                 }
                 Ok(RespCommand::ReadResponse(resp)) => {
                     // send read response to device
-                    let common = match Self::create_read_resp_common(&qp_table, &resp) {
+                    let common = match Self::create_read_resp_common(qp_table, &resp) {
                         Ok(common) => common,
                         Err(e) => {
                             error!("responser failed to send read response: {:?}", e);
@@ -229,6 +238,17 @@ impl DescResponser {
                 Err(e) => {
                     error!("Failed to create descripotr: {:?}", e);
                 }
+            }
+        }
+    }
+}
+
+impl Drop for DescResponser {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) =  self.thread.take(){
+            if let Err(e) = thread.join(){
+                error!("Failed to join the responser thread: {:?}", e);
             }
         }
     }
@@ -313,7 +333,7 @@ impl AcknowledgeBuffer {
         this
     }
 
-    pub(crate) fn alloc(self: &Arc<Self>) -> Option<Slot> {
+    pub(crate) fn alloc(&self) -> Option<Slot> {
         // FIXME: currently, we just recycle all the buffer in the free list.
         let result = self.free_list.pop();
         match result {
@@ -476,7 +496,11 @@ fn calculate_icrc(data: &[u8]) -> u32 {
 /// # Panic
 /// The header is considered as a standard IPv4 header, so the length should be 20 bytes.
 /// Otherwise it will panic.
-#[allow(clippy::cast_possible_truncation, clippy::indexing_slicing,clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
     let mut sum = 0u32;
 

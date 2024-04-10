@@ -1,4 +1,12 @@
-use std::{collections::LinkedList, fmt::Debug, sync::Arc, thread::spawn};
+use std::{
+    collections::LinkedList,
+    fmt::Debug,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::spawn,
+};
 
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use log::error;
@@ -23,7 +31,8 @@ pub(crate) struct DescriptorScheduler {
     sender: Sender<ToCardWorkRbDesc>,
     receiver: Receiver<ToCardWorkRbDesc>,
     strategy: Arc<dyn SchedulerStrategy>,
-    thread_handler: std::thread::JoinHandle<()>,
+    thread_handler: Option<std::thread::JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -67,30 +76,46 @@ impl DescriptorScheduler {
         let (sender, receiver) = crossbeam_channel::unbounded();
         let strategy: Arc<dyn SchedulerStrategy> = Arc::<dyn SchedulerStrategy>::clone(&strat);
         let thread_receiver = receiver.clone();
-        let thread_handler = spawn(move || loop {
-            let desc = match thread_receiver.try_recv() {
-                Ok(desc) => Some(desc),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => return,
-            };
-            if let Some(desc) = desc {
-                let dqpn = get_to_card_desc_common(&desc).dqpn;
-                let splited_descs = split_descriptor(desc);
-                if let Err(e) = strategy.push(dqpn, splited_descs) {
-                    error!("failed to push descriptors: {:?}", e);
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
+        let thread_handler = spawn(move || {
+            while !thread_stop_flag.load(Ordering::Relaxed) {
+                let desc = match thread_receiver.try_recv() {
+                    Ok(desc) => Some(desc),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => return,
+                };
+                if let Some(desc) = desc {
+                    let dqpn = get_to_card_desc_common(&desc).dqpn;
+                    let splited_descs = split_descriptor(desc);
+                    if let Err(e) = strategy.push(dqpn, splited_descs) {
+                        error!("failed to push descriptors: {:?}", e);
+                    }
                 }
             }
         });
         Self {
             sender,
             strategy: strat,
-            thread_handler,
+            thread_handler : Some(thread_handler),
             receiver,
+            stop_flag,
         }
     }
 
     pub(crate) fn pop(self: &Arc<Self>) -> Result<Option<ToCardWorkRbDesc>, DeviceError> {
         self.strategy.pop()
+    }
+}
+
+impl Drop for DescriptorScheduler {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) =  self.thread_handler.take(){
+            if let Err(e) = thread.join(){
+                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+            }
+        }
     }
 }
 

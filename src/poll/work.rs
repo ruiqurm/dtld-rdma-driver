@@ -2,7 +2,7 @@ use core::panic;
 use log::{debug, error};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}},
 };
 
 use crate::{
@@ -21,7 +21,8 @@ use crate::{
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
 pub(crate) struct WorkDescPoller {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
 }
 
 pub(crate) struct WorkDescPollerContext {
@@ -36,14 +37,19 @@ unsafe impl Send for WorkDescPollerContext {}
 
 impl WorkDescPoller {
     pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
-        let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(&ctx));
-        Self { _thread: thread }
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
+        let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(&ctx,&thread_stop_flag));
+        Self {
+            thread : Some(thread),
+            stop_flag
+        }
     }
 }
 
 impl WorkDescPollerContext {
-    pub(crate) fn poll_working_thread(ctx: &Self) {
-        loop {
+    pub(crate) fn poll_working_thread(ctx: &Self,stop_flag : &AtomicBool) {
+        while !stop_flag.load(Ordering::Relaxed) {
             let desc = match ctx.work_rb.pop() {
                 Ok(desc) => desc,
                 Err(e) => {
@@ -176,6 +182,17 @@ impl WorkDescPollerContext {
     #[allow(clippy::unused_self)]
     fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> Result<(), Error> {
         panic!("receive a nack");
+    }
+}
+
+impl Drop for WorkDescPoller {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) =  self.thread.take(){
+            if let Err(e) = thread.join(){
+                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+            }
+        }
     }
 }
 

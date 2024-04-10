@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, RwLock},
 };
 
 use log::error;
@@ -17,7 +17,8 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct ControlPoller {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
 }
 
 pub(crate) struct ControlPollerContext {
@@ -29,14 +30,20 @@ unsafe impl Send for ControlPollerContext {}
 
 impl ControlPoller {
     pub(crate) fn new(ctx: ControlPollerContext) -> Self {
-        let thread = std::thread::spawn(move || ControlPollerContext::poll_ctrl_thread(&ctx));
-        Self { _thread: thread }
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
+        let thread =
+            std::thread::spawn(move || ControlPollerContext::poll_ctrl_thread(&ctx, &thread_stop_flag));
+        Self {
+            thread: Some(thread),
+            stop_flag,
+        }
     }
 }
 
 impl ControlPollerContext {
-    pub(crate) fn poll_ctrl_thread(ctx: &Self) {
-        loop {
+    pub(crate) fn poll_ctrl_thread(ctx: &Self, stop_flag: &AtomicBool) {
+        while !stop_flag.load(Ordering::Relaxed) {
             let desc = match ctx.to_host_ctrl_rb.pop() {
                 Ok(desc) => desc,
                 Err(e) => {
@@ -159,5 +166,16 @@ impl ControlPollerContext {
             error!("no ctrl cmd ctx found");
         }
         Ok(())
+    }
+}
+
+impl Drop for ControlPoller {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) =  self.thread.take(){
+            if let Err(e) = thread.join(){
+                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+            }
+        }
     }
 }

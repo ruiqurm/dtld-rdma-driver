@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, LinkedList},
-    sync::{mpsc::Sender, Arc, Mutex, RwLock},
+    sync::{atomic::{AtomicBool, Ordering}, mpsc::Sender, Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -15,7 +15,8 @@ use log::{error, info};
 
 #[derive(Debug)]
 pub(crate) struct PacketChecker {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl PacketChecker {
@@ -29,10 +30,26 @@ impl PacketChecker {
             recv_pkt_map,
             read_op_ctx_map,
         };
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let thread_stop_flag = Arc::clone(&stop_flag);
         let thread = std::thread::spawn(move || {
-            PacketCheckerContext::working_thread(&ctx);
+            PacketCheckerContext::working_thread(&ctx, &thread_stop_flag);
         });
-        Self { _thread: thread }
+        Self {
+            thread: Some(thread),
+            stop_flag,
+        }
+    }
+}
+
+impl Drop for PacketChecker {
+    fn drop(&mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        if let Some(thread) =  self.thread.take(){
+            if let Err(e) = thread.join(){
+                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+            }
+        }
     }
 }
 
@@ -43,8 +60,8 @@ struct PacketCheckerContext {
 }
 
 impl PacketCheckerContext {
-    fn working_thread(ctx: &Self) {
-        loop {
+    fn working_thread(ctx: &Self, stop_flag: &AtomicBool) {
+        while !stop_flag.load(Ordering::Relaxed) {
             if let Err(e) = ctx.check_pkt_map() {
                 error!("PacketChecker stopped: {:?}", e);
                 break;
