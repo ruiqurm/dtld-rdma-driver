@@ -15,15 +15,13 @@ use crate::{
 /// For example, if pmtu = 256 and va = 254, then the first packet can be at most 2 bytes.
 /// If pmtu = 256 and va = 256, then the first packet can be at most 256 bytes.
 #[inline]
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
     // The offset is smaller than pmtu,which is smaller than 4096 currently.
     #[allow(clippy::cast_possible_truncation)]
-    let offset = (va.wrapping_mul(u64::from(pmtu))) as u32;
+    let offset = (va.wrapping_rem(u64::from(pmtu))) as u32;
 
-    #[allow(clippy::arithmetic_side_effects)] // pmtu > offset
-    {
-        pmtu - offset
-    }
+    pmtu - offset
 }
 
 #[allow(clippy::arithmetic_side_effects)] // total_len must be larger than first_pkt_len
