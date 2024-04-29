@@ -1,4 +1,3 @@
-
 use std::fs::OpenOptions;
 use std::io::Write;
 use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};

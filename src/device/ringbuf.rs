@@ -1,7 +1,6 @@
-use std::{
-    slice,
-    sync::{Mutex, MutexGuard},
-};
+use std::sync::{Mutex, MutexGuard};
+
+use crate::HugePage;
 
 use super::DeviceError;
 
@@ -18,8 +17,7 @@ pub(super) trait CsrReaderProxy {
 /// The Ringbuf is a circular buffer used comunicate between the host and the card.
 #[derive(Debug)]
 pub(super) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
-    buf: Mutex<&'static mut [u8]>,
-    buf_padding: usize,
+    buf: Mutex<HugePage>,
     head: usize,
     tail: usize,
     proxy: T,
@@ -33,7 +31,7 @@ pub(super) struct RingbufWriter<
     const ELEM_SIZE: usize,
     const PAGE_SIZE: usize,
 > {
-    buf: MutexGuard<'a, &'static mut [u8]>,
+    buf: MutexGuard<'a, HugePage>,
     head: &'a mut usize,
     tail: &'a mut usize,
     written_cnt: usize,
@@ -48,7 +46,7 @@ pub(super) struct RingbufReader<
     const ELEM_SIZE: usize,
     const PAGE_SIZE: usize,
 > {
-    buf: MutexGuard<'a, &'static mut [u8]>,
+    buf: MutexGuard<'a, HugePage>,
     head: &'a mut usize,
     tail: &'a mut usize,
     read_cnt: usize,
@@ -74,17 +72,13 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
 
     /// Return (ringbuf, ringbuf virtual memory address)
     ///
-    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects)] // we have allocate additional space in advance to avoid overflow
+    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects,clippy::unwrap_used)] // we have allocate additional space in advance to avoid overflow
     pub(super) fn new(proxy: T) -> (Self, usize) {
-        let raw_buf = Box::leak(vec![0; DEPTH * ELEM_SIZE + PAGE_SIZE].into_boxed_slice());
-        let buf_padding = raw_buf.as_ptr() as usize & (PAGE_SIZE - 1);
-        let buf_addr = raw_buf[buf_padding..].as_ptr() as usize;
-        let buf = Mutex::new(&mut raw_buf[buf_padding..]);
-
+        let huge_page = HugePage::new(DEPTH * ELEM_SIZE).unwrap();
+        let buf_addr = huge_page.as_ptr() as usize;
         (
             Self {
-                buf,
-                buf_padding,
+                buf : Mutex::new(huge_page),
                 head: 0,
                 tail: 0,
                 proxy,
@@ -152,24 +146,6 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
             read_cnt: 0,
             proxy: &self.proxy,
         })
-    }
-}
-
-impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> Drop
-    for Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
-    #[allow(clippy::arithmetic_side_effects)] // DEPTH * ELEM_SIZE + PAGE_SIZE is fixed
-    fn drop(&mut self) {
-        if let Ok(buf) = self.buf.get_mut() {
-            let buf = buf.as_mut_ptr();
-            let buf_start = unsafe { buf.sub(self.buf_padding) };
-            let raw_buf =
-                unsafe { slice::from_raw_parts_mut(buf_start, DEPTH * ELEM_SIZE + PAGE_SIZE) };
-
-            drop(unsafe { Box::from_raw(raw_buf) });
-        } else {
-            log::error!("failed to get ringbuf buffer");
-        }
     }
 }
 

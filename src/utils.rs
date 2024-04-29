@@ -1,13 +1,10 @@
 use std::{
-    alloc::{alloc, dealloc, Layout},
-    ops::{Deref, DerefMut},
-    slice::from_raw_parts_mut,
+    alloc::{alloc, dealloc, Layout}, io, ops::{Deref, DerefMut}, slice::from_raw_parts_mut
 };
 
-use crate::{
-    types::{Pmtu, PAGE_SIZE},
-    Error,
-};
+use log::error;
+
+use crate::types::{Pmtu, PAGE_SIZE};
 
 /// Get the length of the first packet.
 ///
@@ -38,20 +35,91 @@ pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
     slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
-pub(crate) fn allocate_aligned_memory(size: usize) -> Result<&'static mut [u8], Error> {
-    let layout = Layout::from_size_align(size, PAGE_SIZE)
-        .map_err(|_| Error::ResourceNoAvailable(format!("size is too large,which is {size:?}")))?;
+/// A struct to manage hugepage memory
+#[derive(Debug)]
+pub struct HugePage {
+    size: usize,
+    addr: usize,
+}
+
+impl HugePage {
+    /// # Errors
+    ///
+    pub fn new(size: usize) -> io::Result<Self> {
+        let buffer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_HUGETLB,
+                -1,
+                0,
+            )
+        };
+        if buffer == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(HugePage {
+            size,
+            addr: buffer as usize,
+        })
+    }
+
+    /// get raw pointer of huge page buffer
+    #[must_use]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.addr as *const u8
+    }
+
+    /// get size of the huge page buffer
+    #[must_use]
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { from_raw_parts_mut(self.addr as *mut u8, self.size) }
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.addr as *const u8, self.size) }
+    }
+}
+
+impl Deref for HugePage {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for HugePage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_mut_slice()
+    }
+}
+
+impl Drop for HugePage {
+    fn drop(&mut self) {
+        let result = unsafe { libc::munmap(self.addr as *mut libc::c_void, self.size) };
+        if result != 0_i32 {
+            error!("drop huge page failed: {result}");
+        }
+    }
+}
+
+fn allocate_aligned_memory(size: usize) -> io::Result<&'static mut [u8]> {
+    let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_|io::Error::last_os_error())?;
     let ptr = unsafe { alloc(layout) };
     Ok(unsafe { from_raw_parts_mut(ptr, size) })
 }
 
-pub(crate) fn deallocate_aligned_memory(buf: &mut [u8], size: usize) -> Result<(), Error> {
-    let layout = Layout::from_size_align(size, PAGE_SIZE)
-        .map_err(|_| Error::ResourceNoAvailable(format!("size is too large,which is {size:?}")))?;
+#[allow(clippy::unwrap_used)]
+fn deallocate_aligned_memory(buf: &mut [u8], size: usize) {
+    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
     unsafe {
         dealloc(buf.as_mut_ptr(), layout);
     }
-    Ok(())
 }
 
 /// An aligned memory buffer.
@@ -61,16 +129,14 @@ pub struct AlignedMemory<'a>(&'a mut [u8]);
 impl AlignedMemory<'_> {
     /// # Errors
     /// Return an error if the size is too large.
-    pub fn new(size: usize) -> Result<Self, Error> {
-        Ok(AlignedMemory(allocate_aligned_memory(size)?))
+    pub fn new(size: usize) -> io::Result<Self> {
+       Ok(AlignedMemory(allocate_aligned_memory(size)?))
     }
 }
 
 impl Drop for AlignedMemory<'_> {
     fn drop(&mut self) {
-        if let Err(e) = deallocate_aligned_memory(self.0, self.0.len()){
-            log::error!("Failed to deallocate aligned memory: {:?}", e);
-        }
+        deallocate_aligned_memory(self.0, self.0.len());
     }
 }
 
@@ -87,6 +153,30 @@ impl DerefMut for AlignedMemory<'_> {
         self.0
     }
 }
+
+#[derive(Debug)]
+pub(crate)enum SlotBuffer {
+    HugePage(HugePage),
+    AlignedMemory(AlignedMemory<'static>),
+}
+
+impl SlotBuffer{
+    pub(crate) fn new(size: usize,is_huge_page:bool) -> io::Result<Self> {
+        if is_huge_page {
+            HugePage::new(size).map(SlotBuffer::HugePage)
+        } else {
+            AlignedMemory::new(size).map(SlotBuffer::AlignedMemory)
+        }
+    }
+
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        match self {
+            SlotBuffer::HugePage(huge_page) => huge_page.as_ptr(),
+            SlotBuffer::AlignedMemory(aligned_memory) => aligned_memory.as_ptr(),
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -146,11 +146,11 @@ use crate::{
     mr::{MrCtx, MrPgt},
     pd::PdCtx,
 };
-use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
 use flume::unbounded;
+use mr::{ACKNOWLEDGE_BUFFER_SIZE, NIC_BUFFER_SIZE};
 use nic::BasicNicDeivce;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::{PacketChecker, RecvPktMap};
@@ -159,16 +159,14 @@ use qp::QpContext;
 use responser::DescResponser;
 
 use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::{
+    collections::HashMap, net::SocketAddr, sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, OnceLock,
-    },
+    }
 };
 use thiserror::Error;
 use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
-use utils::calculate_packet_cnt;
+use utils::{calculate_packet_cnt, SlotBuffer};
 use parking_lot::{Mutex,RwLock};
 
 /// memory region
@@ -199,7 +197,7 @@ mod utils;
 
 pub use crate::{mr::Mr, pd::Pd};
 pub use types::Error;
-pub use utils::AlignedMemory;
+pub use utils::{HugePage,AlignedMemory};
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;
@@ -233,7 +231,7 @@ struct DeviceInner<D: ?Sized> {
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
     nic_device : OnceLock<BasicNicDeivce>,
-    nic_recv_buf : OnceLock<PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>>,
+    buffer_keeper : Mutex<Vec<SlotBuffer>>,
     adaptor: D,
 }
 
@@ -242,10 +240,11 @@ impl Device {
     /// # Errors
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_hardware(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
+    pub fn new_hardware(network: &RdmaDeviceNetworkParam,device_name : String) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-
-        let adaptor = HardwareDevice::init();
+        let round_robin = Arc::new(RoundRobinStrategy::new());
+        let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+        let adaptor = HardwareDevice::init(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
 
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
@@ -262,13 +261,13 @@ impl Device {
             pkt_checker_thread: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_recv_buf : OnceLock::new(),
             nic_device : OnceLock::new(),
+            buffer_keeper : Vec::new().into(),
             local_network : *network,
         });
 
         let dev = Self(inner);
-        dev.init()?;
+        dev.init(true)?;
 
         Ok(dev)
     }
@@ -294,14 +293,14 @@ impl Device {
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_recv_buf : OnceLock::new(),
             nic_device : OnceLock::new(),
+            buffer_keeper : Vec::new().into(),
             local_network : *network,
             adaptor,
         });
 
         let dev = Self(inner);
-        dev.init()?;
+        dev.init(false)?;
 
         Ok(dev)
     }
@@ -340,14 +339,14 @@ impl Device {
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
             local_network : *network,
-            nic_recv_buf : OnceLock::new(),
             nic_device : OnceLock::new(),
+            buffer_keeper : Vec::new().into(),
             adaptor,
         });
 
         let dev = Self(inner);
 
-        dev.init()?;
+        dev.init(false)?;
 
         Ok(dev)
     }
@@ -504,7 +503,7 @@ impl Device {
         Msn::new(self.0.next_msn.fetch_add(1, Ordering::AcqRel))
     }
 
-    fn init(&self) -> Result<(), Error> {
+    fn init(&self,use_huge_page : bool) -> Result<(), Error> {
         let (send_queue, rece_queue) = unbounded();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
 
@@ -517,7 +516,10 @@ impl Device {
         self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
 
         // enable responser module
-        let ack_buf = self.init_ack_buf()?;
+        let mut buf = SlotBuffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;
+        self.0.buffer_keeper.lock().push(buf);
+
         let responser = DescResponser::new(
             Arc::new(self.clone()),
             rece_queue,
@@ -525,9 +527,9 @@ impl Device {
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
-        self.prepare_nic_recv_buf()?;
+        self.prepare_nic_recv_buf(use_huge_page)?;
 
-        let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
+        let (nic_notify_send_queue, _nic_notify_recv_queue) = unbounded();
 
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
@@ -542,8 +544,9 @@ impl Device {
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // create nic recv and send device
-        let tx_buf = self.init_nic_buf()?;
-        self.0.nic_device.set(BasicNicDeivce::new(self.clone(), tx_buf, nic_notify_recv_queue)).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
+
+        // let tx_buf = self.init_nic_buf()?;
+        // self.0.nic_device.set(BasicNicDeivce::new(self.clone(), tx_buf, nic_notify_recv_queue)).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
@@ -560,10 +563,13 @@ impl Device {
     }
 
     #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]
-    fn prepare_nic_recv_buf(&self) -> Result<(), Error> {
+    fn prepare_nic_recv_buf(&self,use_huge_page:bool) -> Result<(), Error> {
         // configure basic nic recv buffer
         let op_id = self.get_ctrl_op_id();
-        let recv_buf = self.init_nic_buf()?;
+        let mut buf = SlotBuffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let recv_buf = self.init_buf(&mut buf,NIC_BUFFER_SIZE)?;
+        self.0.buffer_keeper.lock().push(buf);
+
         let (start_va,lkey) = recv_buf.get_register_params();
         let set_raw_desc = ToCardCtrlRbDesc::SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta {
             common: ToCardCtrlRbDescCommon { op_id },
@@ -575,7 +581,6 @@ impl Device {
         if !is_set_raw_success {
             return Err(Error::DeviceReturnFailed("Network param"));
         };
-        self.0.nic_recv_buf.set(recv_buf).map_err(|_|Error::DoubleInit("nic_recv_buf has been set".to_owned()))?;
         Ok(())
     }
 

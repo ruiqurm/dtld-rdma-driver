@@ -3,12 +3,9 @@ use buddy_system_allocator::LockedHeap;
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
-        RdmaDeviceNetworkParamBuilder, PAGE_SIZE, Sge,
-    },
-    AlignedMemory, Device, Mr, Pd
+    qp::QpManager, types::{
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE
+    }, AlignedMemory, Device, Mr, Pd
 };
 use std::{ffi::c_void, net::Ipv4Addr};
 
