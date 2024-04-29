@@ -213,11 +213,11 @@ impl Device {
         Ok(mr)
     }
 
-    pub(crate) fn init_buf(
+    pub(crate) fn init_buf<const SLOT_SIZE : usize>(
         &self,
         buffer: &mut Buffer,
         buffer_size: usize
-    ) -> Result<PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>, Error> {
+    ) -> Result<PacketBuf<SLOT_SIZE>, Error> {
         let buffer_addr = buffer.as_ptr() as usize;
         let pd = self.alloc_pd()?;
 

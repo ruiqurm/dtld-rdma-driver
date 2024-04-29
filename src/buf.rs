@@ -12,10 +12,6 @@ impl<const SLOT_SIZE: usize> Slot<SLOT_SIZE> {
         unsafe { from_raw_parts_mut(self.0, SLOT_SIZE) }
     }
 
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.0
-    }
-
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn into_sge(self, real_size : u32) -> Sge {
         assert!(real_size <= SLOT_SIZE as u32, "The real size should be less than the slot size");
@@ -77,14 +73,6 @@ impl<const SLOT_SIZE: usize> PacketBuf<SLOT_SIZE> {
     pub(crate) fn get_register_params(&self) -> (usize,Key) {
         (self.start_va,self.lkey)
     }
-
-    /// reserved first buffer(we don't use the first buffer)
-    /// Used in Nic
-    #[allow(clippy::arithmetic_side_effects)]
-    pub(crate) fn reserved_first(&mut self){
-        self.start_va += SLOT_SIZE;
-        self.slot_length -= 1;
-    }
 }
 
 #[cfg(test)]
@@ -105,25 +93,6 @@ mod tests {
             assert_eq!(
                 slot.0 as usize,
                 mem.as_ptr() as usize + (i % 1024) * RDMA_ACK_BUFFER_SLOT_SIZE
-            );
-        }
-    }
-
-    #[test]
-    fn test_buffer_reserve_first() {
-        let mem = Box::leak(Box::new(
-            [0u8; 1024 * RDMA_ACK_BUFFER_SLOT_SIZE],
-        ));
-        let base_va = mem.as_ptr() as usize;
-        let mut buffer : PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE> = PacketBuf::new(base_va, 1024 * 64, Key::new(0x1000));
-        buffer.reserved_first();
-        assert!(buffer.slot_length == 1023);
-        let base_va = unsafe{mem.as_ptr().add(RDMA_ACK_BUFFER_SLOT_SIZE) as usize};
-        for i in 0..2048 {
-            let slot = buffer.recycle_buf();
-            assert_eq!(
-                slot.0 as usize,
-                base_va + (i % 1023) * RDMA_ACK_BUFFER_SLOT_SIZE
             );
         }
     }

@@ -143,16 +143,16 @@ use crate::{
         DeviceAdaptor, EmulatedDevice, HardwareDevice, SoftwareDevice, ToCardCtrlRbDesc,
         ToCardWorkRbDescCommon,
     },
-    mr::{MrCtx, MrPgt},
+    mr::{MrCtx, MrPgt,ACKNOWLEDGE_BUFFER_SIZE,NIC_BUFFER_SIZE},
     pd::PdCtx,
 };
+use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
 use eui48::MacAddress;
 use flume::unbounded;
-use mr::{ACKNOWLEDGE_BUFFER_SIZE, NIC_BUFFER_SIZE};
-use nic::{start_basic_nic_utilities, BasicNicDeivce, NicInterface};
+use nic::{start_basic_nic_utilities, NicInterface};
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::{PacketChecker, RecvPktMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -550,7 +550,8 @@ impl Device {
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // create nic recv and send device
-        let tx_buf = self.init_nic_buf()?;
+        let mut tx_slot_buf = Buffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let tx_buf = self.init_buf(&mut tx_slot_buf,NIC_BUFFER_SIZE)?;
         let self_device = self.clone();
         let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue,self.0.local_network.macaddr);
         self.0.nic_device.set(nic_interface).map_err(|_|Error::DoubleInit("nic_device has been set".to_owned()))?;  
@@ -574,7 +575,7 @@ impl Device {
         // configure basic nic recv buffer
         let op_id = self.get_ctrl_op_id();
         let mut buf = Buffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-        let recv_buf = self.init_buf(&mut buf,NIC_BUFFER_SIZE)?;
+        let recv_buf: PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE> = self.init_buf(&mut buf,NIC_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 
         let (start_va,lkey) = recv_buf.get_register_params();

@@ -13,7 +13,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender, TryRecvError};
-use log::{debug, error};
+use log::debug;
 use parking_lot::Mutex;
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
@@ -24,11 +24,9 @@ use smoltcp::{
 };
 
 // the first 6 bytes of the ethernet frame is the destination mac address
-const ETH_DST_POS: std::ops::Range<usize> = 0..6;
 const ETH_SRC_POS: std::ops::Range<usize> = 6..12;
 const ETH_TYPE_START: usize = 12;
 const ETH_TYPE_IP: u16 = 0x0800;
-const ETH_HDR_LENGTH : usize = 14;
 const IPV4_SRC_START: usize = 26;
 
 pub(crate) struct NicRecvNotification {
@@ -259,7 +257,7 @@ fn working_thread(
     let icmp_ident = 0x22b;
     let echo_payload = [0x0u8; 40];
     let mut icmp_query_map = HashMap::new();
-    loop {
+    while !stop_flag.load(std::sync::atomic::Ordering::Relaxed){
         let timestamp = Instant::now();
         let _is_any_packet_proceed = iface.poll(timestamp, device, &mut sockets);
 
