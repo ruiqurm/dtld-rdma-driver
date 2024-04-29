@@ -19,8 +19,8 @@
 
 #define XDMA_CHANNEL_NUM_MAX (4)
 #define XDMA_BAR_NUM (2)
-#define XDMA_CONFIG_BAR_IDX (0)
-#define RDMA_CONFIG_BAR_IDX (1)
+#define XDMA_CONFIG_BAR_IDX (1)
+#define RDMA_CONFIG_BAR_IDX (0)
 
 #define MAGIC_DEVICE 0xDDDDDDDDUL
 #define MAX_USER_IRQ 16

@@ -3,6 +3,7 @@
 
 #include "dtld_pool.h"
 #include "dtld_queue.h"
+#include "linux/types.h"
 #include "rdma/ib_verbs.h"
 
 #include "libxdma.h"
@@ -31,6 +32,9 @@ struct dtld_dev {
     struct dtld_pool mr_pool;
 
     struct xdma_dev *xdev;
+    u8* csr;
+    resource_size_t csr_addr;
+    resource_size_t csr_length;
 };
 
 enum dtld_qp_state {
@@ -54,6 +58,7 @@ struct dtld_resp_info {
 struct dtld_ucontext {
     struct ib_ucontext ibuc;
     struct dtld_pool_elem elem;
+    struct rdma_user_mmap_entry* csr_entry;
 };
 
 struct dtld_pd {
@@ -77,9 +82,11 @@ enum wqe_state {
     wqe_state_error,
 };
 
-struct dtld_rdma_user_mmap_entry {
-    struct rdma_user_mmap_entry rdma_entry;
+struct dtld_rdma_user_mmap_entry{
+	struct rdma_user_mmap_entry rdma_entry;
     u64 address;
+    u32 length;
+    u8 mmap_flag;
 };
 
 struct dtld_cqe {

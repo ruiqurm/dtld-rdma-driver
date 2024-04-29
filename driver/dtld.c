@@ -1,3 +1,5 @@
+#include "asm/bug.h"
+#include "linux/printk.h"
 #include <rdma/rdma_netlink.h>
 #include <net/addrconf.h>
 #include <linux/pci.h>
@@ -125,9 +127,9 @@ static int dtld_dev_init_xdma(struct pci_dev *pdev,
     hndl = xdma_device_open("xdma", pdev);
     if (!hndl) {
         rv = -EINVAL;
+        pr_err("open xdma device failed");
         goto err_out;
     }
-
     /* make sure no duplicate */
     *xdev = xdev_find_by_pdev(pdev);
     if (!*xdev) {
@@ -160,14 +162,27 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
     struct dtld_dev *dtld = NULL;
 
     dtld = ib_alloc_device(dtld_dev, ib_dev);
-
+    if (!dtld) {
+        pr_err("failed to allocate an ib device");
+    }
     dtld->xdev = xdev;
     xdev->dtld = dtld;
+    dtld->csr_addr = pci_resource_start(xdev->pdev, RDMA_CONFIG_BAR_IDX);
+    dtld->csr_length = pci_resource_len(xdev->pdev, RDMA_CONFIG_BAR_IDX);
+    dtld->csr =
+            devm_ioremap(&xdev->pdev->dev, dtld->csr_addr, dtld->csr_length);
+    pr_err("%u\n", readl(dtld->csr + 0x0010));
+    pr_err("%u\n", readl(dtld->csr + 0x1010));
+    pr_err("%u\n", readl(dtld->csr + 0x2010));
+    pr_err("%u\n", readl(dtld->csr + 0x3010));
 
-    dtld_init_pools(dtld);
+    if (!dtld->csr) {
+        dev_err(&xdev->pdev->dev, "devm_ioremap failed.\n");
+        err = -EFAULT;
+        goto err_release_bars;
+    }
 
     dtld_init_device_param(dtld);
-    dtld_init_ports(dtld);
 
     err = dtld_register_device(dtld, "dtld-dev");
 
@@ -175,6 +190,8 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
         pr_warn("%s failed with error %d\n", __func__, err);
         ib_dealloc_device(&dtld->ib_dev);
     }
+err_release_bars:
+    devm_iounmap(&xdev->pdev->dev, dtld->csr);
 
     return err;
 }
@@ -190,7 +207,6 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
     err = dtld_dev_init_xdma(pdev, id, &xdev);
     if (err)
         return err;
-
     err = dtld_dev_init_rdma(xdev);
     if (err) {
         xpdev = dev_get_drvdata(&pdev->dev);

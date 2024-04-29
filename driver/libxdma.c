@@ -2,7 +2,6 @@
 #include <linux/device.h>
 #include <linux/pci.h>
 #include <linux/pci_regs.h>
-#include "asm-generic/errno-base.h"
 #include "libxdma.h"
 
 /*
@@ -208,11 +207,6 @@ static int map_bars(struct xdma_dev *xdev, struct pci_dev *dev)
 
     // map config bar
     if (map_single_bar(xdev, dev, XDMA_CONFIG_BAR_IDX) == 0) {
-        goto fail;
-    }
-
-    // map pcie bridge logic bar
-    if (map_single_bar(xdev, dev, RDMA_CONFIG_BAR_IDX) == 0) {
         goto fail;
     }
 

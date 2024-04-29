@@ -4,4 +4,4 @@
 
 modprobe ib_core
 modprobe ib_uverbs
-insmod /workspaces/dtld-rdma-driver/driver/dtld_ib.ko
+insmod /workspaces/open-rdma-driver/driver/dtld_ib.ko
