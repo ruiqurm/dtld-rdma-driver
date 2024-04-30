@@ -35,6 +35,11 @@ pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
     slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) fn align_up<const PAGE:usize>(addr:usize) -> usize{
+    ( ((addr) + ((PAGE) - 1) ) / PAGE ) * PAGE
+}
+
 /// A struct to manage hugepage memory
 #[derive(Debug)]
 pub struct HugePage {
@@ -43,6 +48,9 @@ pub struct HugePage {
 }
 
 impl HugePage {
+    /// size of the huge page
+    pub const HUGE_PAGE_SIZE : usize = PAGE_SIZE;
+
     /// # Errors
     ///
     pub fn new(size: usize) -> io::Result<Self> {
@@ -56,6 +64,7 @@ impl HugePage {
                 0,
             )
         };
+        let size = align_up::<{ Self::HUGE_PAGE_SIZE }>(size);
         if buffer == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
@@ -182,6 +191,8 @@ impl SlotBuffer{
 mod tests {
     use crate::types::Pmtu;
 
+    use super::align_up;
+
     #[test]
     fn test_calculate_packet_cnt() {
         let raddr = 0;
@@ -193,5 +204,15 @@ mod tests {
             let packet_cnt = super::calculate_packet_cnt(Pmtu::Mtu1024, raddr, total_len);
             assert_eq!(packet_cnt, 5);
         }
+    }
+
+    #[test]
+    fn align_up_test(){
+        let a = align_up::<{ 1024 * 1024 * 2 }>(1024);
+        let b = align_up::<{ 1024 * 1024 * 2 }>(1024 * 1024 * 2 +1);
+
+        assert_eq!(a,1024*1024*2);
+        assert_eq!(b,1024*1024*4);
+        
     }
 }

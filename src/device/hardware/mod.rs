@@ -69,8 +69,6 @@ impl HardwareDevice {
     ) -> Result<Arc<Self>, DeviceError> {
         let csr_cli =
             CsrClient::new(device_name).map_err(|e| DeviceError::Device(e.to_string()))?;
-        let phys_addr_resolver =
-            PhysAddrResolver::new().map_err(|e| DeviceError::Device(e.to_string()))?;
         let (to_card_ctrl_rb, to_card_ctrl_rb_addr) =
             ToCardCtrlRb::new(ToCardCtrlRbCsrProxy::new(csr_cli.clone()));
         let (to_host_ctrl_rb, to_host_ctrl_rb_addr) =
@@ -79,7 +77,8 @@ impl HardwareDevice {
             ToCardWorkRb::new(ToCardWorkRbCsrProxy::new(csr_cli.clone()));
         let (to_host_work_rb, to_host_work_rb_addr) =
             ToHostWorkRb::new(ToHostWorkRbCsrProxy::new(csr_cli.clone()));
-
+        let phys_addr_resolver =
+            PhysAddrResolver::new().map_err(|e| DeviceError::Device(e.to_string()))?;
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),
             to_host_ctrl_rb: Mutex::new(to_host_ctrl_rb),

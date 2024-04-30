@@ -1,4 +1,5 @@
-use std::{fs::File, io, mem::size_of, os::fd::AsRawFd};
+use std::{fs::File, io, mem::size_of, os::fd::AsRawFd, process};
+
 
 const PAGE_SHIFT: u64 = 12; // Typical page size shift for 4KB pages
 const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
@@ -11,7 +12,7 @@ pub(crate) struct PhysAddrResolver {
 
 impl PhysAddrResolver {
     pub(crate) fn new() -> io::Result<PhysAddrResolver> {
-        let pagemap_file = "/proc/self/pagemap";
+        let pagemap_file = format!("/proc/{}/pagemap",process::id());
         let pagemap = File::open(pagemap_file)?;
         let pagemap_fd = pagemap.as_raw_fd();
         Ok(PhysAddrResolver {

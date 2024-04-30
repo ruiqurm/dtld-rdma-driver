@@ -1,5 +1,5 @@
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io,
     mem::size_of,
     os::fd::AsRawFd,
@@ -7,6 +7,8 @@ use std::{
     slice::from_raw_parts_mut,
     sync::{Arc, Mutex},
 };
+
+use log::error;
 
 use crate::device::{
     constants::{
@@ -19,7 +21,7 @@ use crate::device::{
 };
 
 const RDMA_IOCTL_CMD: u64 = 0xc018_1b01;
-const CSR_LENGTH: usize = 0x0001_0000;
+const CSR_LENGTH: usize = 0x0010_0000;
 const CSR_WORD_LENGTH: usize = CSR_LENGTH / 4;
 
 #[repr(C)]
@@ -89,11 +91,14 @@ impl CsrClient {
     pub(crate) fn new<P: AsRef<Path>>(device_path: P) -> io::Result<Self> {
         let resp = RDMAGetUContextSyscallResp { data: 0 };
         let req = RDMAGetUContextSyscallReq::new_get_context(&resp);
-        let device_file = File::open(device_path)?;
-
+        let device_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(device_path)?;
+        let device_file_fd = device_file.as_raw_fd();
         let ret_val = unsafe {
             libc::ioctl(
-                device_file.as_raw_fd(),
+                device_file_fd,
                 RDMA_IOCTL_CMD,
                 std::ptr::addr_of!(req) as *mut u8,
             )
@@ -110,12 +115,13 @@ impl CsrClient {
                 CSR_LENGTH,
                 libc::PROT_WRITE,
                 libc::MAP_SHARED,
-                device_file.as_raw_fd(),
+                device_file_fd,
                 offset,
             )
         };
 
         if mapping == libc::MAP_FAILED {
+            error!("map failed\n");
             return Err(io::Error::last_os_error());
         }
 
