@@ -4,6 +4,10 @@
 #include <linux/pci_regs.h>
 #include "libxdma.h"
 
+#define XDMA_H2C_CTRL_OFFSET 0x4
+#define XDMA_C2H_CTRL_OFFSET 0x1004
+#define XDMA_START_DMA_ENGINE 0x1
+
 /*
  * xdma device management
  * maintains a list of the xdma devices
@@ -321,6 +325,11 @@ void *xdma_device_open(const char *mname, struct pci_dev *pdev)
         goto err_mask;
 
     xdma_device_flag_clear(xdev, XDEV_FLAG_OFFLINE);
+
+    // start XDMA engine
+    write_register(XDMA_START_DMA_ENGINE, xdev->bar[XDMA_CONFIG_BAR_IDX], XDMA_H2C_CTRL_OFFSET);
+    write_register(XDMA_START_DMA_ENGINE, xdev->bar[XDMA_CONFIG_BAR_IDX], XDMA_C2H_CTRL_OFFSET);
+
     return (void *)xdev;
 
 err_mask:
