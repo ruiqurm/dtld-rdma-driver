@@ -54,6 +54,7 @@ impl HugePage {
     /// # Errors
     ///
     pub fn new(size: usize) -> io::Result<Self> {
+        let size = align_up::<{ Self::HUGE_PAGE_SIZE }>(size);
         let buffer = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
@@ -64,8 +65,14 @@ impl HugePage {
                 0,
             )
         };
-        let size = align_up::<{ Self::HUGE_PAGE_SIZE }>(size);
         if buffer == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+
+        let ret = unsafe{
+            libc::mlock(buffer, size)
+        };
+        if ret != 0_i32 {
             return Err(io::Error::last_os_error());
         }
         Ok(HugePage {
