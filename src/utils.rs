@@ -17,14 +17,14 @@ use crate::{
 #[inline]
 #[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn get_first_packet_max_length(va: u64, pmtu: u32) -> u32 {
-    // The offset is smaller than pmtu,which is smaller than 4096 currently.
+    // The offset is smaller than pmtu, which is smaller than 4096 currently.
     #[allow(clippy::cast_possible_truncation)]
     let offset = (va.wrapping_rem(u64::from(pmtu))) as u32;
 
     pmtu - offset
 }
 
-#[allow(clippy::arithmetic_side_effects)] // total_len must be larger than first_pkt_len
+#[allow(clippy::arithmetic_side_effects)] // total_len must be greater or equal than first_pkt_len
 pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u32 {
     let first_pkt_max_len = get_first_packet_max_length(raddr, u32::from(&pmtu));
     let first_pkt_len = total_len.min(first_pkt_max_len);

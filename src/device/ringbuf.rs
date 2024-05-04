@@ -61,9 +61,11 @@ const fn _is_power_of_2(v: usize) -> bool {
 
 impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
-    const _PTR_GUARD_MASK: usize = DEPTH;
-    const PTR_IDX_MASK: usize = DEPTH - 1;
+{   
+    // We use the highest bit as the guard bit. See the method `is_full` for detail
+    const PTR_IDX_MASK: usize = DEPTH*2 - 1;
+    const PTR_IDX_GUARD_MASK: usize = DEPTH;
+    const PTR_IDX_VALID_MASK: usize = DEPTH - 1;
 
     const _IS_DEPTH_POWER_OF_2: () = assert!(_is_power_of_2(DEPTH), "invalid ringbuf depth");
     const _IS_ELEM_SIZE_POWER_OF_2: () = assert!(_is_power_of_2(ELEM_SIZE), "invalid element size");
@@ -93,21 +95,23 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
 
     #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn is_full(head: usize, tail: usize) -> bool {
-        // check if downflow
-        let diff = if head >= tail {
-            head - tail
-        } else {
-            DEPTH + head - tail
-        };
-        diff & Self::PTR_IDX_MASK == Self::PTR_IDX_MASK
+        // Since the highest bit stands for two times of the DEPTH in bineary, if the head and tail have different highest bit and the rest bits are the same, 
+        // it means the ringbuf is full. 
+        // In hardware we use like `(head.idx == tail.idx) && (head.guard != tail.guard)`
+        let head_guard = head & Self::PTR_IDX_GUARD_MASK;
+        let tail_guard = tail & Self::PTR_IDX_GUARD_MASK;
+        let head_low = head & Self::PTR_IDX_VALID_MASK;
+        let tail_low = tail & Self::PTR_IDX_VALID_MASK;
+        (head_guard != tail_guard) && (head_low == tail_low)
     }
 
     pub(crate) fn is_empty(head: usize, tail: usize) -> bool {
         head == tail
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn wrapping_add(cur: usize, cnt: usize) -> usize {
-        (cur.wrapping_add(cnt)) & Self::PTR_IDX_MASK
+        (cur + cnt) & Self::PTR_IDX_MASK
     }
 }
 
@@ -193,7 +197,7 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
     #[allow(clippy::arithmetic_side_effects)] // We add comments on every arithmetic operation
     fn next(&mut self) -> Option<Self::Item> {
         let idx = (*self.head + self.written_cnt) 
-            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
+            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
 
         // currently, we not allow the writer to overflow
         // Instead, we wait and polling.
@@ -246,7 +250,7 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
     #[allow(clippy::arithmetic_side_effects)]
     fn next(&mut self) -> Option<Self::Item> {
         let idx =
-            (*self.tail + self.read_cnt) & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK;
+            (*self.tail + self.read_cnt) & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK;
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(*self.head, idx) {
             loop {
                 let new_head = self.proxy.read_head();
@@ -282,11 +286,11 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
 {
     fn drop(&mut self) {
         *self.tail = Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(*self.tail, self.read_cnt);
-        let read_cnt = u32::try_from(self.read_cnt).unwrap_or_else(|_| {
+        let tail = u32::try_from(*self.tail).unwrap_or_else(|_| {
             log::error!("In read ringbuf, failed to convert from usize to u32");
             0
         });
-        if let Err(e) = self.proxy.write_tail(read_cnt) {
+        if let Err(e) = self.proxy.write_tail(tail) {
             log::error!("failed to write tail pointer: {:?}", e);
         }
     }
@@ -324,8 +328,11 @@ mod test {
         pub(crate) fn produce<const DEPTH: usize>(&self, cnt: usize) {
             // move the head to the tail
             let head = self.0.head.load(Ordering::Acquire);
-            let new_head = (head + cnt as u32) % DEPTH as u32;
-            self.0.head.store(new_head, Ordering::Release);
+            let tail = self.0.tail.load(Ordering::Acquire);
+            if head == tail { // push when empty
+                let new_head = (head + cnt as u32) % (DEPTH*2) as u32;
+                self.0.head.store(new_head, Ordering::Release);
+            }
         }
     }
     impl super::CsrWriterProxy for Proxy {
@@ -360,22 +367,22 @@ mod test {
         let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
         let mut writer = ringbuf.write().unwrap();
 
-        for i in 0..127 {
+        for i in 0..128 {
             let desc = writer.next().unwrap();
             desc.fill(i);
         }
         drop(writer);
-        assert!(proxy.0.head.load(Ordering::Relaxed) == 127);
+        assert!(proxy.0.head.load(Ordering::Relaxed) == 128);
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 0);
         sleep(std::time::Duration::from_millis(20));
-        assert!(proxy.0.head.load(Ordering::Relaxed) == 127);
-        assert!(proxy.0.tail.load(Ordering::Relaxed) == 127);
+        assert!(proxy.0.head.load(Ordering::Relaxed) == 128);
+        assert!(proxy.0.tail.load(Ordering::Relaxed) == 128);
         // test if blocking?
 
         let mut writer = ringbuf.write().unwrap();
-        for i in 0..=255 {
+        for i in 0..=256 {
             let desc = writer.next().unwrap();
-            desc.fill(i);
+            desc.fill(i as u8);
         }
         drop(writer);
     }
@@ -388,18 +395,17 @@ mod test {
         }));
         let thread_proxy = proxy.clone();
         let _ = spawn(move || loop {
-            thread_proxy.produce::<128>(50);
+            thread_proxy.produce::<128>(128);
             sleep(std::time::Duration::from_millis(10));
         });
         let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
         let mut reader = ringbuf.read().unwrap();
-
-        for _i in 0..50 {
+        sleep(std::time::Duration::from_millis(100));
+        for _i in 0..128 {
             let _desc = reader.next().unwrap();
         }
         drop(reader);
-        assert!(proxy.0.head.load(Ordering::Relaxed) == 50);
-        assert!(proxy.0.tail.load(Ordering::Relaxed) == 50);
+        assert!(proxy.0.tail.load(Ordering::Relaxed) == 128);
 
         let mut reader = ringbuf.read().unwrap();
 
@@ -411,7 +417,7 @@ mod test {
                 panic!("should not block at here");
             }
         });
-        for _i in 0..256 {
+        for _i in 0..130 {
             let _desc = reader.next().unwrap();
         }
         drop(reader);
