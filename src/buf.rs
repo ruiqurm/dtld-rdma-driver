@@ -1,0 +1,94 @@
+use std::{slice::from_raw_parts_mut, sync::atomic::{AtomicU16, Ordering}};
+
+use crate::types::{Key, Sge};
+
+pub(crate) const RDMA_ACK_BUFFER_SLOT_SIZE : usize = 64;
+pub(crate) const NIC_PACKET_BUFFER_SLOT_SIZE: usize = 4096;
+
+pub(crate) struct Slot<const SLOT_SIZE: usize>(*mut u8,Key);
+
+impl<const SLOT_SIZE: usize> Slot<SLOT_SIZE> {
+    pub(crate) fn as_mut_slice(&mut self) -> &'static mut [u8] {
+        unsafe { from_raw_parts_mut(self.0, SLOT_SIZE) }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    pub(crate) fn into_sge(self) -> Sge {
+        Sge{
+            addr: self.0 as u64,
+            len: SLOT_SIZE as u32, // safe to cast here
+            key: self.1
+        }
+    }
+}
+
+
+/// A structure to hold the acknowledge and basic nic packet buffer
+///
+/// The element is `Option<Slot>` because the `Queue` need to initialize some nodes as Sentinel
+/// while the reference can not be initialized as `None`.
+#[derive(Debug)]
+pub(crate) struct PacketBuf<const SLOT_SIZE: usize>{
+    head: AtomicU16,
+    start_va: usize,
+    index_mask: u16,
+    lkey: Key,
+}
+
+impl<const SLOT_SIZE: usize> PacketBuf<SLOT_SIZE> {
+    /// Create a new acknowledge buffer
+    #[allow(clippy::arithmetic_side_effects,clippy::cast_possible_truncation)]
+    pub(crate) fn new(start_va: usize, length: usize, lkey: Key) -> Self {
+        assert!(
+            length % SLOT_SIZE == 0,
+            "The length should be multiple of 64"
+        );
+        let index_mask = (length / SLOT_SIZE - 1) as u16;
+        Self{
+            head : AtomicU16::default(),
+            start_va,
+            lkey,
+            index_mask
+        }
+    }
+
+    #[allow(clippy::arithmetic_side_effects,clippy::cast_possible_truncation)]
+    pub(crate) fn recycle_buf(&self) -> Slot<SLOT_SIZE> {
+        let mut prev = self.head.load(Ordering::Relaxed);
+        loop {
+            let next = prev.wrapping_add(1) & self.index_mask;
+            match self.head.compare_exchange_weak(prev, next, Ordering::SeqCst, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(x) => prev = x,
+            }
+        }
+        Slot((self.start_va + prev as usize * SLOT_SIZE) as *mut u8,self.lkey)
+    }
+    
+    pub(crate) fn get_register_params(&self) -> (usize,Key) {
+        (self.start_va,self.lkey)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::Key;
+
+    use super::{RDMA_ACK_BUFFER_SLOT_SIZE,PacketBuf};
+
+    #[test]
+    fn test_buffer() {
+        let mem = Box::leak(Box::new(
+            [0u8; 1024 * RDMA_ACK_BUFFER_SLOT_SIZE],
+        ));
+        let base_va = mem.as_ptr() as usize;
+        let buffer : PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE> = PacketBuf::new(base_va, 1024 * 64, Key::new(0x1000));
+        for i in 0..2048 {
+            let slot = buffer.recycle_buf();
+            assert_eq!(
+                slot.0 as usize,
+                mem.as_ptr() as usize + (i % 1024) * RDMA_ACK_BUFFER_SLOT_SIZE
+            );
+        }
+    }
+}

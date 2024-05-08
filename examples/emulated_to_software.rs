@@ -162,7 +162,7 @@ fn create_and_init_software_card<'a>(
 const SEND_CNT: usize = 1024 * 12;
 
 fn main() {
-    init_logging().unwrap();
+    init_logging("log.txt").unwrap();
 
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();

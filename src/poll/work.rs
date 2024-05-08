@@ -6,16 +6,9 @@ use std::{
 };
 
 use crate::{
-    device::{
-        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack,
-        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp,
-        ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
-    },
-    op_ctx::WriteOpCtx,
-    qp::QpContext,
-    responser::{RespCommand, RespReadRespCommand},
-    types::{Msn, Qpn},
-    Error, RecvPktMap,
+    buf::PacketBuf, device::{
+        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm
+    }, op_ctx::WriteOpCtx, qp::QpContext, responser::{RespCommand, RespReadRespCommand}, types::{Msn, Qpn}, Error, RecvPktMap
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -31,6 +24,8 @@ pub(crate) struct WorkDescPollerContext {
     pub(crate) qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     pub(crate) sending_queue: std::sync::mpsc::Sender<RespCommand>,
     pub(crate) write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
+    pub(crate) recv_buf: PacketBuf<4096>,
+
 }
 
 unsafe impl Send for WorkDescPollerContext {}
@@ -69,6 +64,7 @@ impl WorkDescPollerContext {
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
                 ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(&desc),
                 ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
+                ToHostWorkRbDesc::Raw(desc) => {ctx.handle_work_desc_raw(&desc);Ok(())}
             };
             if let Err(reason) = result {
                 error!("poll_work_rb stopped: {}", reason);
@@ -183,6 +179,12 @@ impl WorkDescPollerContext {
     fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> Result<(), Error> {
         panic!("receive a nack");
     }
+
+    fn handle_work_desc_raw(&self,desc:&ToHostWorkRbDescRaw) {
+        let mut slot = self.recv_buf.recycle_buf();
+        let buf = slot.as_mut_slice();
+        log::info!("receive a raw desc: {:?}", buf.get(0..desc.len as usize));
+    }
 }
 
 impl Drop for WorkDescPoller {
@@ -208,16 +210,11 @@ mod tests {
     use eui48::MacAddress;
 
     use crate::{
-        device::{
+        buf::PacketBuf, device::{
             DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
             ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
             ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-        },
-        op_ctx::WriteOpCtx,
-        qp::QpContext,
-        responser::RespCommand,
-        types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn},
-        Pd,
+        }, op_ctx::WriteOpCtx, qp::QpContext, responser::RespCommand, types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn}, Pd
     };
 
     use super::WorkDescPoller;
@@ -347,6 +344,7 @@ mod tests {
         let write_op_ctx_map = Arc::new(RwLock::new(HashMap::new()));
         let key = Msn::default();
         let ctx = WriteOpCtx::new_running();
+        let recv_buf = PacketBuf::new(0, 4096, Key::default());
         write_op_ctx_map.write().unwrap().insert(key, ctx.clone());
         let work_ctx = super::WorkDescPollerContext {
             work_rb,
@@ -354,6 +352,7 @@ mod tests {
             qp_table,
             sending_queue,
             write_op_ctx_map,
+            recv_buf
         };
         let _poller = WorkDescPoller::new(work_ctx);
         let _ = ctx.wait();

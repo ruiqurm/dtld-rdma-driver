@@ -53,6 +53,7 @@ pub(crate) enum ToHostWorkRbDesc {
     WriteWithImm(ToHostWorkRbDescWriteWithImm),
     Ack(ToHostWorkRbDescAck),
     Nack(ToHostWorkRbDescNack),
+    Raw(ToHostWorkRbDescRaw),
 }
 
 impl ToHostWorkRbDesc {
@@ -63,6 +64,7 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDesc::WriteWithImm(desc) => &desc.common.status,
             ToHostWorkRbDesc::Ack(desc) => &desc.common.status,
             ToHostWorkRbDesc::Nack(desc) => &desc.common.status,
+            ToHostWorkRbDesc::Raw(desc) => &desc.common.status,
         }
     }
 }
@@ -164,6 +166,24 @@ pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) msn: Msn,
 }
 
+impl Default for ToCardWorkRbDescCommon {
+    fn default() -> Self {
+        Self {
+            total_len: 0,
+            raddr: 0,
+            rkey: Key::default(),
+            dqp_ip: Ipv4Addr::new(0, 0, 0, 0),
+            dqpn: Qpn::default(),
+            mac_addr: MacAddress::default(),
+            pmtu: Pmtu::Mtu256,
+            flags: MemAccessTypeFlag::empty(),
+            qp_type: QpType::Rc,
+            psn: Psn::default(),
+            msn: Msn::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescRead {
     pub(crate) common: ToCardWorkRbDescCommon,
@@ -240,22 +260,33 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) key: Key,
 }
 
-#[allow(unused)]
 #[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
+    #[allow(unused)]
     pub(crate) value: u8,
+    #[allow(unused)]
     pub(crate) psn: Psn,
 }
 
-#[allow(unused)]
 #[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) common: ToHostWorkRbDescCommon,
+    #[allow(unused)]
     pub(crate) msn: Msn,
+    #[allow(unused)]
     pub(crate) value: u8,
+    #[allow(unused)]
     pub(crate) lost_psn: Range<Psn>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ToHostWorkRbDescRaw {
+    pub(crate) common: ToHostWorkRbDescCommon,
+    pub(crate) addr: u64,
+    pub(crate) len: u32,
+    pub(crate) key: Key,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -291,6 +322,7 @@ pub(crate) enum ToHostWorkRbDescTransType {
     Ud = 0x03,
     Cnp = 0x04,
     Xrc = 0x05,
+    DtldExtended = 0x06, // Customize for normal packet.
 }
 
 #[derive(Debug)]
@@ -917,13 +949,19 @@ impl ToHostWorkRbDesc {
         let value = frag_aeth.get_aeth_value() as u8;
         let code = frag_aeth.get_aeth_code() as u8;
         let code = ToHostWorkRbDescAethCode::try_from(code).map_err(|_| {
-            DeviceError::ParseDesc(format!("CtrlRbDescOpcode = {code} can not be parsed"))
+            DeviceError::ParseDesc(format!(
+                "ToHostWorkRbDescAethCode = {code} can not be parsed"
+            ))
         })?;
 
         Ok((psn, msg_seq_number, value, code))
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::indexing_slicing,clippy::too_many_lines)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::indexing_slicing,
+        clippy::too_many_lines
+    )]
     pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
@@ -937,12 +975,13 @@ impl ToHostWorkRbDesc {
 
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
-        let status = ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).map_err(
-            |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
-                "CtrlRbDescOpcode = {} can not be parsed",
-                desc_bth.get_req_status()
-            ))),
-        )?;
+        let status =
+            ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).map_err(|_| {
+                ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                    "ToHostWorkRbDescStatus = {} can not be parsed",
+                    desc_bth.get_req_status()
+                )))
+            })?;
 
         // typedef struct {
         //     ReservedZero#(4)                reserved1;    // 4
@@ -956,19 +995,20 @@ impl ToHostWorkRbDesc {
         // } MeatReportQueueDescFragBTH deriving(Bits, FShow);
 
         let desc_frag_bth = MeatReportQueueDescFragBTH(&src[4..12]);
-        let trans =
-            ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8).map_err(
-                |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+        let trans = ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8)
+            .map_err(|_| {
+                ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
                     "ToHostWorkRbDescTransType = {} can not be parsed",
                     desc_frag_bth.get_trans_type()
-                ))),
-            )?;
-        let opcode = ToHostWorkRbDescOpcode::try_from(desc_frag_bth.get_opcode() as u8).map_err(
-            |_|ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
-                "ToHostWorkRbDescOpcode = {} can not be parsed",
-                desc_frag_bth.get_opcode()
-            ))),
-        )?;
+                )))
+            })?;
+        let opcode =
+            ToHostWorkRbDescOpcode::try_from(desc_frag_bth.get_opcode() as u8).map_err(|_| {
+                ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                    "ToHostWorkRbDescOpcode = {} can not be parsed",
+                    desc_frag_bth.get_opcode()
+                )))
+            })?;
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
         let pad_cnt = desc_frag_bth.get_pad_cnt() as u8;
@@ -1014,19 +1054,32 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate
             | ToHostWorkRbDescOpcode::RdmaWriteOnlyWithImmediate => {
                 let (addr, key, len) = Self::read_reth(src);
-                let imm = Self::read_imm(src);
-
-                Ok(ToHostWorkRbDesc::WriteWithImm(
-                    ToHostWorkRbDescWriteWithImm {
-                        common,
-                        write_type,
-                        psn,
-                        imm,
-                        addr,
-                        len,
-                        key,
-                    },
-                ))
+                if matches!(common.trans, ToHostWorkRbDescTransType::DtldExtended) {
+                    Err(ToHostWorkRbDescError::Incomplete(
+                        IncompleteToHostWorkRbDesc {
+                            parsed: ToHostWorkRbDesc::Raw(ToHostWorkRbDescRaw {
+                                common,
+                                addr,
+                                len,
+                                key,
+                            }),
+                            parsed_cnt: 1,
+                        },
+                    ))
+                } else {
+                    let imm = Self::read_imm(src);
+                    Ok(ToHostWorkRbDesc::WriteWithImm(
+                        ToHostWorkRbDescWriteWithImm {
+                            common,
+                            write_type,
+                            psn,
+                            imm,
+                            addr,
+                            len,
+                            key,
+                        },
+                    ))
+                }
             }
             ToHostWorkRbDescOpcode::RdmaReadRequest => {
                 let (addr, key, len) = Self::read_reth(src);
@@ -1046,7 +1099,8 @@ impl ToHostWorkRbDesc {
                 ))
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn_in_ack, value, code) = Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
+                let (last_psn, msn_in_ack, value, code) =
+                    Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
 
                 match code {
                     ToHostWorkRbDescAethCode::Ack => {
@@ -1071,17 +1125,6 @@ impl ToHostWorkRbDesc {
             }
         }
     }
-
-    #[allow(unused)]
-    pub(super) fn serialized_desc_cnt(&self) -> usize {
-        match self {
-            ToHostWorkRbDesc::Read(_) => 2,
-            ToHostWorkRbDesc::WriteOrReadResp(_)
-            | ToHostWorkRbDesc::WriteWithImm(_)
-            | ToHostWorkRbDesc::Nack(_)
-            | ToHostWorkRbDesc::Ack(_) => 1,
-        }
-    }
 }
 
 impl IncompleteToHostWorkRbDesc {
@@ -1100,15 +1143,13 @@ impl IncompleteToHostWorkRbDesc {
         }
 
         match self.parsed {
-            ToHostWorkRbDesc::Read(mut desc) => match self.parsed_cnt {
-                1 => {
-                    let (raddr, rkey) = read_second_reth(src);
-                    desc.raddr = raddr;
-                    desc.rkey = rkey;
-                    Ok(ToHostWorkRbDesc::Read(desc))
-                }
-                _ => unreachable!(),
-            },
+            ToHostWorkRbDesc::Read(mut desc) => {
+                let (raddr, rkey) = read_second_reth(src);
+                desc.raddr = raddr;
+                desc.rkey = rkey;
+                Ok(ToHostWorkRbDesc::Read(desc))
+            }
+            ToHostWorkRbDesc::Raw(desc) => Ok(ToHostWorkRbDesc::Raw(desc)), // ignore the redundant imm
             ToHostWorkRbDesc::WriteOrReadResp(_)
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
@@ -1131,6 +1172,15 @@ impl ToCardWorkRbDescBuilder {
             common: None,
             seg_list: Vec::new(),
             imm: None,
+        }
+    }
+
+    pub(crate) fn new_write_raw() -> Self {
+        Self {
+            type_: ToCardWorkRbDescOpcode::WriteWithImm,
+            common: None,
+            seg_list: Vec::new(),
+            imm: Some(0),
         }
     }
 

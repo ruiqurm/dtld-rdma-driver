@@ -1,17 +1,13 @@
 use std::collections::HashMap;
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
-use std::thread::sleep;
-use std::time::Duration;
-use std::{net::Ipv4Addr, slice::from_raw_parts_mut, sync::Arc, thread::spawn};
+use std::{net::Ipv4Addr, sync::Arc, thread::spawn};
 
-use lockfree::queue::Queue;
-use log::error;
-
+use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
 use crate::device::descriptor::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
+use log::error;
 
 use crate::device::{
     ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
@@ -75,15 +71,23 @@ impl DescResponser {
     pub(crate) fn new(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
-        ack_buffers: Arc<AcknowledgeBuffer>,
+        ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     ) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
-        let thread = spawn(move|| Self::working_thread(device, recving_queue, &ack_buffers, &qp_table,&thread_stop_flag));
+        let thread = spawn(move || {
+            Self::working_thread(
+                device,
+                recving_queue,
+                &ack_buffers,
+                &qp_table,
+                &thread_stop_flag,
+            );
+        });
         Self {
-            thread : Some(thread),
-            stop_flag
+            thread: Some(thread),
+            stop_flag,
         }
     }
 
@@ -154,7 +158,7 @@ impl DescResponser {
     fn working_thread(
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: std::sync::mpsc::Receiver<RespCommand>,
-        ack_buffers: &AcknowledgeBuffer,
+        ack_buffers: &PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
         qp_table: &RwLock<HashMap<Qpn, QpContext>>,
         stop_flag: &AtomicBool,
     ) {
@@ -163,13 +167,7 @@ impl DescResponser {
             let desc = match recving_queue.recv() {
                 Ok(RespCommand::Acknowledge(ack)) => {
                     // send ack to device
-                    let mut ack_buf = loop {
-                        let buf = ack_buffers.alloc();
-                        match buf {
-                            Some(buf) => break buf,
-                            None => sleep(Duration::from_millis(1)),
-                        }
-                    };
+                    let mut ack_buf = ack_buffers.recycle_buf();
                     // if we can not read qp_table here
                     #[allow(clippy::unwrap_used)]
                     let (src_ip, dst_ip, common) = {
@@ -198,7 +196,7 @@ impl DescResponser {
                         last_retry_psn,
                     );
                     #[allow(clippy::cast_possible_truncation)]
-                    let sge = ack_buffers.convert_buf_into_sge(&ack_buf, ACKPACKET_SIZE as u32);
+                    let sge = ack_buf.into_sge();
                     ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)
                         .with_sge(sge)
@@ -246,106 +244,10 @@ impl DescResponser {
 impl Drop for DescResponser {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) =  self.thread.take(){
-            if let Err(e) = thread.join(){
+        if let Some(thread) = self.thread.take() {
+            if let Err(e) = thread.join() {
                 error!("Failed to join the responser thread: {:?}", e);
             }
-        }
-    }
-}
-
-pub(crate) struct Slot {
-    buf: NonNull<u8>,
-    allocator: Arc<AcknowledgeBuffer>,
-}
-
-// We won't use the slot in multiple threads, so it is safe to implement Send and Sync
-unsafe impl Send for Slot {}
-unsafe impl Sync for Slot {}
-
-impl Slot {
-    pub(crate) fn new(buf: *mut u8, allocator: Arc<AcknowledgeBuffer>) -> Self {
-        let buf = unsafe { NonNull::new_unchecked(buf) };
-        Self { buf, allocator }
-    }
-
-    pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe {
-            from_raw_parts_mut(
-                self.buf.as_ptr(),
-                AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE,
-            )
-        }
-    }
-}
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        // check if the buffer is within the range
-        let start = self.allocator.start_va as *mut u8;
-        let end = start.wrapping_add(self.allocator.length);
-        let buf_start = self.buf.as_ptr();
-        let buf_end = buf_start.wrapping_add(AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
-        assert!(
-            buf_start >= start && buf_end <= end,
-            "The buffer is out of range"
-        );
-        self.allocator.free_list.push(Some(Slot {
-            buf: self.buf,
-            allocator: Arc::<AcknowledgeBuffer>::clone(&self.allocator),
-        }));
-    }
-}
-
-/// A structure to hold the acknowledge buffer
-///
-/// The element is `Option<Slot>` because the `Queue` need to initialize some nodes as Sentinel
-/// while the reference can not be initialized as `None`.
-pub(crate) struct AcknowledgeBuffer {
-    free_list: Queue<Option<Slot>>,
-    start_va: usize,
-    length: usize,
-    lkey: Key,
-}
-
-impl AcknowledgeBuffer {
-    pub(crate) const ACKNOWLEDGE_BUFFER_SLOT_SIZE: usize = 64;
-    /// Create a new acknowledge buffer
-    pub(crate) fn new(start_va: usize, length: usize, lkey: Key) -> Arc<Self> {
-        assert!(
-            length % Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE == 0,
-            "The length should be multiple of 64"
-        );
-        let free_list = Queue::new();
-        let mut va = start_va;
-        let slots: usize = length / Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
-        let this = Arc::new(Self {
-            free_list,
-            start_va,
-            length,
-            lkey,
-        });
-        for _ in 0..slots {
-            this.free_list
-                .push(Some(Slot::new(va as *mut u8, Arc::<Self>::clone(&this))));
-            va = va.wrapping_add(Self::ACKNOWLEDGE_BUFFER_SLOT_SIZE);
-        }
-        this
-    }
-
-    pub(crate) fn alloc(&self) -> Option<Slot> {
-        let result = self.free_list.pop();
-        match result {
-            Some(Some(buf)) => Some(buf),
-            Some(None) | None => None,
-        }
-    }
-
-    pub(crate) fn convert_buf_into_sge(&self, buf: &Slot, real_length: u32) -> Sge {
-        Sge {
-            addr: buf.buf.as_ptr() as u64,
-            len: real_length,
-            key: self.lkey,
         }
     }
 }
@@ -530,6 +432,7 @@ mod tests {
     use eui48::MacAddress;
 
     use crate::{
+        buf::PacketBuf,
         device::{ToCardWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
         qp::QpContext,
         responser::{calculate_ipv4_checksum, ACKPACKET_SIZE},
@@ -591,14 +494,13 @@ mod tests {
         assert_eq!(checksum, expected_checksum);
     }
 
-    const BUFFER_SIZE: usize = 1024 * super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE;
+    const BUFFER_SIZE: usize = 1024 * super::RDMA_ACK_BUFFER_SLOT_SIZE;
     #[test]
     fn test_desc_responser() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let buffer = Box::new([0u8; BUFFER_SIZE]);
         let buffer = Box::leak(buffer);
-        let ack_buffers =
-            super::AcknowledgeBuffer::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
+        let ack_buffers = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
         struct Dummy(Mutex<Vec<ToCardWorkRbDesc>>);
         impl super::WorkDescriptorSender for Dummy {
             fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), crate::Error> {
@@ -744,32 +646,5 @@ mod tests {
                 panic!("Unexpected desc type");
             }
         }
-    }
-
-    #[test]
-    fn test_acknowledge_buffer() {
-        let mem = Box::leak(Box::new(
-            [0u8; 1024 * super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE],
-        ));
-        let base_va = mem.as_ptr() as usize;
-        let buffer = super::AcknowledgeBuffer::new(base_va, 1024 * 64, Key::new(0x1000));
-        for i in 0..1024 {
-            let slot = buffer.alloc().unwrap();
-            assert_eq!(
-                slot.buf.as_ptr() as usize,
-                mem.as_ptr() as usize + i * super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE
-            );
-            let _sge = buffer.convert_buf_into_sge(
-                &slot,
-                super::AcknowledgeBuffer::ACKNOWLEDGE_BUFFER_SLOT_SIZE
-                    .try_into()
-                    .unwrap(),
-            );
-        }
-        // // Now the buffer is full, it recycles the buffer
-        // for i in 0..1024 {
-        //     let slot = buffer.alloc().unwrap();
-        //     assert_eq!(slot.buf.as_ptr() as usize, mem.as_ptr() as usize + i * 64);
-        // }
     }
 }

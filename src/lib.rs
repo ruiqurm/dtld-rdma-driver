@@ -146,9 +146,11 @@ use crate::{
     mr::{MrCtx, MrPgt},
     pd::PdCtx,
 };
+use buf::PacketBuf;
 use device::{
-    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
+    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
+use eui48::MacAddress;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::PacketChecker;
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -158,14 +160,14 @@ use responser::DescResponser;
 
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
     },
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
+use types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn, RdmaDeviceNetworkParam, Sge};
 use utils::calculate_packet_cnt;
 
 /// memory region
@@ -189,6 +191,8 @@ mod poll;
 mod recv_pkt_map;
 /// responser thread: sending the response(read resp or ack) to the device
 mod responser;
+/// A simple buffer allocator
+mod buf;
 /// utility functions
 mod utils;
 
@@ -225,6 +229,7 @@ struct DeviceInner<D: ?Sized> {
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
+    nic_send_buf : OnceLock<PacketBuf<4096>>,
     adaptor: D,
 }
 
@@ -253,6 +258,7 @@ impl Device {
             pkt_checker_thread: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
+            nic_send_buf : OnceLock::new(),
             local_network : *network,
         });
 
@@ -283,6 +289,7 @@ impl Device {
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
+            nic_send_buf : OnceLock::new(),
             local_network : *network,
             adaptor,
         });
@@ -326,6 +333,7 @@ impl Device {
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
+            nic_send_buf : OnceLock::new(),
             local_network : *network,
             adaptor,
         });
@@ -460,6 +468,28 @@ impl Device {
         Ok(ctx)
     }
 
+    /// dev version of write a raw packet
+    /// 
+    /// # Panics
+    /// FIXME: We will remove the unwrap later
+    /// 
+    /// # Errors
+    #[allow(clippy::unwrap_in_result,clippy::unwrap_used,clippy::indexing_slicing,clippy::cast_possible_truncation)]
+    pub fn write_raw(&self,ip_addr : Ipv4Addr, mac_addr: MacAddress,packet : &[u8]) -> Result<(),Error>{
+        let send_buf = self.0.nic_send_buf.get().unwrap();
+        let mut slot = send_buf.recycle_buf();
+        let buf = slot.as_mut_slice();
+        buf[0..packet.len()].copy_from_slice(packet);
+        let sge = slot.into_sge();
+        let common = ToCardWorkRbDescCommon { qp_type: QpType::RawPacket, total_len: packet.len() as u32, dqp_ip:ip_addr,mac_addr, ..Default::default() };
+        let desc = ToCardWorkRbDescBuilder::new_write_raw()
+            .with_common(common)
+            .with_sge(sge)
+            .build()?;
+        self.send_work_desc(desc)?;
+        Ok(())
+    }
+
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
@@ -512,6 +542,7 @@ impl Device {
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
+        let recv_buf = self.set_nic_raw()?;
 
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
@@ -520,6 +551,7 @@ impl Device {
             qp_table : Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
             sending_queue : send_queue.clone(),
             write_op_ctx_map : Arc::<RwLock<HashMap<Msn, WriteOpCtx>>>::clone(&self.0.write_op_ctx_map),
+            recv_buf
         };
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
@@ -536,6 +568,26 @@ impl Device {
         self.set_network(&self.0.local_network)?;
 
         Ok(())
+    }
+
+    #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]
+    fn set_nic_raw(&self) -> Result<PacketBuf<4096>, Error> {
+        // configure basic nic recv buffer
+        let op_id = self.get_ctrl_op_id();
+        let (send_buf,recv_buf) = self.init_nic_buf()?;
+        let () = self.0.nic_send_buf.set(send_buf).unwrap();
+        let (start_va,lkey) = recv_buf.get_register_params();
+        let set_raw_desc = ToCardCtrlRbDesc::SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta {
+            common: ToCardCtrlRbDescCommon { op_id },
+            base_write_addr : start_va as u64,
+            key: lkey,
+        });
+        let set_raw_ctx = self.do_ctrl_op(op_id, set_raw_desc)?;
+        let is_set_raw_success = set_raw_ctx.wait_result()?.ok_or_else(||Error::SetCtxResultFailed)?;
+        if !is_set_raw_success {
+            return Err(Error::DeviceReturnFailed("Network param"));
+        };
+        Ok(recv_buf)
     }
 
     fn set_network(&self, network: &RdmaDeviceNetworkParam) -> Result<(), Error> {

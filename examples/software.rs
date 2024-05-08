@@ -58,7 +58,7 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 fn main() {
-    init_logging().unwrap();
+    init_logging("log.txt").unwrap();
     let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 0, 0, 0))
