@@ -307,4 +307,36 @@ mod tests {
         sleep(Duration::from_millis(10));
         assert!(recv_queue.try_recv().is_ok());
     }
+
+    #[test]
+    fn test_packet_checker_error() {
+        // The only error case is the send queue is broken.
+        let (send_queue, recv_queue) = unbounded();
+        let recv_pkt_map = Arc::new(RwLock::new(HashMap::<Msn, Arc<RecvPktMap>>::new()));
+        let read_op_ctx_map = Arc::new(RwLock::new(HashMap::<Msn, ReadOpCtx>::new()));
+        let mut packet_checker = PacketChecker::new(
+            send_queue,
+            Arc::<RwLock<HashMap<Msn, Arc<RecvPktMap>>>>::clone(&recv_pkt_map),
+            Arc::<RwLock<HashMap<Msn, ReadOpCtx>>>::clone(&read_op_ctx_map),
+        );
+
+        // drop receiver here
+        drop(recv_queue);
+
+        let key = Msn::new(1);
+        recv_pkt_map.write().insert(
+            key,
+            RecvPktMap::new(false, 1, Psn::new(1), Qpn::new(3)).into(),
+        );
+        recv_pkt_map
+            .write()
+            .get(&key)
+            .unwrap()
+            .insert(Psn::new(1));
+        sleep(Duration::from_millis(1));
+        
+        // we expect that the thread is stopped
+        let thread = packet_checker.thread.take().unwrap();
+        assert!(thread.is_finished());
+    }
 }
