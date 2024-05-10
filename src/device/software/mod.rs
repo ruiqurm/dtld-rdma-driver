@@ -119,7 +119,7 @@ impl Drop for SoftwareDevice {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.polling_thread.take() {
             if let Err(e) = thread.join() {
-                log::error!("Failed to join the polling thread: {:?}", e);
+                panic!("{}", format!("SoftwareDevice thread join failed: {e:?}"));
             }
         }
     }

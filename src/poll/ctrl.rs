@@ -1,13 +1,9 @@
-use parking_lot::RwLock;
-use std::{
-    collections::HashMap,
-    sync::{
+use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
-};
+    };
 
-use log::error;
+use log::{error,info};
 
 use crate::{
     device::{
@@ -15,7 +11,7 @@ use crate::{
         ToHostCtrlRbDescSetRawPacketReceiveMeta, ToHostCtrlRbDescUpdateMrTable,
         ToHostCtrlRbDescUpdatePageTable, ToHostRb,
     },
-    op_ctx::CtrlOpCtx,
+    op_ctx::CtrlOpCtx, ThreadSafeHashmap,
 };
 
 #[derive(Debug)]
@@ -26,7 +22,7 @@ pub(crate) struct ControlPoller {
 
 pub(crate) struct ControlPollerContext {
     pub(crate) to_host_ctrl_rb: Arc<dyn ToHostRb<ToHostCtrlRbDesc>>,
-    pub(crate) ctrl_op_ctx_map: Arc<RwLock<HashMap<u32, CtrlOpCtx>>>,
+    pub(crate) ctrl_op_ctx_map: ThreadSafeHashmap<u32, CtrlOpCtx>,
 }
 
 unsafe impl Send for ControlPollerContext {}
@@ -145,8 +141,9 @@ impl Drop for ControlPoller {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             if let Err(e) = thread.join() {
-                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+                panic!("{}", format!("ControlPoller thread join failed: {e:?}"));
             }
+            info!("ControlPoller thread is normally stopped");
         }
     }
 }

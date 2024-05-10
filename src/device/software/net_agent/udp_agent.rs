@@ -139,7 +139,7 @@ impl Drop for UDPReceiveAgent {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) =  self.listen_thread.take(){
             if let Err(e) = thread.join(){
-                error!("Failed to join the udp listen agent thread: {:?}", e);
+                panic!("{}", format!("UDPReceiveAgent thread join failed: {e:?}"));
             }
         }
     }

@@ -113,7 +113,7 @@ impl Drop for DescriptorScheduler {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) =  self.thread_handler.take(){
             if let Err(e) = thread.join(){
-                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+                panic!("{}", format!("DescriptorScheduler thread join failed: {e:?}"));
             }
         }
     }

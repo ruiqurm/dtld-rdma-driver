@@ -153,10 +153,9 @@ use device::{
 use flume::unbounded;
 use nic::BasicNicDeivce;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
-use pkt_checker::PacketChecker;
+use pkt_checker::{PacketChecker, RecvPktMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
-use recv_pkt_map::RecvPktMap;
 use responser::DescResponser;
 
 use std::{
@@ -189,8 +188,6 @@ mod device;
 mod pkt_checker;
 /// poll thread: polling the work descriptor and control descriptor
 mod poll;
-/// receive packet map: a map struct to count the received packets
-mod recv_pkt_map;
 /// responser thread: sending the response(read resp or ack) to the device
 mod responser;
 /// A simple buffer allocator
@@ -209,6 +206,8 @@ const MR_TABLE_SIZE: usize = 64;
 const MR_PGT_SIZE: usize = 1024;
 const DEFAULT_RMDA_PORT : u16 = 4791;
 
+type ThreadSafeHashmap<K,V> = Arc<RwLock<HashMap<K,V>>>;
+
 /// A user space RDMA device.
 /// 
 /// The device provides a general interface, like `write`, `read`, `register_mr/qp/pd`, etc.
@@ -221,11 +220,11 @@ pub struct Device(Arc<DeviceInner<dyn DeviceAdaptor>>);
 struct DeviceInner<D: ?Sized> {
     pd: Mutex<HashMap<Pd, PdCtx>>,
     mr_table: Mutex<[Option<MrCtx>; MR_TABLE_SIZE]>,
-    qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+    qp_table: ThreadSafeHashmap<Qpn, QpContext>,
     mr_pgt: Mutex<MrPgt>,
-    read_op_ctx_map: Arc<RwLock<HashMap<Msn, ReadOpCtx>>>,
-    write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
-    ctrl_op_ctx_map: Arc<RwLock<HashMap<u32, CtrlOpCtx>>>,
+    read_op_ctx_map: ThreadSafeHashmap<Msn, ReadOpCtx>,
+    write_op_ctx_map: ThreadSafeHashmap<Msn, WriteOpCtx>,
+    ctrl_op_ctx_map: ThreadSafeHashmap<u32, CtrlOpCtx>,
     next_ctrl_op_id: AtomicU32,
     next_msn: AtomicU16,
     responser: OnceLock<DescResponser>,
@@ -533,7 +532,7 @@ impl Device {
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
             work_rb : self.0.adaptor.to_host_work_rb(),
-            recv_pkt_map : Arc::<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>::clone(&recv_pkt_map),
+            recv_pkt_map : Arc::<RwLock<HashMap<Msn, Arc<RecvPktMap>>>>::clone(&recv_pkt_map),
             qp_table : Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
             sending_queue : send_queue.clone(),
             write_op_ctx_map : Arc::<RwLock<HashMap<Msn, WriteOpCtx>>>::clone(&self.0.write_op_ctx_map),

@@ -1,13 +1,10 @@
 use core::panic;
 use flume::Sender;
-use log::{debug, error};
-use std::{
-    collections::HashMap,
-    sync::{
+use log::{debug, error,info};
+use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
-};
+    };
 
 use crate::{
     buf::Slot,
@@ -21,9 +18,8 @@ use crate::{
     qp::QpContext,
     responser::{RespCommand, RespReadRespCommand},
     types::{Msn, Qpn},
-    Error, RecvPktMap,
+    Error, RecvPktMap, ThreadSafeHashmap,
 };
-use parking_lot::{Mutex, RwLock};
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
@@ -34,10 +30,10 @@ pub(crate) struct WorkDescPoller {
 
 pub(crate) struct WorkDescPollerContext {
     pub(crate) work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-    pub(crate) recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
-    pub(crate) qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+    pub(crate) recv_pkt_map: ThreadSafeHashmap<Msn, Arc<RecvPktMap>>,
+    pub(crate) qp_table: ThreadSafeHashmap<Qpn, QpContext>,
     pub(crate) sending_queue: Sender<RespCommand>,
-    pub(crate) write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
+    pub(crate) write_op_ctx_map: ThreadSafeHashmap<Msn, WriteOpCtx>,
     pub(crate) nic_notification_queue: Sender<NicRecvNotification>,
 }
 
@@ -63,7 +59,7 @@ impl WorkDescPollerContext {
             let desc = match ctx.work_rb.pop() {
                 Ok(desc) => desc,
                 Err(e) => {
-                    error!("failed to fetch descriptor from work rb : {:?}", e);
+                    error!("WorkDescPoller is stopped due to : {:?}", e);
                     return;
                 }
             };
@@ -132,7 +128,7 @@ impl WorkDescPollerContext {
             #[allow(clippy::arithmetic_side_effects)]
             // real_payload_len must be greater than first_pkt_len
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
-            let mut pkt_map = RecvPktMap::new(
+            let pkt_map = RecvPktMap::new(
                 desc.is_read_resp,
                 pkt_cnt as usize,
                 desc.psn,
@@ -141,7 +137,7 @@ impl WorkDescPollerContext {
             pkt_map.insert(desc.psn);
             let mut recv_pkt_map_guard = self.recv_pkt_map.write();
             if recv_pkt_map_guard
-                .insert(msn, Mutex::new(pkt_map).into())
+                .insert(msn, pkt_map.into())
                 .is_some()
             {
                 error!(
@@ -152,7 +148,6 @@ impl WorkDescPollerContext {
         } else {
             let guard = self.recv_pkt_map.read();
             if let Some(recv_pkt_map) = guard.get(&msn) {
-                let mut recv_pkt_map = recv_pkt_map.lock();
                 recv_pkt_map.insert(desc.psn);
             } else {
                 error!("recv_pkt_map not found for {:?}", msn);
@@ -201,8 +196,9 @@ impl Drop for WorkDescPoller {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             if let Err(e) = thread.join() {
-                error!("Failed to join the WorkDescPoller thread: {:?}", e);
+                panic!("{}", format!("WorkDescPoller thread join failed: {e:?}"));
             }
+            info!("WorkDescPoller thread is normally stopped");
         }
     }
 }

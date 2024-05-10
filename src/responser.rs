@@ -7,14 +7,14 @@ use crate::device::descriptor::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
 use flume::Receiver;
-use log::error;
+use log::{error,info};
 
 use crate::device::{
     ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
     ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
 };
 use crate::utils::calculate_packet_cnt;
-use crate::{Error, Sge, WorkDescriptorSender};
+use crate::{Error, Sge, ThreadSafeHashmap, WorkDescriptorSender};
 use parking_lot::RwLock;
 
 /// Command about ACK and NACK
@@ -73,7 +73,7 @@ impl DescResponser {
         device: Arc<dyn WorkDescriptorSender>,
         recving_queue: Receiver<RespCommand>,
         ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
-        qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
+        qp_table: ThreadSafeHashmap<Qpn, QpContext>,
     ) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
@@ -237,8 +237,9 @@ impl Drop for DescResponser {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             if let Err(e) = thread.join() {
-                error!("Failed to join the responser thread: {:?}", e);
+                panic!("{}", format!("DescResponser thread join failed: {e:?}"));
             }
+            info!("DescResponser thread is normally stopped");
         }
     }
 }
