@@ -10,7 +10,7 @@ use open_rdma_driver::{
     },
     AlignedMemory, Device, Mr, Pd
 };
-use std::{ffi::c_void, net::Ipv4Addr, thread::sleep, time::Duration};
+use std::{ffi::c_void, net::Ipv4Addr};
 
 use crate::common::init_logging;
 
@@ -133,12 +133,12 @@ fn main() {
         .macaddr(MacAddress::new([0xbb,0xbb,0xbb,0xbb,0xbb,0xbb]))
         .build()
         .unwrap();
-    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
+    let (_dev_a, _pd_a, _mr_a, _mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-    let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
+    let (_dev_b, _pd_b, _mr_b, _mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
     
-    let mut packet:[u8;40] = [
+    let mut _packet:[u8;40] = [
             69, 0, 0, 40, 136, 10, 64, 0, 128, 6, 251, 191, 10, 29, 186, 11, 82, 157, 96, 64, 47, 3, 29, 114, 149, 240, 25, 197, 60, 84, 195, 192, 80, 16, 1, 253, 58, 146, 0, 0
     ];
     // for i in 0..32{

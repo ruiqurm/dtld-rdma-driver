@@ -62,11 +62,7 @@ struct MrPgtFreeBlk {
 
 impl Device {
     fn register_page_table(&self, addr: u64, length: u32, pg_size: u32) -> Result<usize, Error> {
-        let mut mr_pgt = self
-            .0
-            .mr_pgt
-            .lock()
-            .map_err(|_| Error::LockPoisoned("MR page table lock"))?;
+        let mut mr_pgt = self.0.mr_pgt.lock();
         let pgte_cnt = length.div_ceil(pg_size) as usize;
         let pgt_offset = mr_pgt.alloc(pgte_cnt)?;
         for pgt_idx in 0..pgte_cnt {
@@ -126,11 +122,7 @@ impl Device {
     }
 
     fn deregister_page_table(&self, pgt_offset: usize, length: u32) -> Result<(), Error> {
-        let mut mr_pgt = self
-            .0
-            .mr_pgt
-            .lock()
-            .map_err(|_| Error::LockPoisoned("mr page table lock"))?;
+        let mut mr_pgt = self.0.mr_pgt.lock();
         mr_pgt.dealloc(
             pgt_offset,
             length
@@ -157,17 +149,9 @@ impl Device {
         pg_size: u32,
         acc_flags: MemAccessTypeFlag,
     ) -> Result<Mr, Error> {
-        let mut mr_table = self
-            .0
-            .mr_table
-            .lock()
-            .map_err(|_| Error::LockPoisoned("MR table lock"))?;
+        let mut mr_table = self.0.mr_table.lock();
 
-        let mut pd_pool = self
-            .0
-            .pd
-            .lock()
-            .map_err(|_| Error::LockPoisoned("Pd table lock"))?;
+        let mut pd_pool = self.0.pd.lock();
 
         let Some(mr_idx) = mr_table
             .iter()
@@ -303,16 +287,8 @@ impl Device {
     /// * Operating system not support
     /// * Setted context result failed
     pub fn dereg_mr(&self, mr: Mr) -> Result<(), Error> {
-        let mut mr_table = self
-            .0
-            .mr_table
-            .lock()
-            .map_err(|_| Error::LockPoisoned("mr_table lock"))?;
-        let mut pd_pool = self
-            .0
-            .pd
-            .lock()
-            .map_err(|_| Error::LockPoisoned("pd table lock"))?;
+        let mut mr_table = self.0.mr_table.lock();
+        let mut pd_pool = self.0.pd.lock();
         #[allow(clippy::arithmetic_side_effects)]
         let mr_idx = mr.key.get() >> (mem::size_of::<u32>() * 8 - crate::MR_KEY_IDX_BIT_CNT);
         let ctx_option = mr_table

@@ -163,12 +163,13 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, OnceLock,
     },
 };
 use thiserror::Error;
 use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
 use utils::calculate_packet_cnt;
+use parking_lot::{Mutex,RwLock};
 
 /// memory region
 pub mod mr;
@@ -371,7 +372,7 @@ impl Device {
         let msn = self.get_msn();
         let common = {
             let total_len = sge0.len;
-            let qp_guard = self.0.qp_table.read().map_err(|_| Error::LockPoisoned("qp table lock"))?;
+            let qp_guard = self.0.qp_table.read();
             let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
@@ -388,7 +389,7 @@ impl Device {
             };
             let packet_cnt = calculate_packet_cnt(qp.pmtu, raddr, total_len);
             let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock().map_err(|_| Error::LockPoisoned("qp context sending_psn lock"))?;
+                let mut send_psn = qp.sending_psn.lock();
                 let first_pkt_psn = *send_psn;
                 *send_psn = send_psn.wrapping_add(packet_cnt);
                 first_pkt_psn
@@ -408,7 +409,6 @@ impl Device {
         self.0
             .write_op_ctx_map
             .write()
-            .map_err(|_| Error::LockPoisoned("write_op_ctx_map lock"))?
             .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
         Ok(ctx)
     }
@@ -433,7 +433,7 @@ impl Device {
         let msn = self.get_msn();
         let common = {
             let total_len = sge.len;
-            let qp_guard = self.0.qp_table.read().map_err(|_| Error::LockPoisoned("qp table lock"))?;
+            let qp_guard = self.0.qp_table.read();
             let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
@@ -449,7 +449,7 @@ impl Device {
                 msn,
             };
             let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock().map_err(|_| Error::LockPoisoned("qp context sending_psn lock"))?;
+                let mut send_psn = qp.sending_psn.lock();
                 let first_pkt_psn = *send_psn;
                 *send_psn = send_psn.wrapping_add(1);
                 first_pkt_psn
@@ -468,7 +468,6 @@ impl Device {
         self.0
             .read_op_ctx_map
             .write()
-            .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?
             .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
 
         Ok(ctx)
@@ -477,7 +476,7 @@ impl Device {
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
-            let mut ctx = self.0.ctrl_op_ctx_map.write().map_err(|_| Error::LockPoisoned("ctrl_op_ctx_map lock"))?;
+            let mut ctx = self.0.ctrl_op_ctx_map.write();
             let ctrl_ctx = CtrlOpCtx::new_running();
 
             if ctx.insert(id, ctrl_ctx.clone()).is_some() {

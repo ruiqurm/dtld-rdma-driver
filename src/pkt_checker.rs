@@ -1,6 +1,10 @@
 use std::{
     collections::{HashMap, LinkedList},
-    sync::{atomic::{AtomicBool, Ordering}, mpsc::Sender, Arc, Mutex, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+        Arc,
+    },
 };
 
 use crate::{
@@ -10,6 +14,8 @@ use crate::{
     types::{Msn, Psn},
     Error,
 };
+
+use parking_lot::{Mutex, RwLock};
 
 use log::{error, info};
 
@@ -45,8 +51,8 @@ impl PacketChecker {
 impl Drop for PacketChecker {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) =  self.thread.take(){
-            if let Err(e) = thread.join(){
+        if let Some(thread) = self.thread.take() {
+            if let Err(e) = thread.join() {
                 error!("Failed to join the WorkDescPoller thread: {:?}", e);
             }
         }
@@ -71,10 +77,7 @@ impl PacketCheckerContext {
     fn check_pkt_map(&self) -> Result<(), Error> {
         let mut remove_list = LinkedList::new();
         let iter_maps = {
-            let guard = self
-                .recv_pkt_map
-                .read()
-                .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?;
+            let guard = self.recv_pkt_map.read();
             guard
                 .iter()
                 .map(|(k, v)| (*k, Arc::clone(v)))
@@ -82,9 +85,7 @@ impl PacketCheckerContext {
         };
         for (msn, map) in iter_maps {
             let (is_complete, is_read_resp, is_out_of_order, dqpn, end_psn) = {
-                let guard = map
-                    .lock()
-                    .map_err(|_| Error::LockPoisoned("recv packet map lock"))?;
+                let guard = map.lock();
                 (
                     guard.is_complete(),
                     guard.is_read_resp(),
@@ -103,12 +104,7 @@ impl PacketCheckerContext {
                     self.send_queue
                         .send(command)
                         .map_err(|_| Error::PipeBroken("packet checker send queue"))?;
-                } else if let Some(ctx) = self
-                    .read_op_ctx_map
-                    .read()
-                    .map_err(|_| Error::LockPoisoned("read_op_ctx_map lock"))?
-                    .get(&msn)
-                {
+                } else if let Some(ctx) = self.read_op_ctx_map.read().get(&msn) {
                     if let Err(e) = ctx.set_result(()) {
                         error!("Set result failed {:?}", e);
                     }
@@ -135,10 +131,7 @@ impl PacketCheckerContext {
 
         // remove the completed recv_pkt_map
         if !remove_list.is_empty() {
-            let mut guard = self
-                .recv_pkt_map
-                .write()
-                .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
+            let mut guard = self.recv_pkt_map.write();
             for dqpn in &remove_list {
                 let _: Option<Arc<Mutex<RecvPktMap>>> = guard.remove(dqpn);
             }
@@ -151,7 +144,7 @@ impl PacketCheckerContext {
 mod tests {
     use std::{
         collections::HashMap,
-        sync::{mpsc, Arc, Mutex, RwLock},
+        sync::{mpsc, Arc},
         thread::sleep,
         time::Duration,
     };
@@ -164,6 +157,8 @@ mod tests {
 
     use super::PacketChecker;
 
+    use parking_lot::{Mutex, RwLock};
+
     #[test]
     fn test_packet_checker() {
         let (send_queue, recv_queue) = mpsc::channel();
@@ -175,17 +170,15 @@ mod tests {
             Arc::<RwLock<HashMap<Msn, ReadOpCtx>>>::clone(&read_op_ctx_map),
         );
         let key = Msn::new(1);
-        recv_pkt_map.write().unwrap().insert(
+        recv_pkt_map.write().insert(
             key,
             Mutex::new(RecvPktMap::new(false, 2, Psn::new(1), Qpn::new(3))).into(),
         );
         recv_pkt_map
             .write()
-            .unwrap()
             .get(&key)
             .unwrap()
             .lock()
-            .unwrap()
             .insert(Psn::new(1));
         sleep(Duration::from_millis(1));
         assert!(matches!(
@@ -194,11 +187,9 @@ mod tests {
         ));
         recv_pkt_map
             .write()
-            .unwrap()
             .get(&key)
             .unwrap()
             .lock()
-            .unwrap()
             .insert(Psn::new(2));
         sleep(Duration::from_millis(10));
         assert!(recv_queue.try_recv().is_ok());

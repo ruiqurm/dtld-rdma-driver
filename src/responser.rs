@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::RwLock;
 use std::{net::Ipv4Addr, sync::Arc, thread::spawn};
 
 use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
@@ -15,6 +14,7 @@ use crate::device::{
 };
 use crate::utils::calculate_packet_cnt;
 use crate::{Error, Sge, WorkDescriptorSender};
+use parking_lot::RwLock;
 
 /// Command about ACK and NACK
 /// Typically, the message is sent by checker thread, which is responsible for checking the packet ordering.
@@ -118,11 +118,7 @@ impl DescResponser {
         resp: &RespReadRespCommand,
     ) -> Result<ToCardWorkRbDescCommon, Error> {
         let dpqn = resp.desc.common.dqpn;
-        if let Some(qp) = qp_table
-            .read()
-            .map_err(|_| Error::LockPoisoned("qp_table lock"))?
-            .get(&dpqn)
-        {
+        if let Some(qp) = qp_table.read().get(&dpqn) {
             let mut common = ToCardWorkRbDescCommon {
                 total_len: resp.desc.len,
                 rkey: resp.desc.rkey,
@@ -138,10 +134,7 @@ impl DescResponser {
             };
             let packet_cnt = calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
             let first_pkt_psn = {
-                let mut send_psn = qp
-                    .sending_psn
-                    .lock()
-                    .map_err(|_| Error::LockPoisoned("qp context sending psn lock"))?;
+                let mut send_psn = qp.sending_psn.lock();
                 let first_pkt_psn = *send_psn;
                 *send_psn = send_psn.wrapping_add(packet_cnt);
                 first_pkt_psn
@@ -171,10 +164,7 @@ impl DescResponser {
                     // if we can not read qp_table here
                     #[allow(clippy::unwrap_used)]
                     let (src_ip, dst_ip, common) = {
-                        let Ok(table) = qp_table.read() else {
-                            error!("Failed to get QP from QP table: because of PoisonError ");
-                            continue;
-                        };
+                        let table = qp_table.read();
                         if let Some(qp) = table.get(&ack.dpqn) {
                             let dst_ip = qp.dqp_ip;
                             let src_ip = qp.local_ip;
@@ -423,11 +413,7 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::Ipv4Addr,
-        sync::{Arc, Mutex},
-        thread::sleep,
-    };
+    use std::{net::Ipv4Addr, sync::Arc, thread::sleep};
 
     use eui48::MacAddress;
 
@@ -440,6 +426,9 @@ mod tests {
     };
 
     use super::calculate_icrc;
+
+    use parking_lot::{Mutex, RwLock};
+
     #[test]
     fn test_icrc_computing() {
         let packet = [
@@ -504,14 +493,13 @@ mod tests {
         struct Dummy(Mutex<Vec<ToCardWorkRbDesc>>);
         impl super::WorkDescriptorSender for Dummy {
             fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), crate::Error> {
-                self.0.lock().unwrap().push(desc);
+                self.0.lock().push(desc);
                 Ok(())
             }
         }
         let dummy = std::sync::Arc::new(Dummy(Mutex::new(Vec::new())));
-        let qp_table =
-            std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-        qp_table.write().unwrap().insert(
+        let qp_table = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        qp_table.write().insert(
             Qpn::new(3),
             QpContext {
                 qp_type: crate::types::QpType::Rc,
@@ -569,7 +557,7 @@ mod tests {
 
         // check
         sleep(std::time::Duration::from_millis(10));
-        let mut v = dummy.0.lock().unwrap();
+        let mut v = dummy.0.lock();
         assert_eq!(v.len(), 3);
         let desc = v.pop().unwrap();
         match desc {

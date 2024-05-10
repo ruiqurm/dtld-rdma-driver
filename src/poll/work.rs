@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, RwLock,
+        Arc,
     },
 };
 
@@ -22,6 +22,7 @@ use crate::{
     types::{Msn, Qpn},
     Error, RecvPktMap,
 };
+use parking_lot::{Mutex, RwLock};
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
@@ -73,9 +74,15 @@ impl WorkDescPollerContext {
 
             let result = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
-                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(&desc),
+                ToHostWorkRbDesc::WriteOrReadResp(desc) => {
+                    ctx.handle_work_desc_write(&desc);
+                    Ok(())
+                }
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
-                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(&desc),
+                ToHostWorkRbDesc::Ack(desc) => {
+                    ctx.handle_work_desc_ack(&desc);
+                    Ok(())
+                }
                 ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
                 ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
             };
@@ -94,7 +101,7 @@ impl WorkDescPollerContext {
         Ok(())
     }
 
-    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) -> Result<(), Error> {
+    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) {
         let msn = desc.common.msn;
 
         if matches!(
@@ -103,15 +110,12 @@ impl WorkDescPollerContext {
         ) {
             let real_payload_len = desc.len;
             let pmtu = {
-                let guard = self
-                    .qp_table
-                    .read()
-                    .map_err(|_| Error::LockPoisoned("qp table lock"))?;
+                let guard = self.qp_table.read();
                 if let Some(qp_ctx) = guard.get(&desc.common.dqpn) {
                     qp_ctx.pmtu
                 } else {
                     error!("{:?} not found", desc.common.dqpn.get());
-                    return Ok(());
+                    return;
                 }
             };
 
@@ -134,10 +138,7 @@ impl WorkDescPollerContext {
                 desc.common.dqpn,
             );
             pkt_map.insert(desc.psn);
-            let mut recv_pkt_map_guard = self
-                .recv_pkt_map
-                .write()
-                .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
+            let mut recv_pkt_map_guard = self.recv_pkt_map.write();
             if recv_pkt_map_guard
                 .insert(msn, Mutex::new(pkt_map).into())
                 .is_some()
@@ -148,20 +149,14 @@ impl WorkDescPollerContext {
                 );
             }
         } else {
-            let guard = self
-                .recv_pkt_map
-                .read()
-                .map_err(|_| Error::LockPoisoned("map of recv_pkt_map lock"))?;
+            let guard = self.recv_pkt_map.read();
             if let Some(recv_pkt_map) = guard.get(&msn) {
-                let mut recv_pkt_map = recv_pkt_map
-                    .lock()
-                    .map_err(|_| Error::LockPoisoned("recv_pkt_map lock"))?;
+                let mut recv_pkt_map = recv_pkt_map.lock();
                 recv_pkt_map.insert(desc.psn);
             } else {
                 error!("recv_pkt_map not found for {:?}", msn);
             }
         }
-        Ok(())
     }
 
     fn handle_work_desc_write_with_imm(
@@ -171,11 +166,8 @@ impl WorkDescPollerContext {
         todo!()
     }
 
-    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) -> Result<(), Error> {
-        let guard = self
-            .write_op_ctx_map
-            .read()
-            .map_err(|_| Error::LockPoisoned("write_op_ctx_map lock"))?;
+    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) {
+        let guard = self.write_op_ctx_map.read();
         let key = desc.msn;
         if let Some(op_ctx) = guard.get(&key) {
             if let Err(e) = op_ctx.set_result(()) {
@@ -184,8 +176,6 @@ impl WorkDescPollerContext {
         } else {
             error!("receive ack, but op_ctx not found for {:?}", key);
         }
-
-        Ok(())
     }
 
     // This function is still under development
@@ -218,12 +208,7 @@ impl Drop for WorkDescPoller {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        net::Ipv4Addr,
-        sync::{Arc, Mutex, RwLock},
-        thread::sleep,
-    };
+    use std::{collections::HashMap, net::Ipv4Addr, sync::Arc, thread::sleep};
 
     use eui48::MacAddress;
 
@@ -242,6 +227,8 @@ mod tests {
 
     use super::WorkDescPoller;
 
+    use parking_lot::{Mutex, RwLock};
+
     struct MockToHostRb {
         rb: Mutex<Vec<ToHostWorkRbDesc>>,
     }
@@ -252,11 +239,11 @@ mod tests {
     }
     impl ToHostRb<ToHostWorkRbDesc> for MockToHostRb {
         fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
-            let is_empty = self.rb.lock().unwrap().is_empty();
+            let is_empty = self.rb.lock().is_empty();
             if is_empty {
                 sleep(std::time::Duration::from_secs(10))
             }
-            Ok(self.rb.lock().unwrap().pop().unwrap())
+            Ok(self.rb.lock().pop().unwrap())
         }
     }
     #[test]
@@ -348,7 +335,7 @@ mod tests {
         let work_rb = Arc::new(MockToHostRb::new(input));
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        qp_table.write().unwrap().insert(
+        qp_table.write().insert(
             Qpn::new(3),
             QpContext {
                 pd: Pd { handle: 0 },
@@ -369,7 +356,7 @@ mod tests {
         let write_op_ctx_map = Arc::new(RwLock::new(HashMap::new()));
         let key = Msn::default();
         let ctx = WriteOpCtx::new_running();
-        write_op_ctx_map.write().unwrap().insert(key, ctx.clone());
+        write_op_ctx_map.write().insert(key, ctx.clone());
         let work_ctx = super::WorkDescPollerContext {
             work_rb,
             recv_pkt_map,

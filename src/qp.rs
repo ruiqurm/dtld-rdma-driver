@@ -8,11 +8,10 @@ use crate::{
 use std::{
     hash::{Hash, Hasher},
     net::Ipv4Addr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
+
+use parking_lot::Mutex;
 
 const QP_MAX_CNT: usize = 1024;
 
@@ -37,7 +36,7 @@ pub struct QpContext {
 
 impl QpContext {
     /// create a qp context
-    /// 
+    ///
     /// currently, `sending_psn` is set to 0
     #[must_use]
     pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
@@ -67,16 +66,8 @@ impl Device {
     /// * Operating system not support
     /// * Setted context result failed
     pub fn create_qp(&self, qp: &Qp) -> Result<(), Error> {
-        let mut qp_pool = self
-            .0
-            .qp_table
-            .write()
-            .map_err(|_| Error::LockPoisoned("qp table lock"))?;
-        let mut pd_pool = self
-            .0
-            .pd
-            .lock()
-            .map_err(|_| Error::LockPoisoned("pd table lock"))?;
+        let mut qp_pool = self.0.qp_table.write();
+        let mut pd_pool = self.0.pd.lock();
         let pd = &qp.pd;
         let pd_ctx = pd_pool
             .get_mut(pd)
@@ -108,12 +99,12 @@ impl Device {
         }
 
         let pd_res = pd_ctx.qp.insert(qp.qpn);
-        if !pd_res{
+        if !pd_res {
             return Err(Error::Invalid(format!("qp :{0:?}", qp.qpn)));
         }
 
         let qp_res = qp_pool.insert(qp.qpn, qpc);
-        if qp_res.is_some(){
+        if qp_res.is_some() {
             return Err(Error::Invalid(format!("qp :{0:?}", qp.qpn)));
         }
 
@@ -129,8 +120,8 @@ impl Device {
     /// * opeartion failed
     /// * Setted context result failed
     pub fn destroy_qp(&self, qp: Qpn) -> Result<(), Error> {
-        let mut qp_pool = self.0.qp_table.write().map_err(|_| Error::LockPoisoned("qp_table lock"))?;
-        let mut pd_pool = self.0.pd.lock().map_err(|_| Error::LockPoisoned("pd pool lock"))?;
+        let mut qp_pool = self.0.qp_table.write();
+        let mut pd_pool = self.0.pd.lock();
 
         let op_id = self.get_ctrl_op_id();
 
@@ -182,9 +173,9 @@ impl PartialEq for Qp {
 impl Eq for Qp {}
 
 /// QP manager
-/// 
+///
 /// The QP manager is used to allocate and free QP numbers(QPN).
-/// 
+///
 /// The max QP number is `QP_MAX_CNT`, and QP0 and QP1 are reserved.
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
@@ -231,10 +222,10 @@ impl QpManager {
     }
 
     /// free a qp number
-    /// 
+    ///
     /// If the QP number is not allocated, it will be ignored.
     pub fn free(&self, qpn: Qpn) {
-        if let Some(qp_availability) = self.qp_availability.get(qpn.get() as usize){
+        if let Some(qp_availability) = self.qp_availability.get(qpn.get() as usize) {
             qp_availability.store(true, Ordering::Relaxed);
         }
     }

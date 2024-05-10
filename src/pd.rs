@@ -26,11 +26,7 @@ impl Device {
     /// Will return `Err` if:
     /// * lock poisoned
     pub fn alloc_pd(&self) -> Result<Pd, Error> {
-        let mut pool = self
-            .0
-            .pd
-            .lock()
-            .map_err(|_| Error::LockPoisoned("pd pool lock"))?;
+        let mut pool = self.0.pd.lock();
 
         let pd = Pd {
             handle: rand::thread_rng().next_u32(),
@@ -60,11 +56,7 @@ impl Device {
     /// * invalid Pd
     /// * mr or qp is in use
     pub fn dealloc_pd(&self, pd: Pd) -> Result<(), Error> {
-        let mut pool = self
-            .0
-            .pd
-            .lock()
-            .map_err(|_| Error::LockPoisoned("pd pool lock"))?;
+        let mut pool = self.0.pd.lock();
         let pd_ctx = pool.get(&pd).ok_or(Error::Invalid(format!("PD :{pd:?}")))?;
 
         if !pd_ctx.mr.is_empty() {
