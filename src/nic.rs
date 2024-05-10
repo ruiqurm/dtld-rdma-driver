@@ -1,4 +1,3 @@
-use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::{
     buf::{PacketBuf, Slot, NIC_PACKET_BUFFER_SLOT_SIZE},
@@ -7,6 +6,7 @@ use crate::{
     Device as BlueRdmaDevice, WorkDescriptorSender,
 };
 use eui48::MacAddress;
+use flume::{Receiver, TryRecvError};
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     time::Instant,

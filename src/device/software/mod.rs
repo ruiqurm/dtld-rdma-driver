@@ -1,11 +1,14 @@
 use std::{
     error::Error,
     net::Ipv4Addr,
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
-    thread::{sleep, spawn, JoinHandle},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{ spawn, JoinHandle},
 };
 
-use crossbeam_queue::SegQueue;
+use flume::{unbounded, Receiver};
 use log::debug;
 
 use self::{
@@ -44,28 +47,37 @@ mod types;
 pub(crate) struct SoftwareDevice {
     recv_agent: UDPReceiveAgent,
     device: Arc<BlueRDMALogic>,
-    stop_flag : Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
     polling_thread: Option<JoinHandle<()>>,
     to_card_work_rb: ToCardWorkRb,
     to_host_work_rb: ToHostWorkRb,
+    to_host_ctrl_rb: ToHostCtrlRb,
 }
 
 #[derive(Debug, Clone)]
 struct ToCardWorkRb(Arc<DescriptorScheduler>);
 
 #[derive(Debug, Clone)]
-struct ToHostWorkRb(Arc<SegQueue<ToHostWorkRbDesc>>);
+struct ToHostWorkRb(Receiver<ToHostWorkRbDesc>);
+
+#[derive(Debug, Clone)]
+struct ToHostCtrlRb(Receiver<ToHostCtrlRbDesc>);
 
 impl SoftwareDevice {
     /// Initializing an software device.
     pub(crate) fn init(addr: Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new(addr, port)?;
-        let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
+        let (ctrl_sender, ctrl_receiver) = unbounded();
+        let (work_sender, work_receiver) = unbounded();
+        let device = Arc::new(BlueRDMALogic::new(
+            Arc::new(send_agent),
+            ctrl_sender,
+            work_sender,
+        ));
         // The strategy is a global singleton, so we leak it
         let round_robin = Arc::new(RoundRobinStrategy::new());
         let scheduler = DescriptorScheduler::new(round_robin);
         let scheduler = Arc::new(scheduler);
-        let to_host_queue = device.get_to_host_descriptor_queue();
         let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device), addr, port)?;
 
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
@@ -74,28 +86,30 @@ impl SoftwareDevice {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
 
-        let polling_thread = spawn(move || 
+        let polling_thread = spawn(move || {
             while !thread_stop_flag.load(Ordering::Relaxed) {
-            match this_scheduler.pop() {
-                Ok(result) => {
-                    if let Some(to_card_ctrl_rb_desc) = result {
-                        let _: Result<(), BlueRdmaLogicError> =
-                            this_device.send(to_card_ctrl_rb_desc);
+                match this_scheduler.pop() {
+                    Ok(result) => {
+                        if let Some(to_card_ctrl_rb_desc) = result {
+                            let _: Result<(), BlueRdmaLogicError> =
+                                this_device.send(to_card_ctrl_rb_desc);
+                        }
                     }
-                }
-                Err(e) => {
-                    log::error!("polling scheduler thread error: {:?}", e);
+                    Err(e) => {
+                        log::error!("polling scheduler thread error: {:?}", e);
+                    }
                 }
             }
         });
         let to_card_work_rb = ToCardWorkRb(scheduler);
         Ok(Self {
             recv_agent,
-            polling_thread : Some(polling_thread),
+            polling_thread: Some(polling_thread),
             device,
             to_card_work_rb,
-            to_host_work_rb: ToHostWorkRb(to_host_queue),
-            stop_flag
+            to_host_work_rb: ToHostWorkRb(work_receiver),
+            to_host_ctrl_rb: ToHostCtrlRb(ctrl_receiver),
+            stop_flag,
         })
     }
 }
@@ -117,7 +131,7 @@ impl DeviceAdaptor for SoftwareDevice {
     }
 
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>> {
-        Arc::<BlueRDMALogic>::clone(&self.device)
+        Arc::new(self.to_host_ctrl_rb.clone())
     }
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
@@ -149,25 +163,15 @@ impl ToCardRb<ToCardCtrlRbDesc> for BlueRDMALogic {
     }
 }
 
-impl ToHostRb<ToHostCtrlRbDesc> for BlueRDMALogic {
+impl ToHostRb<ToHostCtrlRbDesc> for ToHostCtrlRb {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
-        loop {
-            if let Some(desc) = self.get_update_result() {
-                return Ok(desc);
-            }
-            sleep(std::time::Duration::from_millis(1));
-        }
+        self.0.recv().map_err(|e|DeviceError::Device(e.to_string()))
     }
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
-        loop {
-            if let Some(desc) = self.0.pop() {
-                return Ok(desc);
-            }
-            sleep(std::time::Duration::from_millis(1));
-        }
+        self.0.recv().map_err(|e|DeviceError::Device(e.to_string()))
     }
 }
 

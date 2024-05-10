@@ -8,7 +8,7 @@ use std::{
     thread::spawn,
 };
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use flume::{unbounded, Receiver, Sender, TryRecvError};
 use log::error;
 
 use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
@@ -73,7 +73,7 @@ impl Default for SGList {
 
 impl DescriptorScheduler {
     pub(crate) fn new(strat: Arc<dyn SchedulerStrategy>) -> Self {
-        let (sender, receiver) = crossbeam_channel::unbounded();
+        let (sender, receiver) = unbounded();
         let strategy: Arc<dyn SchedulerStrategy> = Arc::<dyn SchedulerStrategy>::clone(&strat);
         let thread_receiver = receiver.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));

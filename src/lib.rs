@@ -150,6 +150,7 @@ use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
+use flume::unbounded;
 use nic::BasicNicDeivce;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::PacketChecker;
@@ -505,7 +506,7 @@ impl Device {
     }
 
     fn init(&self) -> Result<(), Error> {
-        let (send_queue, rece_queue) = std::sync::mpsc::channel();
+        let (send_queue, rece_queue) = unbounded();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
 
         // enable ctrl desc poller module
@@ -527,7 +528,7 @@ impl Device {
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
         self.prepare_nic_recv_buf()?;
 
-        let (nic_notify_send_queue, nic_notify_recv_queue) = std::sync::mpsc::channel();
+        let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
 
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{

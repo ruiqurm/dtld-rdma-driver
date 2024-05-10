@@ -1,3 +1,4 @@
+use flume::Sender;
 use thiserror::Error;
 
 use crate::{
@@ -65,8 +66,8 @@ pub(crate) struct BlueRDMALogic {
     mr_rkey_table: RwLock<HashMap<Key, Arc<RwLock<MemoryRegion>>>>,
     qp_table: RwLock<HashMap<Qpn, Arc<QueuePair>>>,
     net_send_agent: Arc<dyn NetSendAgent>,
-    to_host_data_descriptor_queue: Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>,
-    to_host_ctrl_descriptor_queue: Arc<crossbeam_queue::SegQueue<ToHostCtrlRbDesc>>,
+    to_host_data_descriptor_queue: Sender<ToHostWorkRbDesc>,
+    to_host_ctrl_descriptor_queue: Sender<ToHostCtrlRbDesc>,
 }
 
 #[derive(Error, Debug)]
@@ -90,24 +91,15 @@ impl<T> From<PoisonError<T>> for BlueRdmaLogicError {
 }
 
 impl BlueRDMALogic {
-    pub(crate) fn new(net_sender: Arc<dyn NetSendAgent>) -> Self {
+    pub(crate) fn new(net_sender: Arc<dyn NetSendAgent>,ctrl_sender:Sender<ToHostCtrlRbDesc>,work_sender:Sender<ToHostWorkRbDesc>) -> Self {
         BlueRDMALogic {
             // mr_lkey_table: RwLock::new(HashMap::new()),
             mr_rkey_table: RwLock::new(HashMap::new()),
             qp_table: RwLock::new(HashMap::new()),
             net_send_agent: net_sender,
-            to_host_data_descriptor_queue: Arc::new(crossbeam_queue::SegQueue::new()),
-            to_host_ctrl_descriptor_queue: Arc::new(crossbeam_queue::SegQueue::new()),
+            to_host_data_descriptor_queue: work_sender,
+            to_host_ctrl_descriptor_queue: ctrl_sender,
         }
-    }
-
-    /// Get the queue that contains the received meta descriptor
-    pub(crate) fn get_to_host_descriptor_queue(
-        &self,
-    ) -> Arc<crossbeam_queue::SegQueue<ToHostWorkRbDesc>> {
-        Arc::<crossbeam_queue::SegQueue<ToHostWorkRbDesc>>::clone(
-            &self.to_host_data_descriptor_queue,
-        )
     }
 
     fn send_raw_packet(&self, mut desc: ToCardDescriptor) -> Result<(), BlueRdmaLogicError> {
@@ -297,10 +289,7 @@ impl BlueRDMALogic {
         Ok(())
     }
 
-    pub(crate) fn get_update_result(&self) -> Option<ToHostCtrlRbDesc> {
-        self.to_host_ctrl_descriptor_queue.pop()
-    }
-
+    #[allow(clippy::unwrap_in_result)]
     pub(crate) fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
         let result_desc = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
@@ -395,7 +384,10 @@ impl BlueRDMALogic {
                 })
             }
         };
-        self.to_host_ctrl_descriptor_queue.push(result_desc);
+        #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
+        {
+            self.to_host_ctrl_descriptor_queue.send(result_desc).unwrap();
+        }
         Ok(())
     }
 
@@ -558,13 +550,18 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         };
 
         // push the descriptor to the ring buffer
-        self.to_host_data_descriptor_queue.push(descriptor);
+        #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
+        {
+            self.to_host_data_descriptor_queue.send(descriptor).unwrap();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{net::Ipv4Addr, sync::Arc};
+
+    use flume::unbounded;
 
     use crate::{
         device::{
@@ -606,7 +603,9 @@ mod tests {
             }
         }
         let agent = Arc::new(DummpyProxy);
-        let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
+        let (ctrl_sender, _ctrl_receiver) = unbounded();
+        let (work_sender, _work_receiver) = unbounded();
+        let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent),ctrl_sender,work_sender);
         // test updating qp
         {
             let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {

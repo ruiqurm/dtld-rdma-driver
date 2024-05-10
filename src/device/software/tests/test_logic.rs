@@ -1,5 +1,7 @@
 use std::{cell::RefCell, collections::LinkedList, net::Ipv4Addr, sync::Arc};
 
+use flume::unbounded;
+
 use crate::{
     device::{
         software::{
@@ -45,7 +47,9 @@ unsafe impl Sync for DummpyProxy {}
 #[test]
 fn test_logic_send() {
     let agent = Arc::new(DummpyProxy::new());
-    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
+    let (ctrl_sender, _ctrl_receiver) = unbounded();
+    let (work_sender, _work_receiver) = unbounded();
+    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent), ctrl_sender, work_sender);
 
     // expect write_only
     {
@@ -63,7 +67,7 @@ fn test_logic_send() {
                     .build(),
             )
             .build();
-        
+
         logic.send(desc).unwrap();
         assert_eq!(agent.message.borrow().len(), 1);
         let message = agent.message.borrow_mut().pop_front().unwrap();
@@ -363,11 +367,7 @@ fn test_logic_send() {
             .with_psn(0)
             .with_dqpn(12)
             .with_is_last(false)
-            .with_sg_list(
-                SGListBuilder::new()
-                    .with_sge(0, 1024, 0x1234_u32)
-                    .build(),
-            )
+            .with_sg_list(SGListBuilder::new().with_sge(0, 1024, 0x1234_u32).build())
             .build();
         let desc2 = ToCardWorkRbDescBuilder::default()
             .with_opcode(ToCardWorkRbDescOpcode::Write)
@@ -424,7 +424,9 @@ fn test_logic_send() {
 #[test]
 fn test_logic_send_raw() {
     let agent = Arc::new(DummpyProxy::new());
-    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent));
+    let (ctrl_sender, _ctrl_receiver) = unbounded();
+    let (work_sender, _work_receiver) = unbounded();
+    let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent), ctrl_sender, work_sender);
     {
         let desc = ToCardWorkRbDescBuilder::default()
             .with_qp_type(QpType::RawPacket)

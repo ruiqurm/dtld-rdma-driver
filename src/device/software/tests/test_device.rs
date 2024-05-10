@@ -1,3 +1,4 @@
+use flume::unbounded;
 use serial_test::serial;
 use std::net::Ipv4Addr;
 use std::{sync::Arc, thread::sleep, time::Duration};
@@ -22,7 +23,13 @@ use super::ToCardCtrlRbDescBuilder;
 #[serial]
 fn test_device_read_and_write() {
     let send_agent = UDPSendAgent::new(Ipv4Addr::LOCALHOST, 4791).unwrap();
-    let device = Arc::new(BlueRDMALogic::new(Arc::new(send_agent)));
+    let (ctrl_sender, _ctrl_receiver) = unbounded();
+    let (work_sender, work_receiver) = unbounded();
+    let device = Arc::new(BlueRDMALogic::new(
+        Arc::new(send_agent),
+        ctrl_sender,
+        work_sender,
+    ));
     let _recv_agent = UDPReceiveAgent::new(
         Arc::<BlueRDMALogic>::clone(&device),
         Ipv4Addr::LOCALHOST,
@@ -101,7 +108,7 @@ fn test_device_read_and_write() {
         device.send(desc).unwrap();
         // sync the sending packet
         sleep(Duration::from_millis(time_to_wait_in_mill));
-        let q1 = device.get_to_host_descriptor_queue().pop().unwrap();
+        let q1 = work_receiver.recv().unwrap();
         match q1 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -113,7 +120,7 @@ fn test_device_read_and_write() {
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
-        let q2 = device.get_to_host_descriptor_queue().pop().unwrap();
+        let q2 = work_receiver.recv().unwrap();
         match q2 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -127,7 +134,7 @@ fn test_device_read_and_write() {
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
-        assert!(device.get_to_host_descriptor_queue().is_empty());
+        assert!(work_receiver.receiver_count() == 0);
         assert_eq!(
             dest_buffer[dest_offset..dest_offset + 1024],
             src_buf[..send_length as usize]
@@ -163,7 +170,7 @@ fn test_device_read_and_write() {
         device.send(desc).unwrap();
         // sync the sending packet
         sleep(Duration::from_millis(time_to_wait_in_mill));
-        let q1 = device.get_to_host_descriptor_queue().pop().unwrap();
+        let q1 = work_receiver.recv().unwrap();
         match q1 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -176,7 +183,7 @@ fn test_device_read_and_write() {
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
-        let q2 = device.get_to_host_descriptor_queue().pop().unwrap();
+        let q2 = work_receiver.recv().unwrap();
         match q2 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -189,7 +196,7 @@ fn test_device_read_and_write() {
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
-        let q3 = device.get_to_host_descriptor_queue().pop().unwrap();
+        let q3 = work_receiver.recv().unwrap();
         match q3 {
             ToHostWorkRbDesc::WriteOrReadResp(data) => {
                 assert_eq!(data.common.dqpn.get(), dqpn);
@@ -202,7 +209,7 @@ fn test_device_read_and_write() {
             | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
-        assert!(device.get_to_host_descriptor_queue().is_empty());
+        assert!(work_receiver.receiver_count() == 0);
         assert_eq!(
             dest_buffer[dest_offset + testing_dest_addr_offset
                 ..dest_offset + testing_dest_addr_offset + send_length as usize],
@@ -253,7 +260,7 @@ fn test_device_read_and_write() {
     //     device.send(desc).unwrap();
     //     // sync the sending packet
     //     sleep(Duration::from_millis(time_to_wait_in_mill));
-    //     let q1 = device.get_to_host_descriptor_queue().pop().unwrap();
+    //     let q1 = work_receiver.recv().unwrap();
     //     match q1 {
     //         ToHostWorkRbDesc::SecondaryReth(data) => {
     //             assert_eq!(data.sec_reth.secondary_va, dest_addr);

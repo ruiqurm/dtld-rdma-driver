@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, LinkedList},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
         Arc,
     },
 };
@@ -15,6 +14,7 @@ use crate::{
     Error,
 };
 
+use flume::Sender;
 use parking_lot::{Mutex, RwLock};
 
 use log::{error, info};
@@ -144,7 +144,7 @@ impl PacketCheckerContext {
 mod tests {
     use std::{
         collections::HashMap,
-        sync::{mpsc, Arc},
+        sync::Arc,
         thread::sleep,
         time::Duration,
     };
@@ -157,11 +157,12 @@ mod tests {
 
     use super::PacketChecker;
 
+    use flume::{unbounded, TryRecvError};
     use parking_lot::{Mutex, RwLock};
 
     #[test]
     fn test_packet_checker() {
-        let (send_queue, recv_queue) = mpsc::channel();
+        let (send_queue, recv_queue) = unbounded();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::<Msn, Arc<Mutex<RecvPktMap>>>::new()));
         let read_op_ctx_map = Arc::new(RwLock::new(HashMap::<Msn, ReadOpCtx>::new()));
         let _packet_checker = PacketChecker::new(
@@ -183,7 +184,7 @@ mod tests {
         sleep(Duration::from_millis(1));
         assert!(matches!(
             recv_queue.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
+            Err(TryRecvError::Empty)
         ));
         recv_pkt_map
             .write()

@@ -1,4 +1,5 @@
 use core::panic;
+use flume::Sender;
 use log::{debug, error};
 use std::{
     collections::HashMap,
@@ -35,9 +36,9 @@ pub(crate) struct WorkDescPollerContext {
     pub(crate) work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
     pub(crate) recv_pkt_map: Arc<RwLock<HashMap<Msn, Arc<Mutex<RecvPktMap>>>>>,
     pub(crate) qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
-    pub(crate) sending_queue: std::sync::mpsc::Sender<RespCommand>,
+    pub(crate) sending_queue: Sender<RespCommand>,
     pub(crate) write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
-    pub(crate) nic_notification_queue: std::sync::mpsc::Sender<NicRecvNotification>,
+    pub(crate) nic_notification_queue: Sender<NicRecvNotification>,
 }
 
 unsafe impl Send for WorkDescPollerContext {}
@@ -350,8 +351,8 @@ mod tests {
                 sending_psn: Mutex::new(Psn::new(0)),
             },
         );
-        let (sending_queue, recv_queue) = std::sync::mpsc::channel::<RespCommand>();
-        let (notification_send_queue, _notification_recv_queue) = std::sync::mpsc::channel();
+        let (sending_queue, recv_queue) = flume::unbounded();
+        let (notification_send_queue, _notification_recv_queue) = flume::unbounded();
 
         let write_op_ctx_map = Arc::new(RwLock::new(HashMap::new()));
         let key = Msn::default();

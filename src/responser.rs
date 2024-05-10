@@ -6,6 +6,7 @@ use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
 use crate::device::descriptor::{Aeth, Bth, Ipv4, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
+use flume::Receiver;
 use log::error;
 
 use crate::device::{
@@ -70,7 +71,7 @@ pub(crate) struct DescResponser {
 impl DescResponser {
     pub(crate) fn new(
         device: Arc<dyn WorkDescriptorSender>,
-        recving_queue: std::sync::mpsc::Receiver<RespCommand>,
+        recving_queue: Receiver<RespCommand>,
         ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
         qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     ) -> Self {
@@ -150,7 +151,7 @@ impl DescResponser {
     #[allow(clippy::needless_pass_by_value)]
     fn working_thread(
         device: Arc<dyn WorkDescriptorSender>,
-        recving_queue: std::sync::mpsc::Receiver<RespCommand>,
+        recving_queue: Receiver<RespCommand>,
         ack_buffers: &PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
         qp_table: &RwLock<HashMap<Qpn, QpContext>>,
         stop_flag: &AtomicBool,
@@ -416,6 +417,7 @@ mod tests {
     use std::{net::Ipv4Addr, sync::Arc, thread::sleep};
 
     use eui48::MacAddress;
+    use flume::unbounded;
 
     use crate::{
         buf::PacketBuf,
@@ -486,7 +488,7 @@ mod tests {
     const BUFFER_SIZE: usize = 1024 * super::RDMA_ACK_BUFFER_SLOT_SIZE;
     #[test]
     fn test_desc_responser() {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let (sender, receiver) = unbounded();
         let buffer = Box::new([0u8; BUFFER_SIZE]);
         let buffer = Box::leak(buffer);
         let ack_buffers = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
