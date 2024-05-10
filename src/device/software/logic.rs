@@ -437,7 +437,6 @@ fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
         status: ToHostWorkRbDescStatus::Unknown,
         trans: ToHostWorkRbDescTransType::Rc,
         dqpn: crate::types::Qpn::new(message.meta_data.common_meta().dqpn.get()),
-        pad_cnt: message.payload.get_pad_cnt() as u8, // The cast here is safe, since we just want the lower part of the pad_cnt.
         msn: Msn::new(message.meta_data.common_meta().pkey.get()),
         expected_psn: crate::types::Psn::new(0),
     }
@@ -492,7 +491,6 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             psn: header.common_meta.psn,
                             addr: header.reth.va,
                             len: header.reth.len,
-                            key: header.reth.rkey.into(),
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate

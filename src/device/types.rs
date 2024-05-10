@@ -19,7 +19,6 @@ use super::descriptor::{
     SendQueueDescCommonHead, SendQueueReqDescFragSGE, SendQueueReqDescSeg0, SendQueueReqDescSeg1,
 };
 
-#[allow(unused)]
 #[derive(Debug)]
 pub(crate) enum ToCardCtrlRbDesc {
     UpdateMrTable(ToCardCtrlRbDescUpdateMrTable),
@@ -216,13 +215,10 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
 #[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
-    #[allow(unused)]
     pub(crate) trans: ToHostWorkRbDescTransType,
     pub(crate) dqpn: Qpn,
-    #[allow(unused)]
-    pub(crate) pad_cnt: u8,
     pub(crate) msn: Msn,
-    #[allow(unused)]
+    #[allow(unused)] // the field is used to handling out of order packets.
     pub(crate) expected_psn: Psn,
 }
 
@@ -244,11 +240,9 @@ pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) psn: Psn,
     pub(crate) addr: u64,
     pub(crate) len: u32,
-    #[allow(unused)]
-    pub(crate) key: Key,
 }
 
-#[allow(unused)]
+#[allow(unused)] // Currently we don't have write imm descriptor
 #[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) common: ToHostWorkRbDescCommon,
@@ -264,20 +258,20 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
-    #[allow(unused)]
+    #[allow(unused)] // we may use value and psn in future ack checking
     pub(crate) value: u8,
-    #[allow(unused)]
+    #[allow(unused)] // we may use value and psn in future ack checking
     pub(crate) psn: Psn,
 }
 
 #[derive(Debug)]
 pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) common: ToHostWorkRbDescCommon,
-    #[allow(unused)]
+    #[allow(unused)] // used in nack checking
     pub(crate) msn: Msn,
-    #[allow(unused)]
+    #[allow(unused)] // used in nack checking
     pub(crate) value: u8,
-    #[allow(unused)]
+    #[allow(unused)] // used in nack checking
     pub(crate) lost_psn: Range<Psn>,
 }
 
@@ -618,11 +612,6 @@ impl ToCardCtrlRbDesc {
             }
         }
     }
-
-    #[allow(unused)]
-    pub(super) fn serialized_desc_cnt() -> usize {
-        1
-    }
 }
 
 impl ToHostCtrlRbDesc {
@@ -679,11 +668,6 @@ impl ToHostCtrlRbDesc {
             }
         };
         Ok(desc)
-    }
-
-    #[allow(unused)]
-    pub(super) fn serialized_desc_cnt() -> usize {
-        1
     }
 }
 
@@ -1012,14 +996,12 @@ impl ToHostWorkRbDesc {
             })?;
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
-        let pad_cnt = desc_frag_bth.get_pad_cnt() as u8;
         let msg_seq_number = Msn::new(desc_bth.get_msn() as u16);
 
         let common = ToHostWorkRbDescCommon {
             status,
             trans,
             dqpn,
-            pad_cnt,
             msn: msg_seq_number,
             expected_psn,
         };
@@ -1038,7 +1020,7 @@ impl ToHostWorkRbDesc {
             | ToHostWorkRbDescOpcode::RdmaReadResponseMiddle
             | ToHostWorkRbDescOpcode::RdmaReadResponseLast
             | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
-                let (addr, key, len) = Self::read_reth(src);
+                let (addr, _, len) = Self::read_reth(src);
 
                 Ok(ToHostWorkRbDesc::WriteOrReadResp(
                     ToHostWorkRbDescWriteOrReadResp {
@@ -1048,7 +1030,6 @@ impl ToHostWorkRbDesc {
                         psn,
                         addr,
                         len,
-                        key,
                     },
                 ))
             }

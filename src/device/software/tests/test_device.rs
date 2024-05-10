@@ -126,7 +126,6 @@ fn test_device_read_and_write() {
                 assert_eq!(data.common.dqpn.get(), dqpn);
                 assert!(matches!(data.write_type, ToHostWorkRbDescWriteType::Last));
                 assert_eq!(data.addr, dest_addr + 512);
-                assert_eq!(data.key.get(), mr1_rkey);
             }
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
@@ -408,7 +407,6 @@ fn test_software_device() {
                 assert_eq!(data.common.dqpn.get(), dqpn);
                 assert!(matches!(data.write_type, ToHostWorkRbDescWriteType::Last));
                 assert_eq!(data.addr, dest_addr + 512);
-                assert_eq!(data.key.get(), mr1_rkey);
             }
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)

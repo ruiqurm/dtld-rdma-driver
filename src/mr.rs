@@ -35,14 +35,8 @@ impl Mr {
 
 #[derive(Debug)]
 pub(crate) struct MrCtx {
-    #[allow(unused)]
-    pub(crate) key: Key,
     pub(crate) pd: Pd,
-    #[allow(unused)]
-    pub(crate) va: u64,
     pub(crate) len: u32,
-    #[allow(unused)]
-    pub(crate) acc_flags: MemAccessTypeFlag,
     pub(crate) pgt_offset: usize,
     pub(crate) pg_size: u32,
 }
@@ -176,11 +170,8 @@ impl Device {
 
         let mr = Mr { key };
         let mr_ctx = MrCtx {
-            key,
             pd,
-            va: addr,
             len,
-            acc_flags,
             pgt_offset,
             pg_size,
         };

@@ -22,13 +22,10 @@ pub struct QpContext {
     pub(crate) pd: Pd,
     pub(crate) qpn: Qpn,
     pub(crate) qp_type: QpType,
-    #[allow(unused)]
+    #[allow(unused)] // a field of QP, we may use it later
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
-    #[allow(unused)]
     pub(crate) local_ip: Ipv4Addr,
-    #[allow(unused)]
-    pub(crate) local_mac_addr: MacAddress,
     pub(crate) dqp_ip: Ipv4Addr,
     pub(crate) dqp_mac_addr: MacAddress,
     pub(crate) sending_psn: Mutex<Psn>,
@@ -39,7 +36,7 @@ impl QpContext {
     ///
     /// currently, `sending_psn` is set to 0
     #[must_use]
-    pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
+    pub fn new(qp: &Qp, local_ip: Ipv4Addr) -> Self {
         Self {
             pd: qp.pd,
             qpn: qp.qpn,
@@ -47,7 +44,6 @@ impl QpContext {
             rq_acc_flags: qp.rq_acc_flags,
             pmtu: qp.pmtu,
             local_ip,
-            local_mac_addr: local_mac,
             dqp_ip: qp.dqp_ip,
             dqp_mac_addr: qp.dqp_mac,
             sending_psn: Mutex::new(Psn::new(0)),
@@ -76,7 +72,6 @@ impl Device {
         let qpc = QpContext::new(
             qp,
             self.0.local_network.ipaddr,
-            self.0.local_network.macaddr,
         );
         let op_id = self.get_ctrl_op_id();
 
