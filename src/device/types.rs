@@ -335,7 +335,8 @@ pub(crate) enum ToHostWorkRbDescWriteType {
 
 pub(crate) struct IncompleteToHostWorkRbDesc {
     parsed: ToHostWorkRbDesc,
-    parsed_cnt: usize,
+    #[allow(unused)] // we reserve this in case that we will receive more than 2 descriptors.
+    parsed_cnt: usize, 
 }
 
 pub(crate) enum ToHostWorkRbDescError {

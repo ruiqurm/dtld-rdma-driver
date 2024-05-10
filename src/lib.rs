@@ -146,11 +146,11 @@ use crate::{
     mr::{MrCtx, MrPgt},
     pd::PdCtx,
 };
-use buf::PacketBuf;
+use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
-use eui48::MacAddress;
+use nic::BasicNicDeivce;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::PacketChecker;
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -160,14 +160,14 @@ use responser::DescResponser;
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, Mutex, OnceLock, RwLock,
     },
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn, RdmaDeviceNetworkParam, Sge};
+use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
 use utils::calculate_packet_cnt;
 
 /// memory region
@@ -193,6 +193,8 @@ mod recv_pkt_map;
 mod responser;
 /// A simple buffer allocator
 mod buf;
+/// basic nic functions
+mod nic;
 /// utility functions
 mod utils;
 
@@ -229,7 +231,8 @@ struct DeviceInner<D: ?Sized> {
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
-    nic_send_buf : OnceLock<PacketBuf<4096>>,
+    nic_device : OnceLock<BasicNicDeivce>,
+    nic_recv_buf : OnceLock<PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>>,
     adaptor: D,
 }
 
@@ -258,7 +261,8 @@ impl Device {
             pkt_checker_thread: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_send_buf : OnceLock::new(),
+            nic_recv_buf : OnceLock::new(),
+            nic_device : OnceLock::new(),
             local_network : *network,
         });
 
@@ -289,7 +293,8 @@ impl Device {
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_send_buf : OnceLock::new(),
+            nic_recv_buf : OnceLock::new(),
+            nic_device : OnceLock::new(),
             local_network : *network,
             adaptor,
         });
@@ -333,8 +338,9 @@ impl Device {
             work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_send_buf : OnceLock::new(),
             local_network : *network,
+            nic_recv_buf : OnceLock::new(),
+            nic_device : OnceLock::new(),
             adaptor,
         });
 
@@ -468,28 +474,6 @@ impl Device {
         Ok(ctx)
     }
 
-    /// dev version of write a raw packet
-    /// 
-    /// # Panics
-    /// FIXME: We will remove the unwrap later
-    /// 
-    /// # Errors
-    #[allow(clippy::unwrap_in_result,clippy::unwrap_used,clippy::indexing_slicing,clippy::cast_possible_truncation)]
-    pub fn write_raw(&self,ip_addr : Ipv4Addr, mac_addr: MacAddress,packet : &[u8]) -> Result<(),Error>{
-        let send_buf = self.0.nic_send_buf.get().unwrap();
-        let mut slot = send_buf.recycle_buf();
-        let buf = slot.as_mut_slice();
-        buf[0..packet.len()].copy_from_slice(packet);
-        let sge = slot.into_sge();
-        let common = ToCardWorkRbDescCommon { qp_type: QpType::RawPacket, total_len: packet.len() as u32, dqp_ip:ip_addr,mac_addr, ..Default::default() };
-        let desc = ToCardWorkRbDescBuilder::new_write_raw()
-            .with_common(common)
-            .with_sge(sge)
-            .build()?;
-        self.send_work_desc(desc)?;
-        Ok(())
-    }
-
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
@@ -542,7 +526,9 @@ impl Device {
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
-        let recv_buf = self.set_nic_raw()?;
+        self.prepare_nic_recv_buf()?;
+
+        let (nic_notify_send_queue, nic_notify_recv_queue) = std::sync::mpsc::channel();
 
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
@@ -551,10 +537,14 @@ impl Device {
             qp_table : Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
             sending_queue : send_queue.clone(),
             write_op_ctx_map : Arc::<RwLock<HashMap<Msn, WriteOpCtx>>>::clone(&self.0.write_op_ctx_map),
-            recv_buf
+            nic_notification_queue : nic_notify_send_queue,
         };
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
+
+        // create nic recv and send device
+        let tx_buf = self.init_nic_buf()?;
+        self.0.nic_device.set(BasicNicDeivce::new(self.clone(), tx_buf, nic_notify_recv_queue)).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
@@ -571,11 +561,10 @@ impl Device {
     }
 
     #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]
-    fn set_nic_raw(&self) -> Result<PacketBuf<4096>, Error> {
+    fn prepare_nic_recv_buf(&self) -> Result<(), Error> {
         // configure basic nic recv buffer
         let op_id = self.get_ctrl_op_id();
-        let (send_buf,recv_buf) = self.init_nic_buf()?;
-        let () = self.0.nic_send_buf.set(send_buf).unwrap();
+        let recv_buf = self.init_nic_buf()?;
         let (start_va,lkey) = recv_buf.get_register_params();
         let set_raw_desc = ToCardCtrlRbDesc::SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta {
             common: ToCardCtrlRbDescCommon { op_id },
@@ -587,7 +576,8 @@ impl Device {
         if !is_set_raw_success {
             return Err(Error::DeviceReturnFailed("Network param"));
         };
-        Ok(recv_buf)
+        self.0.nic_recv_buf.set(recv_buf).map_err(|_|Error::DoubleInit("nic_recv_buf has been set".to_owned()))?;
+        Ok(())
     }
 
     fn set_network(&self, network: &RdmaDeviceNetworkParam) -> Result<(), Error> {

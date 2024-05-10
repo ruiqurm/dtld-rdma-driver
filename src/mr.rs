@@ -1,8 +1,12 @@
 use crate::{
-    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE,NIC_PACKET_BUFFER_SLOT_SIZE}, device::{
+    buf::{PacketBuf, NIC_PACKET_BUFFER_SLOT_SIZE, RDMA_ACK_BUFFER_SLOT_SIZE},
+    device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateMrTable,
         ToCardCtrlRbDescUpdatePageTable,
-    }, types::{Key, MemAccessTypeFlag, PAGE_SIZE}, utils::{allocate_aligned_memory, deallocate_aligned_memory}, Device, Error, Pd
+    },
+    types::{Key, MemAccessTypeFlag, PAGE_SIZE},
+    utils::{allocate_aligned_memory, deallocate_aligned_memory},
+    Device, Error, Pd,
 };
 use rand::RngCore as _;
 use std::{
@@ -12,7 +16,6 @@ use std::{
 
 const ACKNOWLEDGE_BUFFER_SIZE: usize = PAGE_SIZE;
 const NIC_BUFFER_SIZE: usize = PAGE_SIZE;
-
 
 /// Memory Region
 ///
@@ -265,68 +268,29 @@ impl Device {
         }
     }
 
-    pub(crate) fn init_nic_buf(
-        &self,
-    ) -> Result<
-        (
-            PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>,
-            PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>,
-        ),
-        Error,
-    > {
-        let send_buf = {
-            let buffer = allocate_aligned_memory(NIC_BUFFER_SIZE)?;
-            let buffer_addr = buffer.as_ptr() as usize;
-            let pd = self.alloc_pd()?;
+    pub(crate) fn init_nic_buf(&self) -> Result<PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>, Error> {
+        let buffer = allocate_aligned_memory(NIC_BUFFER_SIZE)?;
+        let buffer_addr = buffer.as_ptr() as usize;
+        let pd = self.alloc_pd()?;
 
-            // the `PAGE_SIZE` and `NIC_BUFFER_SIZE` is guaranteed to smaller than u32
-            #[allow(clippy::cast_possible_truncation)]
-            let create_mr_result = self.reg_mr(
-                pd,
-                u64::try_from(buffer_addr).map_err(|_| Error::NotSupport("Not 64 bit System"))?,
-                NIC_BUFFER_SIZE as u32,
-                PAGE_SIZE as u32, // 2MB
-                MemAccessTypeFlag::IbvAccessLocalWrite
-                    | MemAccessTypeFlag::IbvAccessRemoteRead
-                    | MemAccessTypeFlag::IbvAccessRemoteWrite,
-            );
-            match create_mr_result {
-                Ok(mr) => {
-                    PacketBuf::new(buffer_addr, NIC_BUFFER_SIZE, mr.get_key())
-                }
-                Err(e) => {
-                    deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE)?;
-                    return Err(e);
-                }
+        // the `PAGE_SIZE` and `NIC_BUFFER_SIZE` is guaranteed to smaller than u32
+        #[allow(clippy::cast_possible_truncation)]
+        let create_mr_result = self.reg_mr(
+            pd,
+            u64::try_from(buffer_addr).map_err(|_| Error::NotSupport("Not 64 bit System"))?,
+            NIC_BUFFER_SIZE as u32,
+            PAGE_SIZE as u32, // 2MB
+            MemAccessTypeFlag::IbvAccessLocalWrite
+                | MemAccessTypeFlag::IbvAccessRemoteRead
+                | MemAccessTypeFlag::IbvAccessRemoteWrite,
+        );
+        match create_mr_result {
+            Ok(mr) => Ok(PacketBuf::new(buffer_addr, NIC_BUFFER_SIZE, mr.get_key())),
+            Err(e) => {
+                deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE)?;
+                Err(e)
             }
-        };
-        let recv_buf = {
-            let buffer = allocate_aligned_memory(NIC_BUFFER_SIZE)?;
-            let buffer_addr = buffer.as_ptr() as usize;
-            let pd = self.alloc_pd()?;
-
-            // the `PAGE_SIZE` and `NIC_BUFFER_SIZE` is guaranteed to smaller than u32
-            #[allow(clippy::cast_possible_truncation)]
-            let create_mr_result = self.reg_mr(
-                pd,
-                u64::try_from(buffer_addr).map_err(|_| Error::NotSupport("Not 64 bit System"))?,
-                NIC_BUFFER_SIZE as u32,
-                PAGE_SIZE as u32, // 2MB
-                MemAccessTypeFlag::IbvAccessLocalWrite
-                    | MemAccessTypeFlag::IbvAccessRemoteRead
-                    | MemAccessTypeFlag::IbvAccessRemoteWrite,
-            );
-            match create_mr_result {
-                Ok(mr) => {
-                    PacketBuf::new(buffer_addr, NIC_BUFFER_SIZE, mr.get_key())
-                }
-                Err(e) => {
-                    deallocate_aligned_memory(buffer, ACKNOWLEDGE_BUFFER_SIZE)?;
-                    return Err(e);
-                }
-            }
-        };
-        Ok((send_buf, recv_buf))
+        }
     }
 
     /// Remove a Mr

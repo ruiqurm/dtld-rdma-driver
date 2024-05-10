@@ -196,7 +196,7 @@ impl DescResponser {
                         last_retry_psn,
                     );
                     #[allow(clippy::cast_possible_truncation)]
-                    let sge = ack_buf.into_sge();
+                    let sge = ack_buf.into_sge(ACKPACKET_SIZE as u32);
                     ToCardWorkRbDescBuilder::new_write()
                         .with_common(common)
                         .with_sge(sge)
@@ -526,7 +526,7 @@ mod tests {
                 sending_psn: Mutex::new(Psn::new(0)),
             },
         );
-        let _ =
+        let _responser =
             super::DescResponser::new(Arc::<Dummy>::clone(&dummy), receiver, ack_buffers, qp_table);
         sender
             .send(super::RespCommand::Acknowledge(super::RespAckCommand {

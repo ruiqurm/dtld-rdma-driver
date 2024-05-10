@@ -2,13 +2,25 @@ use core::panic;
 use log::{debug, error};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, RwLock,
+    },
 };
 
 use crate::{
-    buf::PacketBuf, device::{
-        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm
-    }, op_ctx::WriteOpCtx, qp::QpContext, responser::{RespCommand, RespReadRespCommand}, types::{Msn, Qpn}, Error, RecvPktMap
+    buf::Slot,
+    device::{
+        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescRaw,
+        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp,
+        ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
+    },
+    nic::NicRecvNotification,
+    op_ctx::WriteOpCtx,
+    qp::QpContext,
+    responser::{RespCommand, RespReadRespCommand},
+    types::{Msn, Qpn},
+    Error, RecvPktMap,
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -24,8 +36,7 @@ pub(crate) struct WorkDescPollerContext {
     pub(crate) qp_table: Arc<RwLock<HashMap<Qpn, QpContext>>>,
     pub(crate) sending_queue: std::sync::mpsc::Sender<RespCommand>,
     pub(crate) write_op_ctx_map: Arc<RwLock<HashMap<Msn, WriteOpCtx>>>,
-    pub(crate) recv_buf: PacketBuf<4096>,
-
+    pub(crate) nic_notification_queue: std::sync::mpsc::Sender<NicRecvNotification>,
 }
 
 unsafe impl Send for WorkDescPollerContext {}
@@ -34,16 +45,18 @@ impl WorkDescPoller {
     pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
-        let thread = std::thread::spawn(move || WorkDescPollerContext::poll_working_thread(&ctx,&thread_stop_flag));
+        let thread = std::thread::spawn(move || {
+            WorkDescPollerContext::poll_working_thread(&ctx, &thread_stop_flag);
+        });
         Self {
-            thread : Some(thread),
-            stop_flag
+            thread: Some(thread),
+            stop_flag,
         }
     }
 }
 
 impl WorkDescPollerContext {
-    pub(crate) fn poll_working_thread(ctx: &Self,stop_flag : &AtomicBool) {
+    pub(crate) fn poll_working_thread(ctx: &Self, stop_flag: &AtomicBool) {
         while !stop_flag.load(Ordering::Relaxed) {
             let desc = match ctx.work_rb.pop() {
                 Ok(desc) => desc,
@@ -64,7 +77,7 @@ impl WorkDescPollerContext {
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
                 ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(&desc),
                 ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
-                ToHostWorkRbDesc::Raw(desc) => {ctx.handle_work_desc_raw(&desc);Ok(())}
+                ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
             };
             if let Err(reason) = result {
                 error!("poll_work_rb stopped: {}", reason);
@@ -111,7 +124,8 @@ impl WorkDescPollerContext {
                 u64::from(real_payload_len)
             } as u32;
 
-            #[allow(clippy::arithmetic_side_effects)] // real_payload_len must be greater than first_pkt_len
+            #[allow(clippy::arithmetic_side_effects)]
+            // real_payload_len must be greater than first_pkt_len
             let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
             let mut pkt_map = RecvPktMap::new(
                 desc.is_read_resp,
@@ -180,18 +194,22 @@ impl WorkDescPollerContext {
         panic!("receive a nack");
     }
 
-    fn handle_work_desc_raw(&self,desc:&ToHostWorkRbDescRaw) {
-        let mut slot = self.recv_buf.recycle_buf();
-        let buf = slot.as_mut_slice();
-        log::info!("receive a raw desc: {:?}", buf.get(0..desc.len as usize));
+    fn handle_work_desc_raw(&self, desc: &ToHostWorkRbDescRaw) -> Result<(), Error> {
+        let slot = unsafe { Slot::from_raw_parts_mut(desc.addr as *mut u8, desc.key) };
+        self.nic_notification_queue
+            .send(NicRecvNotification {
+                buf: slot,
+                len: desc.len,
+            })
+            .map_err(|_| Error::PipeBroken("work polling thread to nic thread"))
     }
 }
 
 impl Drop for WorkDescPoller {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) =  self.thread.take(){
-            if let Err(e) = thread.join(){
+        if let Some(thread) = self.thread.take() {
+            if let Err(e) = thread.join() {
                 error!("Failed to join the WorkDescPoller thread: {:?}", e);
             }
         }
@@ -210,11 +228,16 @@ mod tests {
     use eui48::MacAddress;
 
     use crate::{
-        buf::PacketBuf, device::{
+        device::{
             DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
             ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
             ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-        }, op_ctx::WriteOpCtx, qp::QpContext, responser::RespCommand, types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn}, Pd
+        },
+        op_ctx::WriteOpCtx,
+        qp::QpContext,
+        responser::RespCommand,
+        types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn},
+        Pd,
     };
 
     use super::WorkDescPoller;
@@ -341,10 +364,11 @@ mod tests {
             },
         );
         let (sending_queue, recv_queue) = std::sync::mpsc::channel::<RespCommand>();
+        let (notification_send_queue, _notification_recv_queue) = std::sync::mpsc::channel();
+
         let write_op_ctx_map = Arc::new(RwLock::new(HashMap::new()));
         let key = Msn::default();
         let ctx = WriteOpCtx::new_running();
-        let recv_buf = PacketBuf::new(0, 4096, Key::default());
         write_op_ctx_map.write().unwrap().insert(key, ctx.clone());
         let work_ctx = super::WorkDescPollerContext {
             work_rb,
@@ -352,7 +376,7 @@ mod tests {
             qp_table,
             sending_queue,
             write_op_ctx_map,
-            recv_buf
+            nic_notification_queue: notification_send_queue,
         };
         let _poller = WorkDescPoller::new(work_ctx);
         let _ = ctx.wait();

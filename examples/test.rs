@@ -141,15 +141,15 @@ fn main() {
     let mut packet:[u8;40] = [
             69, 0, 0, 40, 136, 10, 64, 0, 128, 6, 251, 191, 10, 29, 186, 11, 82, 157, 96, 64, 47, 3, 29, 114, 149, 240, 25, 197, 60, 84, 195, 192, 80, 16, 1, 253, 58, 146, 0, 0
     ];
-    for i in 0..32{
-        packet.last_mut().map(|x| *x= i as u8);
-        dev_a.write_raw(b_network.ipaddr,b_network.macaddr,&packet).unwrap();
-    }
-    sleep(Duration::from_secs(10));
-    for i in 0..32{
-        packet.last_mut().map(|x| *x= i as u8);
-        dev_a.write_raw(b_network.ipaddr,b_network.macaddr,&packet).unwrap();
-    }
-    sleep(Duration::from_secs(10));
+    // for i in 0..32{
+    //     packet.last_mut().map(|x| *x= i as u8);
+    //     dev_a.write_raw(b_network.ipaddr,b_network.macaddr,&packet).unwrap();
+    // }
+    // sleep(Duration::from_secs(10));
+    // for i in 0..32{
+    //     packet.last_mut().map(|x| *x= i as u8);
+    //     dev_a.write_raw(b_network.ipaddr,b_network.macaddr,&packet).unwrap();
+    // }
+    // sleep(Duration::from_secs(10));
 
 }

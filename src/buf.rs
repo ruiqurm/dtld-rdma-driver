@@ -13,12 +13,17 @@ impl<const SLOT_SIZE: usize> Slot<SLOT_SIZE> {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn into_sge(self) -> Sge {
+    pub(crate) fn into_sge(self, real_size : u32) -> Sge {
+        assert!(real_size <= SLOT_SIZE as u32, "The real size should be less than the slot size");
         Sge{
             addr: self.0 as u64,
-            len: SLOT_SIZE as u32, // safe to cast here
+            len: real_size, // safe to cast here
             key: self.1
         }
+    }
+
+    pub(crate) unsafe fn from_raw_parts_mut(ptr: *mut u8, key: Key) -> Self {
+        Self(ptr,key)
     }
 }
 
