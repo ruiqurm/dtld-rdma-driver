@@ -151,7 +151,7 @@ use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
 use flume::unbounded;
-use nic::BasicNicDeivce;
+use nic::{start_basic_nic_utilities, BasicNicDeivce, NicInterface};
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::{PacketChecker, RecvPktMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -232,7 +232,7 @@ struct DeviceInner<D: ?Sized> {
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
-    nic_device : OnceLock<BasicNicDeivce>,
+    nic_device : OnceLock<NicInterface>,
     nic_recv_buf : OnceLock<PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>>,
     adaptor: D,
 }
@@ -543,7 +543,9 @@ impl Device {
 
         // create nic recv and send device
         let tx_buf = self.init_nic_buf()?;
-        self.0.nic_device.set(BasicNicDeivce::new(self.clone(), tx_buf, nic_notify_recv_queue)).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
+        let self_device = self.clone();
+        let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue, self.0.local_network.macaddr);
+        self.0.nic_device.set(nic_interface).map_err(|_|Error::DoubleInit("nic_device has been set".to_owned()))?;  
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
