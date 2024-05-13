@@ -166,7 +166,7 @@ use std::{
 };
 use thiserror::Error;
 use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
-use utils::{calculate_packet_cnt, SlotBuffer};
+use utils::{calculate_packet_cnt, Buffer};
 use parking_lot::{Mutex,RwLock};
 
 /// memory region
@@ -231,7 +231,7 @@ struct DeviceInner<D: ?Sized> {
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
     nic_device : OnceLock<BasicNicDeivce>,
-    buffer_keeper : Mutex<Vec<SlotBuffer>>,
+    buffer_keeper : Mutex<Vec<Buffer>>,
     adaptor: D,
 }
 
@@ -516,7 +516,7 @@ impl Device {
         self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
 
         // enable responser module
-        let mut buf = SlotBuffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let mut buf = Buffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 
@@ -566,7 +566,7 @@ impl Device {
     fn prepare_nic_recv_buf(&self,use_huge_page:bool) -> Result<(), Error> {
         // configure basic nic recv buffer
         let op_id = self.get_ctrl_op_id();
-        let mut buf = SlotBuffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let mut buf = Buffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let recv_buf = self.init_buf(&mut buf,NIC_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 

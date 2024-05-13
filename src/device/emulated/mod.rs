@@ -1,12 +1,16 @@
 use log::{debug, error};
 
+use crate::utils::Buffer;
+
 use self::rpc_cli::{
     RpcClient, ToCardCtrlRbCsrProxy, ToCardWorkRbCsrProxy, ToHostCtrlRbCsrProxy,
     ToHostWorkRbCsrProxy,
 };
 use super::{
-    constants, ringbuf::Ringbuf, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb,
-    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
+    constants::{self},
+    ringbuf::Ringbuf,
+    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
+    ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
 use std::{
     net::SocketAddr,
@@ -77,14 +81,35 @@ impl EmulatedDevice {
         let rpc_cli =
             RpcClient::new(rpc_server_addr).map_err(|e| DeviceError::Device(e.to_string()))?;
 
-        let (to_card_ctrl_rb, to_card_ctrl_rb_addr) =
-            ToCardCtrlRb::new(ToCardCtrlRbCsrProxy::new(rpc_cli.clone()));
-        let (to_host_ctrl_rb, to_host_ctrl_rb_addr) =
-            ToHostCtrlRb::new(ToHostCtrlRbCsrProxy::new(rpc_cli.clone()));
-        let (to_card_work_rb, to_card_work_rb_addr) =
-            ToCardWorkRb::new(ToCardWorkRbCsrProxy::new(rpc_cli.clone()));
-        let (to_host_work_rb, to_host_work_rb_addr) =
-            ToHostWorkRb::new(ToHostWorkRbCsrProxy::new(rpc_cli.clone()));
+        let to_card_ctrl_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
+            .map_err(|e| DeviceError::Device(e.to_string()))?;
+        let to_card_ctrl_rb_addr = to_card_ctrl_rb_buffer.as_ptr() as usize;
+        let to_card_ctrl_rb = ToCardCtrlRb::new(
+            ToCardCtrlRbCsrProxy::new(rpc_cli.clone()),
+            to_card_ctrl_rb_buffer,
+        );
+
+        let to_host_ctrl_rb = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
+            .map_err(|e| DeviceError::Device(e.to_string()))?;
+        let to_host_ctrl_rb_addr = to_host_ctrl_rb.as_ptr() as usize;
+        let to_host_ctrl_rb =
+            ToHostCtrlRb::new(ToHostCtrlRbCsrProxy::new(rpc_cli.clone()), to_host_ctrl_rb);
+
+        let to_card_work_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
+            .map_err(|e| DeviceError::Device(e.to_string()))?;
+        let to_card_work_rb_addr = to_card_work_rb_buffer.as_ptr() as usize;
+        let to_card_work_rb = ToCardWorkRb::new(
+            ToCardWorkRbCsrProxy::new(rpc_cli.clone()),
+            to_card_work_rb_buffer,
+        );
+
+        let to_host_work_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
+            .map_err(|e| DeviceError::Device(e.to_string()))?;
+        let to_host_work_rb_addr = to_host_work_rb_buffer.as_ptr() as usize;
+        let to_host_work_rb = ToHostWorkRb::new(
+            ToHostWorkRbCsrProxy::new(rpc_cli.clone()),
+            to_host_work_rb_buffer,
+        );
 
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),
@@ -286,7 +311,7 @@ impl ToHostRb<ToHostWorkRbDesc> for EmulatedDevice {
         loop {
             match read_res {
                 Ok(desc) => break Ok(desc),
-                Err(ToHostWorkRbDescError::DeviceError(e))=>{
+                Err(ToHostWorkRbDescError::DeviceError(e)) => {
                     return Err(e);
                 }
                 Err(ToHostWorkRbDescError::Incomplete(incomplete_desc)) => {

@@ -5,7 +5,7 @@ use crate::{
         ToCardCtrlRbDescUpdatePageTable,
     },
     types::{Key, MemAccessTypeFlag, PAGE_SIZE},
-    utils::SlotBuffer,
+    utils::Buffer,
     Device, Error, Pd,
 };
 use rand::RngCore as _;
@@ -215,7 +215,7 @@ impl Device {
 
     pub(crate) fn init_buf(
         &self,
-        buffer: &mut SlotBuffer,
+        buffer: &mut Buffer,
         buffer_size: usize
     ) -> Result<PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>, Error> {
         let buffer_addr = buffer.as_ptr() as usize;

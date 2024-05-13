@@ -1,6 +1,6 @@
 use std::sync::{Mutex, MutexGuard};
 
-use crate::HugePage;
+use crate::utils::Buffer;
 
 use super::DeviceError;
 
@@ -17,7 +17,7 @@ pub(super) trait CsrReaderProxy {
 /// The Ringbuf is a circular buffer used comunicate between the host and the card.
 #[derive(Debug)]
 pub(super) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
-    buf: Mutex<HugePage>,
+    buf: Mutex<Buffer>,
     head: usize,
     tail: usize,
     proxy: T,
@@ -31,7 +31,7 @@ pub(super) struct RingbufWriter<
     const ELEM_SIZE: usize,
     const PAGE_SIZE: usize,
 > {
-    buf: MutexGuard<'a, HugePage>,
+    buf: MutexGuard<'a, Buffer>,
     head: &'a mut usize,
     tail: &'a mut usize,
     written_cnt: usize,
@@ -46,7 +46,7 @@ pub(super) struct RingbufReader<
     const ELEM_SIZE: usize,
     const PAGE_SIZE: usize,
 > {
-    buf: MutexGuard<'a, HugePage>,
+    buf: MutexGuard<'a, Buffer>,
     head: &'a mut usize,
     tail: &'a mut usize,
     read_cnt: usize,
@@ -73,18 +73,13 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     /// Return (ringbuf, ringbuf virtual memory address)
     ///
     #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects,clippy::unwrap_used)] // we have allocate additional space in advance to avoid overflow
-    pub(super) fn new(proxy: T) -> (Self, usize) {
-        let huge_page = HugePage::new(DEPTH * ELEM_SIZE).unwrap();
-        let buf_addr = huge_page.as_ptr() as usize;
-        (
-            Self {
-                buf : Mutex::new(huge_page),
-                head: 0,
-                tail: 0,
-                proxy,
-            },
-            buf_addr,
-        )
+    pub(super) fn new(proxy: T, buffer : Buffer) -> Self {
+        Self {
+            buf : Mutex::new(buffer),
+            head: 0,
+            tail: 0,
+            proxy,
+        }
     }
 
     #[allow(clippy::arithmetic_side_effects)]
@@ -282,7 +277,7 @@ mod test {
         thread::{sleep, spawn},
     };
 
-    use crate::device::DeviceError;
+    use crate::{device::DeviceError, utils::Buffer};
 
     use super::Ringbuf;
 
@@ -340,7 +335,8 @@ mod test {
             sleep(std::time::Duration::from_millis(10));
             thread_proxy.consume();
         });
-        let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
+        let buffer = Buffer::new(4096, true).unwrap();
+        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
         let mut writer = ringbuf.write().unwrap();
 
         for i in 0..128 {
@@ -374,7 +370,8 @@ mod test {
             thread_proxy.produce::<128>(128);
             sleep(std::time::Duration::from_millis(10));
         });
-        let (mut ringbuf, _) = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone());
+        let buffer = Buffer::new(4096, true).unwrap();
+        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
         let mut reader = ringbuf.read().unwrap();
         sleep(std::time::Duration::from_millis(100));
         for _i in 0..128 {

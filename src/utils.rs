@@ -171,28 +171,34 @@ impl DerefMut for AlignedMemory<'_> {
 }
 
 #[derive(Debug)]
-pub(crate)enum SlotBuffer {
+pub(crate)enum Buffer {
     HugePage(HugePage),
     AlignedMemory(AlignedMemory<'static>),
 }
 
-impl SlotBuffer{
+impl Buffer{
     pub(crate) fn new(size: usize,is_huge_page:bool) -> io::Result<Self> {
         if is_huge_page {
-            HugePage::new(size).map(SlotBuffer::HugePage)
+            HugePage::new(size).map(Buffer::HugePage)
         } else {
-            AlignedMemory::new(size).map(SlotBuffer::AlignedMemory)
+            AlignedMemory::new(size).map(Buffer::AlignedMemory)
         }
     }
 
     pub(crate) fn as_ptr(&self) -> *const u8 {
         match self {
-            SlotBuffer::HugePage(huge_page) => huge_page.as_ptr(),
-            SlotBuffer::AlignedMemory(aligned_memory) => aligned_memory.as_ptr(),
+            Buffer::HugePage(huge_page) => huge_page.as_ptr(),
+            Buffer::AlignedMemory(aligned_memory) => aligned_memory.as_ptr(),
+        }
+    }
+
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
+        match self {
+            Buffer::HugePage(huge_page) => huge_page.addr as *mut u8,
+            Buffer::AlignedMemory(aligned_memory) => aligned_memory.0.as_mut_ptr(),
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
