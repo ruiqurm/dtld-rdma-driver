@@ -21,7 +21,7 @@ inline u32 read_register(void *iomem)
 {
     return ioread32(iomem);
 }
-#define write_register(v, mem, off) iowrite32(v, mem)
+#define write_register(v, mem, off) iowrite32(v,(mem+off))
 
 static inline u32 build_u32(u32 hi, u32 lo)
 {
