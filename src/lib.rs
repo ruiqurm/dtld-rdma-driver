@@ -151,7 +151,7 @@ use device::{
 };
 use flume::unbounded;
 use mr::{ACKNOWLEDGE_BUFFER_SIZE, NIC_BUFFER_SIZE};
-use nic::BasicNicDeivce;
+use nic::{start_basic_nic_utilities, BasicNicDeivce, NicInterface};
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::{PacketChecker, RecvPktMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -230,7 +230,7 @@ struct DeviceInner<D: ?Sized> {
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
-    nic_device : OnceLock<BasicNicDeivce>,
+    nic_device : OnceLock<NicInterface>,
     buffer_keeper : Mutex<Vec<Buffer>>,
     adaptor: D,
 }
@@ -529,7 +529,7 @@ impl Device {
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
         self.prepare_nic_recv_buf(use_huge_page)?;
 
-        let (nic_notify_send_queue, _nic_notify_recv_queue) = unbounded();
+        let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
 
         // enable work desc poller module.
         let work_desc_poller_ctx = WorkDescPollerContext{
@@ -544,9 +544,10 @@ impl Device {
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
         // create nic recv and send device
-
-        // let tx_buf = self.init_nic_buf()?;
-        // self.0.nic_device.set(BasicNicDeivce::new(self.clone(), tx_buf, nic_notify_recv_queue)).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
+        let tx_buf = self.init_nic_buf()?;
+        let self_device = self.clone();
+        let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue, self.0.local_network.macaddr);
+        self.0.nic_device.set(nic_interface).map_err(|_|Error::DoubleInit("nic_device has been set".to_owned()))?;  
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
