@@ -5,3 +5,4 @@
 modprobe ib_core
 modprobe ib_uverbs
 insmod /workspaces/open-rdma-driver/driver/dtld_ib.ko
+sysctl -w vm.nr_hugepages=1024
