@@ -13,6 +13,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use flume::{Receiver, Sender, TryRecvError};
+use log::{debug, error};
 use parking_lot::Mutex;
 use smoltcp::{
     iface::{Config, Interface, SocketSet},
@@ -27,6 +28,7 @@ const ETH_DST_POS: std::ops::Range<usize> = 0..6;
 const ETH_SRC_POS: std::ops::Range<usize> = 6..12;
 const ETH_TYPE_START: usize = 12;
 const ETH_TYPE_IP: u16 = 0x0800;
+const ETH_HDR_LENGTH : usize = 14;
 const IPV4_SRC_START: usize = 26;
 
 pub(crate) struct NicRecvNotification {
@@ -90,7 +92,7 @@ pub(crate) fn start_basic_nic_utilities(
 }
 
 impl NicInterface {
-    pub(crate) fn query_hardware_addr(&self, ip: Ipv4Addr) -> Option<MacAddress> {
+    pub(crate) fn query_mac_addr(&self, ip: Ipv4Addr) -> Option<MacAddress> {
         let cache = self.neighbor_cache.lock();
         let mac = cache.get(&ip);
         if mac.is_some() {
@@ -150,7 +152,7 @@ impl Device for BasicNicDeivce {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
-        caps.max_transmission_unit = NIC_PACKET_BUFFER_SLOT_SIZE;
+        caps.max_transmission_unit = NIC_PACKET_BUFFER_SLOT_SIZE; 
         caps.max_burst_size = None;
         caps.medium = Medium::Ethernet;
         caps
@@ -172,6 +174,7 @@ impl RxToken for NicRxToken<'_> {
         // some hacks:
         // 1. First check if it's an Ethernet frame, and the upper layer is IP.
         // 2. we distract the src IP and src MAC, store them into our cache.
+        log::info!("Received packet: {:?}", self.0);
         let type_ =
             u16::from(self.0[ETH_TYPE_START]) << 8_i32 | u16::from(self.0[ETH_TYPE_START + 1]);
         if type_ == ETH_TYPE_IP {
@@ -198,23 +201,24 @@ impl TxToken for NicTxToken<'_> {
     #[allow(
         clippy::unwrap_used,
         clippy::indexing_slicing,
-        clippy::cast_possible_truncation
+        clippy::cast_possible_truncation,
+        clippy::arithmetic_side_effects
     )]
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut buf = self.1.recycle_buf();
-        let ret = f(buf.as_mut_slice());
-        // we get 0..6 bytes from the buffer, so it's safe to unwrap
-        let mac_addr = MacAddress::from_bytes(&buf.as_mut_slice()[ETH_DST_POS]).unwrap();
 
-        let total_len = len as u32; // length is guaranteed to be less than u32::MAX
-        let sge = buf.into_sge(total_len);
+        let ret = f(buf.as_mut_slice()[0..len].as_mut());
+
+        log::debug!("Sending packet to buffer: {:?}", &buf.as_mut_slice()[0..len]);
+        let sge = buf.into_sge(len as u32);
+        let total_len = 64.min(len);
         let common = ToCardWorkRbDescCommon {
             qp_type: QpType::RawPacket,
-            total_len,
-            mac_addr,
+            total_len : total_len as u32,
+            pmtu : crate::types::Pmtu::Mtu1024,
             ..Default::default()
         };
         // we don't miss any field, so it's impossible to panic
@@ -230,7 +234,8 @@ impl TxToken for NicTxToken<'_> {
     }
 }
 
-#[allow(clippy::similar_names, clippy::unwrap_used)]
+// TODO: we may separate the ICMP and DHCP into different functions
+#[allow(clippy::similar_names, clippy::unwrap_used,clippy::too_many_lines,clippy::arithmetic_side_effects)]
 fn working_thread(
     stop_flag: &AtomicBool,
     device: &mut BasicNicDeivce,
@@ -245,14 +250,14 @@ fn working_thread(
     // Create sockets
     let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
     let icmp_tx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
-    // let mut dhcp_socket = dhcpv4::Socket::new();
+    let dhcp_socket = dhcpv4::Socket::new();
     let icmp_socket = icmp::Socket::new(icmp_rx_buffer, icmp_tx_buffer);
 
     let mut sockets = SocketSet::new(vec![]);
-    // let dhcp_handle = sockets.add(dhcp_socket);
+    let dhcp_handle = sockets.add(dhcp_socket);
     let icmp_handle = sockets.add(icmp_socket);
     let icmp_ident = 0x22b;
-    let echo_payload = [0xffu8; 40];
+    let echo_payload = [0x0u8; 40];
     let mut icmp_query_map = HashMap::new();
     loop {
         let timestamp = Instant::now();
@@ -263,11 +268,14 @@ fn working_thread(
         if !socket.is_open() {
             socket.bind(icmp::Endpoint::Ident(icmp_ident)).unwrap();
         }
+        
         if socket.can_send() {
             match icmp_queries.try_recv() {
                 Ok((addr, thread)) => {
+                    log::info!("Querying mac address for {:?}", addr);
                     let addr: IpAddress = addr.into();
-                    if icmp_query_map.insert(addr, thread).is_some() {
+                    let timeout = timestamp + smoltcp::time::Duration::from_secs(5);
+                    if icmp_query_map.insert(addr, (thread,timeout)).is_none() {
                         let icmp_repr = Icmpv4Repr::EchoRequest {
                             ident: icmp_ident,
                             seq_no: 0,
@@ -276,6 +284,7 @@ fn working_thread(
                         let icmp_payload = socket.send(icmp_repr.buffer_len(), addr).unwrap();
                         let mut icmp_packet = Icmpv4Packet::new_unchecked(icmp_payload);
                         icmp_repr.emit(&mut icmp_packet, &device.capabilities().checksum);
+                        log::info!("sending ICMP\n");
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -310,47 +319,56 @@ fn working_thread(
                 _ => unreachable!(),
             }
             // If we receive the message, the we must have sent the message, and got its mac address(suppose we are in LAN).
-            if let Some(thread) = icmp_query_map.get(&addr) {
+            if let Some((thread,_timeout)) = icmp_query_map.get(&addr) {
                 thread.unpark();
             }
         }
 
+        // // handle DHCP packet here
+        let event = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll();
+        match event {
+            None => {}
+            Some(dhcpv4::Event::Configured(dhcp_config)) => {
+                debug!("DHCP config acquired!");
+                debug!("IP address:      {}", dhcp_config.address);
+                set_ipv4_addr(&mut iface, dhcp_config.address);
+
+                if let Some(router) = dhcp_config.router {
+                    debug!("Default gateway: {}", router);
+                    // unless OOM, this should never fail
+                    let _route :Option<smoltcp::iface::Route> = iface.routes_mut().add_default_ipv4_route(router).unwrap();
+                } else {
+                    debug!("Default gateway: None");
+                    let _route :Option<smoltcp::iface::Route> = iface.routes_mut().remove_default_ipv4_route();
+                }
+            }
+            Some(dhcpv4::Event::Deconfigured) => {
+                debug!("DHCP lost config!");
+                #[allow(clippy::redundant_closure_for_method_calls)]
+                iface.update_ip_addrs(|addrs| addrs.clear());
+                let _route :Option<smoltcp::iface::Route> = iface.routes_mut().remove_default_ipv4_route();
+            }
+        }
+        
+        // iterate ICMP map
+        icmp_query_map.retain(|_addr,(thread,timeout)|{
+            if timestamp >= *timeout {
+                thread.unpark();
+                false
+            }else{
+                true
+            }
+        });
         sleep(std::time::Duration::from_millis(1));
 
-        // // handle DHCP packet here
-        // let event = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle).poll();
-        // match event {
-        //     None => {}
-        //     Some(dhcpv4::Event::Configured(dhcp_config)) => {
-        //         debug!("DHCP config acquired!");
-
-        //         debug!("IP address:      {}", dhcp_config.address);
-        //         set_ipv4_addr(&mut iface, dhcp_config.address);
-
-        //         if let Some(router) = dhcp_config.router {
-        //             debug!("Default gateway: {}", router);
-        //             iface.routes_mut().add_default_ipv4_route(router).unwrap();
-        //         } else {
-        //             debug!("Default gateway: None");
-        //             iface.routes_mut().remove_default_ipv4_route();
-        //         }
-
-        //         for (i, s) in dhcp_config.dns_servers.iter().enumerate() {
-        //             debug!("DNS server {}:    {}", i, s);
-        //         }
-        //     }
-        //     Some(dhcpv4::Event::Deconfigured) => {
-        //         debug!("DHCP lost config!");
-        //         iface.update_ip_addrs(|addrs| addrs.clear());
-        //         iface.routes_mut().remove_default_ipv4_route();
-        //     }
-        // }
     }
 }
 
-// fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
-//     iface.update_ip_addrs(|addrs| {
-//         addrs.clear();
-//         addrs.push(IpCidr::Ipv4(cidr)).unwrap();
-//     });
-// }
+#[allow(clippy::unwrap_used)]
+fn set_ipv4_addr(iface: &mut Interface, cidr: Ipv4Cidr) {
+    iface.update_ip_addrs(|addrs| {
+        addrs.clear();
+        // unless OOM, this should never fail
+        addrs.push(IpCidr::Ipv4(cidr)).unwrap();
+    });
+}

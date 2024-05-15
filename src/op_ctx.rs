@@ -1,9 +1,11 @@
 use std::{
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
     thread::{self, Thread},
 };
 
 
+
+use parking_lot::Mutex;
 
 use crate::Error;
 
@@ -76,8 +78,7 @@ impl<Payload> OpCtx<Payload> {
         let mut guard = self
             .0
             .inner
-            .lock()
-            .map_err(|_| Error::LockPoisoned("Operation context lock"))?;
+            .lock();
         if matches!(guard.status, CtxStatus::Running) {
             guard.thread = Some(thread::current());
             drop(guard);
@@ -95,8 +96,7 @@ impl<Payload> OpCtx<Payload> {
         let mut guard = self
             .0
             .inner
-            .lock()
-            .map_err(|_| Error::LockPoisoned("op context set result lock"))?;
+            .lock();
         guard.status = CtxStatus::Finished;
         if let Some(thread) = guard.thread.take() {
             thread.unpark();

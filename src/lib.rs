@@ -149,6 +149,7 @@ use crate::{
 use device::{
     scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
 };
+use eui48::MacAddress;
 use flume::unbounded;
 use mr::{ACKNOWLEDGE_BUFFER_SIZE, NIC_BUFFER_SIZE};
 use nic::{start_basic_nic_utilities, BasicNicDeivce, NicInterface};
@@ -159,7 +160,7 @@ use qp::QpContext;
 use responser::DescResponser;
 
 use std::{
-    collections::HashMap, net::SocketAddr, sync::{
+    collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU16, AtomicU32, Ordering},
         Arc, OnceLock,
     }
@@ -472,6 +473,11 @@ impl Device {
         Ok(ctx)
     }
 
+    /// # Errors
+    pub fn query_mac_address(&self, ip:Ipv4Addr) -> Result<MacAddress,Error> {
+        let nic = self.0.nic_device.get().ok_or(Error::DeviceBusy)?;
+        nic.query_mac_addr(ip).ok_or(Error::ResourceNoAvailable("query mac address failed".to_owned()))
+    }
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
@@ -546,7 +552,7 @@ impl Device {
         // create nic recv and send device
         let tx_buf = self.init_nic_buf()?;
         let self_device = self.clone();
-        let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue, self.0.local_network.macaddr);
+        let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue,self.0.local_network.macaddr);
         self.0.nic_device.set(nic_interface).map_err(|_|Error::DoubleInit("nic_device has been set".to_owned()))?;  
 
         // enable packet checker module

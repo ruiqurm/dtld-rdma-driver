@@ -404,10 +404,6 @@ pub enum Error {
     #[error("build descriptor failed, lack of `{0}`")]
     BuildDescFailed(&'static str),
 
-    /// Mutex lock poisoned
-    #[error("Mutex lock {0} poisoned")]
-    LockPoisoned(&'static str),
-
     /// Address not aligned
     #[error("Address of {0} is not aligned,which is {1:x}")]
     AddressNotAlign(&'static str, usize),
