@@ -10,7 +10,7 @@ use open_rdma_driver::{
     },
     AlignedMemory, Device, Mr, Pd
 };
-use std::{ffi::c_void, net::Ipv4Addr};
+use std::{ffi::c_void, net::Ipv4Addr, thread::sleep, time::Duration};
 
 use crate::common::init_logging;
 
@@ -124,7 +124,7 @@ fn main() {
         .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 255, 255, 0))
         .ipaddr(Ipv4Addr::new(192, 168, 0, 2))
-        .macaddr(MacAddress::new([0xAB, 0xAB, 0xAC, 0xAD, 0xAE, 0xFE]))
+        .macaddr(MacAddress::new([0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xFE]))
         .build()
         .unwrap();
     let b_network = RdmaDeviceNetworkParamBuilder::default()
@@ -136,36 +136,44 @@ fn main() {
         .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-    let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-        create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
-    let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
-    for item in mr_buffer_b[0..].iter_mut() {
-        *item = 0
-    }
+    // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
+    //     create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
+    // sleep(Duration::from_secs(5));
+    let addr = loop{
+        let addr_result = dev_a.query_mac_address(Ipv4Addr::new(192, 168, 1, 3));
+        if let Ok(addr) = addr_result{
+            break addr
+        }
+    };
+    info!("Query mac address result: {:?}", addr);
+    // let dpqn = qpn;
+    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    //     *item = idx as u8;
+    // }
+    // for item in mr_buffer_b[0..].iter_mut() {
+    //     *item = 0
+    // }
 
-    let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
-        SEND_CNT.try_into().unwrap(),
-        mr_a.get_key(),
-    );
+    // let sge0 = Sge::new(
+    //     &mr_buffer_a[0] as *const u8 as u64,
+    //     SEND_CNT.try_into().unwrap(),
+    //     mr_a.get_key(),
+    // );
 
 
-    let ctx1 = dev_a
-        .write(
-            dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
-            mr_b.get_key(),
-            MemAccessTypeFlag::empty(),
-            sge0,
-        )
-        .unwrap();
+    // let ctx1 = dev_a
+    //     .write(
+    //         dpqn,
+    //         &mr_buffer_b[0] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         MemAccessTypeFlag::empty(),
+    //         sge0,
+    //     )
+    //     .unwrap();
 
-    let _ = ctx1.wait();
-    // ctx2.wait();
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    // let _ = ctx1.wait();
+    // // ctx2.wait();
+    // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
 
     // for item in mr_buffer_a.iter_mut() {
     //     *item = 0;

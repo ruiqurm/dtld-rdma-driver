@@ -28,7 +28,7 @@ eui48 = "1.1.0"
 log = {version = "0.4",  features = ["std"]}
 serial_test = "3.0.0"
 derive_builder = "0.20.0"
-smoltcp = "0.11.0"
+smoltcp = {version = "0.11.0", features = ["verbose"]}
 parking_lot = "0.12.2"
 flume = "0.11.0"
 

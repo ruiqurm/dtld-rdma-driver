@@ -118,7 +118,6 @@ impl ToCardWorkRbCsrProxy {
 
 impl CsrWriterProxy for ToCardWorkRbCsrProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError> {
-        log::info!("write head: {}", data);
         self.0.write_csr(Self::HEAD_CSR, data)
     }
     fn read_tail(&self) -> Result<u32, DeviceError> {
