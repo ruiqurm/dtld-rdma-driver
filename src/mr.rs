@@ -1,5 +1,5 @@
 use crate::{
-    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
+    buf::PacketBuf,
     device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateMrTable,
         ToCardCtrlRbDescUpdatePageTable,

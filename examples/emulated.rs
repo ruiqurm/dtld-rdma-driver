@@ -7,7 +7,7 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE
     }, AlignedMemory, Device, Mr, Pd
 };
-use std::{ffi::c_void, net::Ipv4Addr, thread::sleep, time::Duration};
+use std::{ffi::c_void, net::Ipv4Addr};
 
 use crate::common::init_logging;
 
