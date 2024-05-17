@@ -7,7 +7,7 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE
     }, AlignedMemory, Device, Mr, Pd
 };
-use std::{ffi::c_void, net::Ipv4Addr};
+use std::{ffi::c_void, net::Ipv4Addr, thread::sleep};
 
 use crate::common::init_logging;
 
@@ -133,9 +133,10 @@ fn main() {
         .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
-    // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-    //     create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
+    let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
+        create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
     // sleep(Duration::from_secs(5));
+    sleep(std::time::Duration::from_secs(5));
     let addr = loop{
         let addr_result = dev_a.query_mac_address(Ipv4Addr::new(192, 168, 1, 3));
         if let Ok(addr) = addr_result{
