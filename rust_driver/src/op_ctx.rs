@@ -87,6 +87,18 @@ impl<Payload> OpCtx<Payload> {
         Ok(())
     }
 
+    // TODO: use enum rather than str
+    pub(crate) fn set_error(&self, cause: &'static str){
+        // set only once
+        let mut guard = self
+            .0
+            .inner
+            .lock();
+        guard.status = CtxStatus::Failed(cause);
+        if let Some(thread) = guard.thread.take() {
+            thread.unpark();
+        }
+    }
     pub(crate) fn set_result(&self, result: Payload) -> Result<(), Error> {
         self.0
             .payload

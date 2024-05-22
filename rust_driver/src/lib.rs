@@ -193,6 +193,8 @@ mod responser;
 mod buf;
 /// basic nic functions
 mod nic;
+/// retry monitor
+mod retry;
 /// utility functions
 mod utils;
 

@@ -17,7 +17,7 @@ use self::{
 };
 
 use super::{
-    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler},
+    scheduler::DescriptorScheduler,
     DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
     ToHostRb, ToHostWorkRbDesc,
 };
