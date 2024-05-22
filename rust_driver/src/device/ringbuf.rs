@@ -74,6 +74,7 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     ///
     #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects,clippy::unwrap_used)] // we have allocate additional space in advance to avoid overflow
     pub(super) fn new(proxy: T, buffer : Buffer) -> Self {
+        assert!(buffer.as_ptr() as usize % PAGE_SIZE == 0,"buffer should be aligned to PAGE_SIZE");
         Self {
             buf : Mutex::new(buffer),
             head: 0,

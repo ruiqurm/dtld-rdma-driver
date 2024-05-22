@@ -1,5 +1,8 @@
 use std::{
-    alloc::{alloc, dealloc, Layout}, io, ops::{Deref, DerefMut}, slice::from_raw_parts_mut
+    alloc::{alloc, dealloc, Layout},
+    io,
+    ops::{Deref, DerefMut, Index, IndexMut},
+    slice::from_raw_parts_mut,
 };
 
 use log::error;
@@ -36,8 +39,8 @@ pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
 }
 
 #[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn align_up<const PAGE:usize>(addr:usize) -> usize{
-    ( ((addr) + ((PAGE) - 1) ) / PAGE ) * PAGE
+pub(crate) fn align_up<const PAGE: usize>(addr: usize) -> usize {
+    (((addr) + ((PAGE) - 1)) / PAGE) * PAGE
 }
 
 /// A struct to manage hugepage memory
@@ -49,7 +52,7 @@ pub struct HugePage {
 
 impl HugePage {
     /// size of the huge page
-    pub const HUGE_PAGE_SIZE : usize = PAGE_SIZE;
+    pub const HUGE_PAGE_SIZE: usize = PAGE_SIZE;
 
     /// # Errors
     ///
@@ -69,9 +72,7 @@ impl HugePage {
             return Err(io::Error::last_os_error());
         }
 
-        let ret = unsafe{
-            libc::mlock(buffer, size)
-        };
+        let ret = unsafe { libc::mlock(buffer, size) };
         if ret != 0_i32 {
             return Err(io::Error::last_os_error());
         }
@@ -125,7 +126,8 @@ impl Drop for HugePage {
 }
 
 fn allocate_aligned_memory(size: usize) -> io::Result<&'static mut [u8]> {
-    let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_|io::Error::last_os_error())?;
+    let layout =
+        Layout::from_size_align(size, PAGE_SIZE).map_err(|_| io::Error::last_os_error())?;
     let ptr = unsafe { alloc(layout) };
     Ok(unsafe { from_raw_parts_mut(ptr, size) })
 }
@@ -146,7 +148,7 @@ impl AlignedMemory<'_> {
     /// # Errors
     /// Return an error if the size is too large.
     pub fn new(size: usize) -> io::Result<Self> {
-       Ok(AlignedMemory(allocate_aligned_memory(size)?))
+        Ok(AlignedMemory(allocate_aligned_memory(size)?))
     }
 }
 
@@ -171,13 +173,13 @@ impl DerefMut for AlignedMemory<'_> {
 }
 
 #[derive(Debug)]
-pub(crate)enum Buffer {
+pub(crate) enum Buffer {
     HugePage(HugePage),
     AlignedMemory(AlignedMemory<'static>),
 }
 
-impl Buffer{
-    pub(crate) fn new(size: usize,is_huge_page:bool) -> io::Result<Self> {
+impl Buffer {
+    pub(crate) fn new(size: usize, is_huge_page: bool) -> io::Result<Self> {
         if is_huge_page {
             HugePage::new(size).map(Buffer::HugePage)
         } else {
@@ -196,6 +198,60 @@ impl Buffer{
         match self {
             Buffer::HugePage(huge_page) => huge_page.addr as *mut u8,
             Buffer::AlignedMemory(aligned_memory) => aligned_memory.0.as_mut_ptr(),
+        }
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        match self {
+            Buffer::HugePage(huge_page) => huge_page.size(),
+            Buffer::AlignedMemory(aligned_memory) => aligned_memory.len(),
+        }
+    }
+}
+
+impl Index<usize> for Buffer {
+    type Output = u64;
+    #[allow(clippy::ptr_as_ptr,clippy::cast_ptr_alignment,clippy::arithmetic_side_effects)]
+    fn index(&self, index: usize) -> &u64 {
+        match self {
+            Buffer::HugePage(huge_page) => {
+                let ptr = unsafe {
+                    huge_page.as_ptr().add(index * std::mem::size_of::<u64>()) as *const u64
+                };
+                unsafe { &*ptr }
+            }
+            Buffer::AlignedMemory(aligned_memory) => {
+                let ptr = unsafe {
+                    aligned_memory
+                        .as_ptr()
+                        .add(index * std::mem::size_of::<u64>()) as *const u64
+                };
+                unsafe { &*ptr }
+            }
+        }
+    }
+}
+
+impl IndexMut<usize> for Buffer {
+    #[allow(clippy::ptr_as_ptr,clippy::cast_ptr_alignment,clippy::arithmetic_side_effects)]
+    fn index_mut(&mut self, index: usize) -> &mut u64 {
+        match self {
+            Buffer::HugePage(huge_page) => {
+                let ptr = unsafe {
+                    huge_page
+                        .as_mut_ptr()
+                        .add(index * std::mem::size_of::<u64>()) as *mut u64
+                };
+                unsafe { &mut *ptr }
+            }
+            Buffer::AlignedMemory(aligned_memory) => {
+                let ptr = unsafe {
+                    aligned_memory
+                        .as_mut_ptr()
+                        .add(index * std::mem::size_of::<u64>()) as *mut u64
+                };
+                unsafe { &mut *ptr }
+            }
         }
     }
 }
@@ -220,12 +276,11 @@ mod tests {
     }
 
     #[test]
-    fn align_up_test(){
+    fn align_up_test() {
         let a = align_up::<{ 1024 * 1024 * 2 }>(1024);
-        let b = align_up::<{ 1024 * 1024 * 2 }>(1024 * 1024 * 2 +1);
+        let b = align_up::<{ 1024 * 1024 * 2 }>(1024 * 1024 * 2 + 1);
 
-        assert_eq!(a,1024*1024*2);
-        assert_eq!(b,1024*1024*4);
-        
+        assert_eq!(a, 1024 * 1024 * 2);
+        assert_eq!(b, 1024 * 1024 * 4);
     }
 }

@@ -202,7 +202,8 @@ pub use utils::{HugePage,AlignedMemory};
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;
-const MR_PGT_SIZE: usize = 1024;
+const MR_PGT_LENGTH: usize = 1024;
+const MR_PGT_ENTRY_SIZE: usize = 8;
 const DEFAULT_RMDA_PORT : u16 = 4791;
 
 type ThreadSafeHashmap<K,V> = Arc<RwLock<HashMap<K,V>>>;
@@ -247,11 +248,13 @@ impl Device {
         let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
         let adaptor = HardwareDevice::init(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
 
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, true).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table,
-            mr_pgt: Mutex::new(MrPgt::new()),
+            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
@@ -280,11 +283,13 @@ impl Device {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let adaptor = SoftwareDevice::init(network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
 
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, false).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table,
-            mr_pgt: Mutex::new(MrPgt::new()),
+            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
@@ -325,11 +330,13 @@ impl Device {
         let adaptor =
             EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr).map_err(|e| Error::Device(Box::new(e)))?;
 
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, false).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table,
-            mr_pgt: Mutex::new(MrPgt::new()),
+            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),

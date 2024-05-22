@@ -6,7 +6,7 @@ use crate::{
     },
     types::{Key, MemAccessTypeFlag, PAGE_SIZE},
     utils::Buffer,
-    Device, Error, Pd,
+    Device, Error, Pd, MR_PGT_ENTRY_SIZE,
 };
 use rand::RngCore as _;
 use std::{
@@ -42,7 +42,7 @@ pub(crate) struct MrCtx {
 
 #[derive(Debug)]
 pub(crate) struct MrPgt {
-    table: [u64; crate::MR_PGT_SIZE],
+    table: Buffer,
     free_blk_list: *mut MrPgtFreeBlk,
 }
 
@@ -292,16 +292,17 @@ impl Device {
 }
 
 impl MrPgt {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(buffer: Buffer) -> Self {
+        let len = buffer.size() / MR_PGT_ENTRY_SIZE;
         let free_blk = Box::into_raw(Box::new(MrPgtFreeBlk {
             idx: 0,
-            len: crate::MR_PGT_SIZE,
+            len,
             prev: ptr::null_mut(),
             next: ptr::null_mut(),
         }));
-
+        assert!(buffer.as_ptr() as usize % PAGE_SIZE == 0,"buffer should be aligned to PAGE_SIZE");
         Self {
-            table: [0u64; crate::MR_PGT_SIZE],
+            table: buffer,
             free_blk_list: free_blk,
         }
     }
