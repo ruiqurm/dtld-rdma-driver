@@ -13,6 +13,7 @@ pub(crate) mod descriptor;
 pub(crate) mod scheduler;
 pub(crate) use types::ToCardWorkRbDesc;
 
+
 pub(crate) use self::{
     emulated::EmulatedDevice, hardware::HardwareDevice, software::SoftwareDevice, types::*,
 };
@@ -29,6 +30,8 @@ pub(crate) trait DeviceAdaptor: Send + Sync + Debug {
     fn write_csr(&self, addr: usize, data: u32) -> Result<(), DeviceError>;
 
     fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError>;
+
+    fn use_hugepage(&self) -> bool;
 }
 
 /// Generic interface for a to-card ring buffer.

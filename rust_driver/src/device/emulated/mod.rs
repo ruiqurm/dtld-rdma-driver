@@ -69,7 +69,7 @@ impl EmulatedDevice {
     /// Here we allow the `cast_possible_truncation` lint because before every transcation
     /// we used an "AND" mask to perform truncation.
     #[allow(clippy::cast_possible_truncation)]
-    pub(crate) fn init(
+    pub(crate) fn new(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
         scheduler: Arc<DescriptorScheduler>,
@@ -213,6 +213,10 @@ impl DeviceAdaptor for Arc<EmulatedDevice> {
         // this will never do downflow
         #[allow(clippy::arithmetic_side_effects)]
         Ok(virt_addr - self.heap_mem_start_addr)
+    }
+
+    fn use_hugepage(&self) -> bool {
+        false
     }
 }
 

@@ -6,6 +6,8 @@ use std::{sync::Arc, thread::sleep, time::Duration};
 use super::SGListBuilder;
 use super::ToCardCtrlRbDescBuilderType::QpManagement;
 use super::ToCardCtrlRbDescBuilderType::UpdateMrTable;
+use crate::device::scheduler::round_robin::RoundRobinStrategy;
+use crate::device::scheduler::DescriptorScheduler;
 use crate::device::software::tests::ToCardWorkRbDescBuilder;
 use crate::device::ToHostWorkRbDescWriteType;
 use crate::device::{
@@ -314,7 +316,9 @@ fn test_device_read_and_write() {
 #[test]
 #[serial]
 fn test_software_device() {
-    let device = SoftwareDevice::init(Ipv4Addr::LOCALHOST, 4791).unwrap();
+    let round_robin = Arc::new(RoundRobinStrategy::new());
+    let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+    let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,scheduler).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;

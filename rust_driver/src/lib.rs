@@ -37,7 +37,7 @@
     variant_size_differences, 
 
     clippy::all,
-    clippy::pedantic,
+    // clippy::pedantic,
     clippy::cargo,
 
     // The followings are selected restriction lints for rust 1.57
@@ -152,7 +152,7 @@ use device::{
 };
 use eui48::MacAddress;
 use flume::unbounded;
-use nic::{start_basic_nic_utilities, NicInterface};
+use nic::NicInterface;
 use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
 use pkt_checker::{PacketChecker, RecvPktMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
@@ -232,28 +232,27 @@ struct DeviceInner<D: ?Sized> {
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
-    nic_device : OnceLock<NicInterface>,
+    nic_device : Mutex<Option<NicInterface>>,
     buffer_keeper : Mutex<Vec<Buffer>>,
     adaptor: D,
 }
 
 impl Device {
     const MR_TABLE_EMPTY_ELEM: Option<MrCtx> = None;
+
     /// # Errors
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_hardware(network: &RdmaDeviceNetworkParam,device_name : String) -> Result<Self, Error> {
-        let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let round_robin = Arc::new(RoundRobinStrategy::new());
         let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
-        let adaptor = HardwareDevice::init(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
-
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, true).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-
+        let adaptor = HardwareDevice::new(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
+        let use_hugepage =  adaptor.use_hugepage();
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table,
+            qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
@@ -265,13 +264,13 @@ impl Device {
             pkt_checker_thread: OnceLock::new(),
             work_desc_poller: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_device : OnceLock::new(),
+            nic_device : Mutex::new(None),
             buffer_keeper : Vec::new().into(),
             local_network : *network,
         });
 
         let dev = Self(inner);
-        dev.init(true)?;
+        dev.init()?;
 
         Ok(dev)
     }
@@ -280,33 +279,33 @@ impl Device {
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_software(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
-        let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        let adaptor = SoftwareDevice::init(network.ipaddr,DEFAULT_RMDA_PORT).map_err(Error::Device)?;
-
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, false).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-
+        let round_robin = Arc::new(RoundRobinStrategy::new());
+        let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+        let adaptor = SoftwareDevice::new(network.ipaddr,DEFAULT_RMDA_PORT,scheduler).map_err(Error::Device)?;
+        let use_hugepage =  adaptor.use_hugepage();
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table,
+            qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             next_ctrl_op_id: AtomicU32::new(0),
             next_msn: AtomicU16::new(0),
+            adaptor,
             responser: OnceLock::new(),
-            work_desc_poller: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
+            work_desc_poller: OnceLock::new(),
             ctrl_desc_poller : OnceLock::new(),
-            nic_device : OnceLock::new(),
+            nic_device : Mutex::new(None),
             buffer_keeper : Vec::new().into(),
             local_network : *network,
-            adaptor,
         });
 
         let dev = Self(inner);
-        dev.init(false)?;
+        dev.init()?;
 
         Ok(dev)
     }
@@ -319,38 +318,35 @@ impl Device {
         heap_mem_start_addr: usize,
         network: &RdmaDeviceNetworkParam,
     ) -> Result<Self, Error> {
-        let qp_table = Arc::new(RwLock::new(HashMap::new()));
         let adaptor = {
             let round_robin = Arc::new(RoundRobinStrategy::new());
             let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
-            EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?
+            EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?
         };
-
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, false).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-
+        let use_hugepage =  adaptor.use_hugepage();
+        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let inner = Arc::new(DeviceInner {
             pd: Mutex::new(HashMap::new()),
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table,
+            qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
             read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             next_ctrl_op_id: AtomicU32::new(0),
             next_msn: AtomicU16::new(0),
-            responser: OnceLock::new(),
-            work_desc_poller: OnceLock::new(),
-            pkt_checker_thread: OnceLock::new(),
-            ctrl_desc_poller : OnceLock::new(),
-            local_network : *network,
-            nic_device : OnceLock::new(),
-            buffer_keeper : Vec::new().into(),
             adaptor,
+            responser: OnceLock::new(),
+            pkt_checker_thread: OnceLock::new(),
+            work_desc_poller: OnceLock::new(),
+            ctrl_desc_poller : OnceLock::new(),
+            nic_device : Mutex::new(None),
+            buffer_keeper : Vec::new().into(),
+            local_network : *network,
         });
 
         let dev = Self(inner);
-
-        dev.init(false)?;
+        dev.init()?;
 
         Ok(dev)
     }
@@ -478,9 +474,14 @@ impl Device {
 
     /// # Errors
     pub fn query_mac_address(&self, ip:Ipv4Addr) -> Result<MacAddress,Error> {
-        let nic = self.0.nic_device.get().ok_or(Error::DeviceBusy)?;
-        nic.query_mac_addr(ip).ok_or(Error::ResourceNoAvailable("query mac address failed".to_owned()))
+        let guard = self.0.nic_device.lock();
+        if let Some(nic) =  guard.as_ref(){
+            nic.query_mac_addr(ip).ok_or(Error::ResourceNoAvailable("query mac address failed".to_owned()))
+        }else{
+            Err(Error::ResourceNoAvailable("nic device not ready".to_owned()))
+        }
     }
+
     fn do_ctrl_op(&self, id: u32, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         // save operation context for unparking
         let ctrl_ctx = {
@@ -512,7 +513,7 @@ impl Device {
         Msn::new(self.0.next_msn.fetch_add(1, Ordering::AcqRel))
     }
 
-    fn init(&self,use_huge_page : bool) -> Result<(), Error> {
+    fn init(&self) -> Result<(), Error> {
         let (send_queue, rece_queue) = unbounded();
         let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
 
@@ -525,7 +526,8 @@ impl Device {
         self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
 
         // enable responser module
-        let mut buf = Buffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        let use_hugepage = self.0.adaptor.use_hugepage();
+        let mut buf = Buffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 
@@ -536,8 +538,7 @@ impl Device {
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
-        self.prepare_nic_recv_buf(use_huge_page)?;
-
+       
         let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
 
         // enable work desc poller module.
@@ -552,12 +553,13 @@ impl Device {
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
 
-        // create nic recv and send device
-        let mut tx_slot_buf = Buffer::new(NIC_BUFFER_SIZE, use_huge_page).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+        // create nic send device, but we don't prepare receive buffer. So it won't work now.
+        let mut tx_slot_buf = Buffer::new(NIC_BUFFER_SIZE, use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let tx_buf = self.init_buf(&mut tx_slot_buf,NIC_BUFFER_SIZE)?;
         let self_device = self.clone();
-        let nic_interface = start_basic_nic_utilities(self_device, tx_buf, nic_notify_recv_queue,self.0.local_network.macaddr);
-        self.0.nic_device.set(nic_interface).map_err(|_|Error::DoubleInit("nic_device has been set".to_owned()))?;  
+        let nic_interface = NicInterface::new(self_device, tx_buf, nic_notify_recv_queue,self.0.local_network.macaddr);
+        let mut guard = self.0.nic_device.lock();
+        *guard = Some(nic_interface);  
 
         // enable packet checker module
         let pkt_checker_thread = PacketChecker::new(
@@ -571,6 +573,20 @@ impl Device {
         self.set_network(&self.0.local_network)?;
 
         Ok(())
+    }
+
+    /// Enable the NIC interface so that hardware can send Arp, ICMP, etc.  
+    pub fn enable_nic_interface(&self) -> Result<(),Error> {
+        let mut guard = self.0.nic_device.lock();
+        if let Some(nic) =  guard.as_mut(){
+            nic.start();
+            let use_hugepage = self.0.adaptor.use_hugepage();
+            self.prepare_nic_recv_buf(use_hugepage)?;
+            Ok(())
+        }else{
+            Err(Error::ResourceNoAvailable("nic device not ready".to_owned()))
+        }
+        
     }
 
     #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]

@@ -65,7 +65,7 @@ struct ToHostCtrlRb(Receiver<ToHostCtrlRbDesc>);
 
 impl SoftwareDevice {
     /// Initializing an software device.
-    pub(crate) fn init(addr: Ipv4Addr, port: u16) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(addr: Ipv4Addr, port: u16, scheduler: Arc<DescriptorScheduler>) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new(addr, port)?;
         let (ctrl_sender, ctrl_receiver) = unbounded();
         let (work_sender, work_receiver) = unbounded();
@@ -74,10 +74,6 @@ impl SoftwareDevice {
             ctrl_sender,
             work_sender,
         ));
-        // The strategy is a global singleton, so we leak it
-        let round_robin = Arc::new(RoundRobinStrategy::new());
-        let scheduler = DescriptorScheduler::new(round_robin);
-        let scheduler = Arc::new(scheduler);
         let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device), addr, port)?;
 
         let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
@@ -152,6 +148,10 @@ impl DeviceAdaptor for SoftwareDevice {
 
     fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError> {
         Ok(virt_addr)
+    }
+
+    fn use_hugepage(&self) -> bool {
+        false
     }
 }
 

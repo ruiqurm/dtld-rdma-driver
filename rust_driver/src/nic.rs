@@ -40,6 +40,7 @@ unsafe impl Sync for NicRecvNotification {}
 unsafe impl Send for BasicNicDeivce {}
 unsafe impl Sync for BasicNicDeivce {}
 
+#[derive(Debug)]
 pub(crate) struct BasicNicDeivce {
     device: BlueRdmaDevice,
     tx_buf: PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>,
@@ -53,43 +54,61 @@ pub(crate) struct NicInterface {
     neighbor_cache: Arc<Mutex<HashMap<Ipv4Addr, MacAddress>>>,
     stop_flag: Arc<AtomicBool>,
     handler: Option<JoinHandle<()>>,
+    context : Option<NicWorkingContext>,
 }
 
-pub(crate) fn start_basic_nic_utilities(
-    device: BlueRdmaDevice,
-    tx_buf: PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>,
-    receiver: Receiver<NicRecvNotification>,
+#[derive(Debug)]
+struct NicWorkingContext{
     self_mac_addr: MacAddress,
-) -> NicInterface {
-    let (icmp_queries_sender, icmp_queries_receiver) = flume::unbounded();
-    let cache = Arc::new(Mutex::new(HashMap::new()));
-    #[allow(clippy::clone_on_ref_ptr)]
-    let mut device = BasicNicDeivce {
-        device,
-        tx_buf,
-        receiver,
-        neighbor_cache: cache.clone(),
-    };
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    let stop_flag_clone = Arc::<AtomicBool>::clone(&stop_flag);
-    let handler = thread::spawn(move || {
-        working_thread(
-            &stop_flag_clone,
-            &mut device,
-            self_mac_addr,
-            &icmp_queries_receiver,
-        );
-    });
-
-    NicInterface {
-        icmp_queries_sender,
-        neighbor_cache: cache,
-        stop_flag,
-        handler: Some(handler),
-    }
+    icmp_queries_receiver: Receiver<(Ipv4Addr, Thread)>,
+    device : BasicNicDeivce,
 }
 
 impl NicInterface {
+    pub(crate) fn new(
+        device: BlueRdmaDevice,
+        tx_buf: PacketBuf<NIC_PACKET_BUFFER_SLOT_SIZE>,
+        receiver: Receiver<NicRecvNotification>,
+        self_mac_addr: MacAddress,
+    ) -> Self {
+        let (icmp_queries_sender, icmp_queries_receiver) = flume::unbounded();
+        let cache = Arc::new(Mutex::new(HashMap::new()));
+        #[allow(clippy::clone_on_ref_ptr)]
+        let device = BasicNicDeivce {
+            device,
+            tx_buf,
+            receiver,
+            neighbor_cache: cache.clone(),
+        };
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let context = NicWorkingContext{
+            self_mac_addr,
+            icmp_queries_receiver,
+            device,
+        };
+        NicInterface {
+            icmp_queries_sender,
+            neighbor_cache: cache,
+            stop_flag,
+            handler: None,
+            context : Some(context),
+        }
+    }
+
+    #[allow(clippy::unwrap_used)]
+    pub(crate) fn start(&mut self){
+        if let Some(mut context) = self.context.take(){
+            let stop_flag_clone = Arc::<AtomicBool>::clone(&self.stop_flag);
+            let handler = thread::spawn(move || {
+                working_thread(
+                    &stop_flag_clone,
+                    &mut context
+                );
+            });
+            self.handler = Some(handler);
+        }
+    }
+
     pub(crate) fn query_mac_addr(&self, ip: Ipv4Addr) -> Option<MacAddress> {
         let cache = self.neighbor_cache.lock();
         let mac = cache.get(&ip);
@@ -150,7 +169,7 @@ impl Device for BasicNicDeivce {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
-        caps.max_transmission_unit = NIC_PACKET_BUFFER_SLOT_SIZE; 
+        caps.max_transmission_unit = NIC_PACKET_BUFFER_SLOT_SIZE;
         caps.max_burst_size = None;
         caps.medium = Medium::Ethernet;
         caps
@@ -210,13 +229,16 @@ impl TxToken for NicTxToken<'_> {
 
         let ret = f(buf.as_mut_slice()[0..len].as_mut());
 
-        log::debug!("Sending packet to buffer: {:?}", &buf.as_mut_slice()[0..len]);
+        log::debug!(
+            "Sending packet to buffer: {:?}",
+            &buf.as_mut_slice()[0..len]
+        );
         let sge = buf.into_sge(len as u32);
         let total_len = 64.min(len);
         let common = ToCardWorkRbDescCommon {
             qp_type: QpType::RawPacket,
-            total_len : total_len as u32,
-            pmtu : crate::types::Pmtu::Mtu1024,
+            total_len: total_len as u32,
+            pmtu: crate::types::Pmtu::Mtu1024,
             ..Default::default()
         };
         // we don't miss any field, so it's impossible to panic
@@ -233,17 +255,20 @@ impl TxToken for NicTxToken<'_> {
 }
 
 // TODO: we may separate the ICMP and DHCP into different functions
-#[allow(clippy::similar_names, clippy::unwrap_used,clippy::too_many_lines,clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::similar_names,
+    clippy::unwrap_used,
+    clippy::too_many_lines,
+    clippy::arithmetic_side_effects
+)]
 fn working_thread(
     stop_flag: &AtomicBool,
-    device: &mut BasicNicDeivce,
-    mac_address: MacAddress,
-    icmp_queries: &Receiver<(Ipv4Addr, Thread)>,
+    context : &mut NicWorkingContext,
 ) {
     // Create interface
-    let mut config = Config::new(EthernetAddress(mac_address.to_array()).into());
+    let mut config = Config::new(EthernetAddress(context.self_mac_addr.to_array()).into());
     config.random_seed = rand::random();
-    let mut iface = Interface::new(config, device, Instant::now());
+    let mut iface = Interface::new(config, &mut context.device, Instant::now());
 
     // Create sockets
     let icmp_rx_buffer = icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY], vec![0; 256]);
@@ -257,23 +282,23 @@ fn working_thread(
     let icmp_ident = 0x22b;
     let echo_payload = [0x0u8; 40];
     let mut icmp_query_map = HashMap::new();
-    while !stop_flag.load(std::sync::atomic::Ordering::Relaxed){
+    while !stop_flag.load(std::sync::atomic::Ordering::Relaxed) {
         let timestamp = Instant::now();
-        let _is_any_packet_proceed = iface.poll(timestamp, device, &mut sockets);
+        let _is_any_packet_proceed = iface.poll(timestamp, &mut context.device, &mut sockets);
 
         // handle ICMP packet here
         let socket = sockets.get_mut::<icmp::Socket>(icmp_handle);
         if !socket.is_open() {
             socket.bind(icmp::Endpoint::Ident(icmp_ident)).unwrap();
         }
-        
+
         if socket.can_send() {
-            match icmp_queries.try_recv() {
+            match context.icmp_queries_receiver.try_recv() {
                 Ok((addr, thread)) => {
                     log::info!("Querying mac address for {:?}", addr);
                     let addr: IpAddress = addr.into();
                     let timeout = timestamp + smoltcp::time::Duration::from_secs(5);
-                    if icmp_query_map.insert(addr, (thread,timeout)).is_none() {
+                    if icmp_query_map.insert(addr, (thread, timeout)).is_none() {
                         let icmp_repr = Icmpv4Repr::EchoRequest {
                             ident: icmp_ident,
                             seq_no: 0,
@@ -281,7 +306,7 @@ fn working_thread(
                         };
                         let icmp_payload = socket.send(icmp_repr.buffer_len(), addr).unwrap();
                         let mut icmp_packet = Icmpv4Packet::new_unchecked(icmp_payload);
-                        icmp_repr.emit(&mut icmp_packet, &device.capabilities().checksum);
+                        icmp_repr.emit(&mut icmp_packet, &context.device.capabilities().checksum);
                         log::info!("sending ICMP\n");
                     }
                 }
@@ -296,7 +321,7 @@ fn working_thread(
             let (payload, addr) = socket.recv().unwrap();
             let icmp_packet = Icmpv4Packet::new_checked(payload).unwrap();
             let icmp_repr =
-                Icmpv4Repr::parse(&icmp_packet, &device.capabilities().checksum).unwrap();
+                Icmpv4Repr::parse(&icmp_packet, &context.device.capabilities().checksum).unwrap();
             match icmp_repr {
                 Icmpv4Repr::EchoRequest { .. } => {
                     if socket.can_send() {
@@ -308,7 +333,7 @@ fn working_thread(
                         let icmp_payload = socket.send(icmp_reply_repr.buffer_len(), addr).unwrap();
                         let mut icmp_reply_packet = Icmpv4Packet::new_unchecked(icmp_payload);
                         icmp_reply_repr
-                            .emit(&mut icmp_reply_packet, &device.capabilities().checksum);
+                            .emit(&mut icmp_reply_packet, &context.device.capabilities().checksum);
                     }
                 }
                 Icmpv4Repr::EchoReply { .. }
@@ -317,7 +342,7 @@ fn working_thread(
                 _ => unreachable!(),
             }
             // If we receive the message, the we must have sent the message, and got its mac address(suppose we are in LAN).
-            if let Some((thread,_timeout)) = icmp_query_map.get(&addr) {
+            if let Some((thread, _timeout)) = icmp_query_map.get(&addr) {
                 thread.unpark();
             }
         }
@@ -334,31 +359,33 @@ fn working_thread(
                 if let Some(router) = dhcp_config.router {
                     debug!("Default gateway: {}", router);
                     // unless OOM, this should never fail
-                    let _route :Option<smoltcp::iface::Route> = iface.routes_mut().add_default_ipv4_route(router).unwrap();
+                    let _route: Option<smoltcp::iface::Route> =
+                        iface.routes_mut().add_default_ipv4_route(router).unwrap();
                 } else {
                     debug!("Default gateway: None");
-                    let _route :Option<smoltcp::iface::Route> = iface.routes_mut().remove_default_ipv4_route();
+                    let _route: Option<smoltcp::iface::Route> =
+                        iface.routes_mut().remove_default_ipv4_route();
                 }
             }
             Some(dhcpv4::Event::Deconfigured) => {
                 debug!("DHCP lost config!");
                 #[allow(clippy::redundant_closure_for_method_calls)]
                 iface.update_ip_addrs(|addrs| addrs.clear());
-                let _route :Option<smoltcp::iface::Route> = iface.routes_mut().remove_default_ipv4_route();
+                let _route: Option<smoltcp::iface::Route> =
+                    iface.routes_mut().remove_default_ipv4_route();
             }
         }
-        
+
         // iterate ICMP map
-        icmp_query_map.retain(|_addr,(thread,timeout)|{
+        icmp_query_map.retain(|_addr, (thread, timeout)| {
             if timestamp >= *timeout {
                 thread.unpark();
                 false
-            }else{
+            } else {
                 true
             }
         });
         sleep(std::time::Duration::from_millis(1));
-
     }
 }
 
