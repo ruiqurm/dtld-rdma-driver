@@ -18,7 +18,6 @@ use std::{
     thread::spawn,
 };
 
-#[cfg(feature = "scheduler")]
 use super::scheduler::DescriptorScheduler;
 
 mod rpc_cli;
@@ -56,13 +55,10 @@ type ToHostWorkRb = Ringbuf<
 pub(crate) struct EmulatedDevice {
     // FIXME: Temporarily ,we use Mutex to make the Rb imuumtable as well as thread safe
     to_card_ctrl_rb: Mutex<ToCardCtrlRb>,
-    #[cfg(not(feature = "scheduler"))]
-    to_card_work_rb: Mutex<ToCardWorkRb>,
     to_host_ctrl_rb: Mutex<ToHostCtrlRb>,
     to_host_work_rb: Mutex<ToHostWorkRb>,
     heap_mem_start_addr: usize,
     rpc_cli: RpcClient,
-    #[cfg(feature = "scheduler")]
     scheduler: Arc<DescriptorScheduler>,
 }
 
@@ -76,7 +72,7 @@ impl EmulatedDevice {
     pub(crate) fn init(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
-        #[cfg(feature = "scheduler")] scheduler: Arc<DescriptorScheduler>,
+        scheduler: Arc<DescriptorScheduler>,
     ) -> Result<Arc<Self>, DeviceError> {
         let rpc_cli =
             RpcClient::new(rpc_server_addr).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -117,10 +113,7 @@ impl EmulatedDevice {
             to_host_work_rb: Mutex::new(to_host_work_rb),
             heap_mem_start_addr,
             rpc_cli,
-            #[cfg(feature = "scheduler")]
             scheduler: Arc::<DescriptorScheduler>::clone(&scheduler),
-            #[cfg(not(feature = "scheduler"))]
-            to_card_work_rb: Mutex::new(to_card_work_rb),
         });
 
         let pa_of_to_card_ctrl_rb_addr = dev.get_phys_addr(to_card_ctrl_rb_addr)?;
@@ -163,26 +156,23 @@ impl EmulatedDevice {
             (pa_of_to_host_work_rb_addr >> 32) as u32,
         )?;
 
-        #[cfg(feature = "scheduler")]
-        {
-            let _: std::thread::JoinHandle<_> = spawn(move || {
-                let rb = Mutex::new(to_card_work_rb);
-                loop {
-                    match scheduler.pop() {
-                        Ok(result) => {
-                            if let Some(desc) = result {
-                                if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
-                                    error!("push to to_card_work_rb failed: {:?}", e);
-                                }
+        let _: std::thread::JoinHandle<_> = spawn(move || {
+            let rb = Mutex::new(to_card_work_rb);
+            loop {
+                match scheduler.pop() {
+                    Ok(result) => {
+                        if let Some(desc) = result {
+                            if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
+                                error!("push to to_card_work_rb failed: {:?}", e);
                             }
                         }
-                        Err(e) => {
-                            error!("scheduler pop failed:{:?}", e);
-                        }
+                    }
+                    Err(e) => {
+                        error!("scheduler pop failed:{:?}", e);
                     }
                 }
-            });
-        }
+            }
+        });
 
         Ok(dev)
     }
@@ -198,14 +188,7 @@ impl DeviceAdaptor for Arc<EmulatedDevice> {
     }
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
-        #[cfg(feature = "scheduler")]
-        {
-            Arc::<DescriptorScheduler>::clone(&self.scheduler)
-        }
-        #[cfg(not(feature = "scheduler"))]
-        {
-            Arc::<EmulatedDevice>::clone(self)
-        }
+        Arc::<DescriptorScheduler>::clone(&self.scheduler)
     }
 
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>> {
@@ -262,15 +245,6 @@ impl ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice {
         let desc = ToHostCtrlRbDesc::read(mem)?;
         debug!("{:?}", &desc);
         Ok(desc)
-    }
-}
-
-#[cfg(not(feature = "scheduler"))]
-impl ToCardRb<ToCardWorkRbDesc> for EmulatedDevice {
-    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
-        // TODO: the card might not be able to handle "part of the desc"
-        // So me might need to ensure we have enough space to write the whole desc before writing
-        push_to_card_work_rb_desc(&self.to_card_work_rb, desc)
     }
 }
 

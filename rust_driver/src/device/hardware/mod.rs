@@ -153,26 +153,23 @@ impl HardwareDevice {
             (pa_of_to_host_work_rb_addr >> 32) as u32,
         )?;
 
-        #[cfg(feature = "scheduler")]
-        {
-            let _: std::thread::JoinHandle<_> = spawn(move || {
-                let rb = Mutex::new(to_card_work_rb);
-                loop {
-                    match scheduler.pop() {
-                        Ok(result) => {
-                            if let Some(desc) = result {
-                                if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
-                                    error!("push to to_card_work_rb failed: {:?}", e);
-                                }
+        let _: std::thread::JoinHandle<_> = spawn(move || {
+            let rb = Mutex::new(to_card_work_rb);
+            loop {
+                match scheduler.pop() {
+                    Ok(result) => {
+                        if let Some(desc) = result {
+                            if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
+                                error!("push to to_card_work_rb failed: {:?}", e);
                             }
                         }
-                        Err(e) => {
-                            error!("scheduler pop failed:{:?}", e);
-                        }
+                    }
+                    Err(e) => {
+                        error!("scheduler pop failed:{:?}", e);
                     }
                 }
-            });
-        }
+            }
+        });
 
         Ok(dev)
     }

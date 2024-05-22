@@ -9,10 +9,6 @@ license = "GPL 2.0"
 keywords = ["rdma", "driver"]
 categories = ["Command line utilities", "Hardware support"]
 
-[features]
-default = ["scheduler"]
-scheduler = []
-
 [dependencies]
 thiserror = "1.0.56"
 num_enum = "0.7.2"

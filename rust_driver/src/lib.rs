@@ -320,15 +320,11 @@ impl Device {
         network: &RdmaDeviceNetworkParam,
     ) -> Result<Self, Error> {
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
-        #[cfg(feature = "scheduler")]
         let adaptor = {
             let round_robin = Arc::new(RoundRobinStrategy::new());
             let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
             EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?
         };
-        #[cfg(not(feature = "scheduler"))]
-        let adaptor =
-            EmulatedDevice::init(rpc_server_addr, heap_mem_start_addr).map_err(|e| Error::Device(Box::new(e)))?;
 
         let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE, false).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
 
