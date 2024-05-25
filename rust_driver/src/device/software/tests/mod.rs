@@ -9,7 +9,7 @@ use crate::{
         ToCardWorkRbDescOpcode, ToCardWorkRbDescRead, ToCardWorkRbDescWrite,
         ToCardWorkRbDescWriteWithImm,
     },
-    types::{MemAccessTypeFlag, Pmtu, QpType},
+    types::{MemAccessTypeFlag, Pmtu, QpType, WorkReqSendFlag},
 };
 
 use super::types::{Key, SGList, SGListElementWithKey};
@@ -62,7 +62,7 @@ pub(crate) struct ToCardWorkRbDescBuilder {
     pmtu: Option<Pmtu>,
     qp_type: Option<QpType>,
     psn: Option<u32>,
-    flags: Option<MemAccessTypeFlag>,
+    flags: Option<WorkReqSendFlag>,
     is_first: Option<bool>,
     is_last: Option<bool>,
     imm: Option<u32>,
@@ -80,7 +80,7 @@ impl ToCardWorkRbDescBuilder {
             pmtu: None,
             qp_type: Some(QpType::Rc),
             psn: Some(0),
-            flags: Some(MemAccessTypeFlag::empty()),
+            flags: Some(WorkReqSendFlag::empty()),
             is_first: Some(true),
             is_last: Some(true),
             imm: None,
@@ -137,7 +137,7 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub(crate) fn with_flags(&mut self, flags: MemAccessTypeFlag) -> &mut Self {
+    pub(crate) fn with_flags(&mut self, flags: WorkReqSendFlag) -> &mut Self {
         self.flags = Some(flags);
         self
     }
@@ -330,6 +330,7 @@ impl ToCardCtrlRbDescBuilder {
                     qp_type: self.qp_type.unwrap(),
                     rq_acc_flags: self.rq_acc_flags.unwrap(),
                     pmtu: self.pmtu.unwrap(),
+                    peer_qpn: crate::Qpn::new(1234),
                 })
             }
         }

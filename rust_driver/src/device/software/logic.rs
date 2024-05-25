@@ -614,6 +614,7 @@ mod tests {
                 qp_type: QpType::Rc,
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessRemoteWrite,
                 pmtu: Pmtu::Mtu1024,
+                peer_qpn: crate::Qpn::new(1234),
             });
             logic.update(desc).unwrap();
             {
@@ -636,6 +637,7 @@ mod tests {
                 qp_type: QpType::Rc,
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessRemoteWrite,
                 pmtu: Pmtu::Mtu2048,
+                peer_qpn: crate::Qpn::new(1234),
             });
             logic.update(desc).unwrap();
             {

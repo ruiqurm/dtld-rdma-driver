@@ -99,6 +99,7 @@ impl<Payload> OpCtx<Payload> {
             thread.unpark();
         }
     }
+    
     pub(crate) fn set_result(&self, result: Payload) -> Result<(), Error> {
         self.0
             .payload
@@ -129,6 +130,11 @@ impl<Payload> OpCtx<Payload> {
     pub fn wait_result(&self) -> Result<Option<&Payload>, Error> {
         self.wait()?;
         Ok(self.0.payload.get())
+    }
+
+    /// Get the status of the operation.
+    pub fn status(&self) -> CtxStatus {
+        self.0.inner.lock().status
     }
 }
 

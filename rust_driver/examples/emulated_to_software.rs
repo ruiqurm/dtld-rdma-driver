@@ -7,7 +7,7 @@ use libc::c_void;
 use log::info;
 use open_rdma_driver::{
     qp::QpManager, types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
     }, AlignedMemory, Device, Mr, Pd
 };
 
@@ -204,7 +204,7 @@ fn main() {
                 dpqn,
                 &mr_buffer_b[0] as *const u8 as u64,
                 mr_b.get_key(),
-                MemAccessTypeFlag::empty(),
+                WorkReqSendFlag::IbvSendSignaled,
                 sge0,
             )
             .unwrap();
@@ -234,7 +234,7 @@ fn main() {
                 dpqn,
                 &mr_buffer_b[0] as *const u8 as u64,
                 mr_b.get_key(),
-                MemAccessTypeFlag::empty(),
+                WorkReqSendFlag::IbvSendSignaled,
                 sge0,
             )
             .unwrap();
@@ -263,7 +263,7 @@ fn main() {
                 dpqn,
                 &mr_buffer_a[0] as *const u8 as u64,
                 mr_a.get_key(),
-                MemAccessTypeFlag::empty(),
+                WorkReqSendFlag::IbvSendSignaled,
                 sge0,
             )
             .unwrap();
@@ -292,7 +292,7 @@ fn main() {
                 dpqn,
                 &mr_buffer_a[0] as *const u8 as u64,
                 mr_a.get_key(),
-                MemAccessTypeFlag::empty(),
+                WorkReqSendFlag::IbvSendSignaled,
                 sge0,
             )
             .unwrap();

@@ -1,19 +1,35 @@
 use eui48::MacAddress;
 
 use crate::{
-    device::{ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
-    types::{MemAccessTypeFlag, Pmtu, Psn, Qp, QpType, Qpn},
+    device::{layout::Mac, ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
+    types::{MemAccessTypeFlag, Msn, Pmtu, Psn, Qp, QpType, Qpn},
     Device, Error, Pd,
 };
 use std::{
     hash::{Hash, Hasher},
     net::Ipv4Addr,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU16, Ordering},
 };
 
 use parking_lot::Mutex;
 
 const QP_MAX_CNT: usize = 1024;
+
+/// The status of current QP
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum QpStatus {
+    /// The QP is normal
+    Normal, 
+    /// The QP is out of order
+    OutOfOrder,
+}
+
+impl Default for QpStatus {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
 
 /// QP context
 #[allow(clippy::module_name_repetitions)]
@@ -21,32 +37,64 @@ const QP_MAX_CNT: usize = 1024;
 pub struct QpContext {
     pub(crate) pd: Pd,
     pub(crate) qpn: Qpn,
+    pub(crate) peer_qpn: Qpn,
     pub(crate) qp_type: QpType,
     #[allow(unused)] // a field of QP, we may use it later
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
+    pub(crate) local_mac: MacAddress,
     pub(crate) local_ip: Ipv4Addr,
     pub(crate) dqp_ip: Ipv4Addr,
     pub(crate) dqp_mac_addr: MacAddress,
     pub(crate) sending_psn: Mutex<Psn>,
+    pub(crate) status: QpStatus,
+    pub(crate) _next_msn: AtomicU16,
 }
 
 impl QpContext {
     /// create a qp context
     ///
-    /// currently, `sending_psn` is set to 0
+    /// currently, `sending_psn` is set to 0 at begining
     #[must_use]
-    pub fn new(qp: &Qp, local_ip: Ipv4Addr) -> Self {
+    pub fn new(qp: &Qp, local_ip: Ipv4Addr, local_mac: MacAddress) -> Self {
         Self {
             pd: qp.pd,
             qpn: qp.qpn,
+            peer_qpn: qp.peer_qpn,
             qp_type: qp.qp_type,
             rq_acc_flags: qp.rq_acc_flags,
             pmtu: qp.pmtu,
             local_ip,
+            local_mac,
             dqp_ip: qp.dqp_ip,
             dqp_mac_addr: qp.dqp_mac,
             sending_psn: Mutex::new(Psn::new(0)),
+            status: QpStatus::Normal,
+            _next_msn: AtomicU16::default(),
+        }
+    }
+
+    pub(crate) fn next_msn(&self) -> Msn {
+        Msn::new(self._next_msn.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl Default for QpContext {
+    fn default() -> Self {
+        Self {
+            pd: Pd::default(),
+            qpn: Default::default(),
+            peer_qpn: Default::default(),
+            qp_type: QpType::Rc,
+            rq_acc_flags: MemAccessTypeFlag::empty(),
+            pmtu: Pmtu::Mtu4096,
+            local_mac: Default::default(),
+            local_ip: Ipv4Addr::LOCALHOST,
+            dqp_ip: Ipv4Addr::LOCALHOST,
+            dqp_mac_addr: Default::default(),
+            sending_psn: Default::default(),
+            status: Default::default(),
+            _next_msn: Default::default(),
         }
     }
 }
@@ -72,6 +120,7 @@ impl Device {
         let qpc = QpContext::new(
             qp,
             self.0.local_network.ipaddr,
+            self.0.local_network.macaddr,
         );
         let op_id = self.get_ctrl_op_id();
 
@@ -83,6 +132,7 @@ impl Device {
             qp_type: qp.qp_type,
             rq_acc_flags: qp.rq_acc_flags,
             pmtu: qp.pmtu,
+            peer_qpn: qp.peer_qpn
         });
 
         let ctx = self.do_ctrl_op(op_id, desc)?;
@@ -132,6 +182,7 @@ impl Device {
                 qp_type: qp_ctx.qp_type,
                 rq_acc_flags: MemAccessTypeFlag::IbvAccessNoFlags,
                 pmtu: qp_ctx.pmtu,
+                peer_qpn: qp_ctx.peer_qpn
             });
             (pd_ctx, desc)
         } else {

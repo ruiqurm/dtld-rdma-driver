@@ -3,17 +3,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::{net::Ipv4Addr, sync::Arc, thread::spawn};
 
 use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
-use crate::device::descriptor::{Aeth, Bth, Ipv4, NReth, Udp};
+use crate::device::layout::{Aeth, Bth, Ipv4, Mac, NReth, Udp};
 use crate::qp::QpContext;
-use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn};
+use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn, WorkReqSendFlag};
+use eui48::MacAddress;
 use flume::Receiver;
-use log::{error,info};
+use log::{error, info};
 
 use crate::device::{
     ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
     ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
 };
-use crate::utils::calculate_packet_cnt;
+use crate::utils::{calculate_packet_cnt, u8_slice_to_u64};
 use crate::{Error, Sge, ThreadSafeHashmap, WorkDescriptorSender};
 use parking_lot::RwLock;
 
@@ -107,7 +108,7 @@ impl DescResponser {
             dqpn: command.dpqn,
             mac_addr: qp.dqp_mac_addr,
             pmtu: qp.pmtu,
-            flags: MemAccessTypeFlag::IbvAccessNoFlags,
+            flags: WorkReqSendFlag::empty(),
             qp_type: QpType::RawPacket,
             psn: Psn::default(),
             msn: command.msn,
@@ -128,7 +129,7 @@ impl DescResponser {
                 dqpn: resp.desc.common.dqpn,
                 mac_addr: qp.dqp_mac_addr,
                 pmtu: qp.pmtu,
-                flags: MemAccessTypeFlag::IbvAccessNoFlags,
+                flags: WorkReqSendFlag::IbvSendSignaled,
                 qp_type: qp.qp_type,
                 psn: Psn::default(),
                 msn: resp.desc.common.msn,
@@ -164,13 +165,15 @@ impl DescResponser {
                     let mut ack_buf = ack_buffers.recycle_buf();
                     // if we can not read qp_table here
                     #[allow(clippy::unwrap_used)]
-                    let (src_ip, dst_ip, common) = {
+                    let (src_mac,src_ip, dst_mac,dst_ip, common) = {
                         let table = qp_table.read();
                         if let Some(qp) = table.get(&ack.dpqn) {
                             let dst_ip = qp.dqp_ip;
+                            let dst_mac = qp.dqp_mac_addr;
+                            let src_mac = qp.local_mac;
                             let src_ip = qp.local_ip;
                             let common = Self::create_ack_common(&ack, qp, dst_ip);
-                            (src_ip, dst_ip, common)
+                            (src_mac,src_ip, dst_mac,dst_ip, common)
                         } else {
                             error!("Failed to get QP from QP table: {:?}", ack.dpqn);
                             continue;
@@ -179,8 +182,8 @@ impl DescResponser {
                     let last_retry_psn = ack.last_retry_psn;
                     write_packet(
                         ack_buf.as_mut_slice(),
-                        src_ip,
-                        dst_ip,
+                        (src_mac,src_ip),
+                        (dst_mac,dst_ip),
                         ack.dpqn,
                         ack.msn,
                         ack.psn,
@@ -252,46 +255,60 @@ impl Drop for DescResponser {
 #[allow(clippy::indexing_slicing)]
 fn write_packet(
     buf: &mut [u8],
-    src_addr: Ipv4Addr,
-    dst_addr: Ipv4Addr,
+    src: (MacAddress, Ipv4Addr),
+    dst: (MacAddress, Ipv4Addr),
     dpqn: Qpn,
     msg_seq_num: Msn,
     psn: Psn,
     last_retry_psn: Option<Psn>,
 ) {
     let buf = &mut buf[..ACKPACKET_SIZE];
+    let (src_mac, src_ip) = src;
+    let (dst_mac, dst_ip) = dst;
+
+    // write the mac header
+    let mut mac_header = Mac(buf);
+    mac_header.set_src_mac_addr(u8_slice_to_u64(src_mac.as_bytes()));
+    mac_header.set_dst_mac_addr(u8_slice_to_u64(dst_mac.as_bytes()));
+    mac_header.set_network_layer_type(MAC_SERVICE_LAYER_IPV4.into());
+
     // write a ip header
-    let mut ip_header = Ipv4(buf);
+    let mut ip_header = Ipv4(&mut mac_header.0[MAC_HEADER_SIZE..]);
     ip_header.set_version_and_len(u32::from(IP_DEFAULT_VERSION_AND_LEN));
     ip_header.set_dscp_ecn(0);
 
     // The `total_length` take a 16 bits **big-endian** number as input.
     // Only the third and forth bytes are used, so the we put the `ACKPACKET_SIZE` into the third byte.
     #[allow(clippy::cast_possible_truncation)]
-    ip_header.set_total_length(u32::from_be_bytes([0, 0, ACKPACKET_SIZE as u8, 0]));
+    ip_header.set_total_length(u32::from_be_bytes([
+        0,
+        0,
+        ACKPACKET_SIZE_WITHOUT_MAC as u8,
+        0,
+    ]));
     ip_header.set_identification(0x27);
     ip_header.set_fragment_offset(0);
     ip_header.set_ttl(u32::from(IP_DEFAULT_TTL));
     ip_header.set_protocol(u32::from(IP_DEFAULT_PROTOCOL));
-    let src_addr: u32 = src_addr.into();
+    let src_addr: u32 = src_ip.into();
     ip_header.set_source(src_addr.to_be());
-    let dst_addr: u32 = dst_addr.into();
+    let dst_addr: u32 = dst_ip.into();
     ip_header.set_destination(dst_addr.to_be());
     // Set the checksum to 0, and calculate the checksum later
     ip_header.set_checksum(0);
     let checksum = calculate_ipv4_checksum(ip_header.0).to_be();
     ip_header.set_checksum(checksum.into());
 
-    let udp_buf = &mut ip_header.0[IPV4_HEADER_SIZE..];
+    let udp_buf = &mut ip_header.0[MAC_HEADER_SIZE + IPV4_HEADER_SIZE..];
     let mut udp_header = Udp(udp_buf);
     udp_header.set_src_port(RDMA_DEFAULT_PORT.to_be());
     udp_header.set_dst_port(RDMA_DEFAULT_PORT.to_be());
     #[allow(clippy::cast_possible_truncation)]
-    udp_header.set_length((ACKPACKET_WITHOUT_IPV4_HEADER_SIZE as u16).to_be());
+    udp_header.set_length((ACKPACKET_SIZE_WITHOUT_MAC_AND_IPV4 as u16).to_be());
     // It might redundant to calculate checksum, as the ICRC will calculate the another checksum
     udp_header.set_checksum(0);
 
-    let bth_hdr_buf = &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE..];
+    let bth_hdr_buf = &mut ip_header.0[MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE..];
     let mut bth_header = Bth(bth_hdr_buf);
     bth_header.set_opcode(ToHostWorkRbDescOpcode::Acknowledge as u32);
     bth_header.set_pad_count(0);
@@ -302,7 +319,8 @@ fn write_packet(
     bth_header.set_psn(psn.into_be());
 
     let is_nak = last_retry_psn.is_some();
-    let aeth_hdr_buf = &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE..];
+    let aeth_hdr_buf =
+        &mut ip_header.0[MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE..];
     let mut aeth_header = Aeth(aeth_hdr_buf);
     if is_nak {
         aeth_header.set_aeth_code(ToHostWorkRbDescAethCode::Nak as u32);
@@ -313,7 +331,11 @@ fn write_packet(
     aeth_header.set_msn(msg_seq_num.into_be().into());
 
     let mut nreth_header = NReth(
-        &mut ip_header.0[IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE..],
+        &mut ip_header.0[MAC_HEADER_SIZE
+            + IPV4_HEADER_SIZE
+            + UDP_HEADER_SIZE
+            + BTH_HEADER_SIZE
+            + AETH_HEADER_SIZE..],
     );
     if is_nak {
         // we have checked the option before.
@@ -325,10 +347,11 @@ fn write_packet(
     }
     // calculate the ICRC
     let total_buf = &mut ip_header.0[..ACKPACKET_SIZE];
-    let icrc = calculate_icrc(total_buf);
-    total_buf[ACKPACKET_SIZE - 4..].copy_from_slice(&icrc.to_le_bytes());
+    let icrc = calculate_icrc(&total_buf[MAC_HEADER_SIZE..]);
+    total_buf[ACKPACKET_SIZE - ICRC_SIZE..].copy_from_slice(&icrc.to_le_bytes());
 }
 
+const MAC_HEADER_SIZE: usize = 14;
 const IPV4_HEADER_SIZE: usize = 20;
 const UDP_HEADER_SIZE: usize = 8;
 const BTH_HEADER_SIZE: usize = 12;
@@ -336,14 +359,19 @@ const IPV4_UDP_BTH_HEADER_SIZE: usize = IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH
 const AETH_HEADER_SIZE: usize = 4;
 const NRETH_HEADER_SIZE: usize = 4;
 const ICRC_SIZE: usize = 4;
-const ACKPACKET_SIZE: usize = IPV4_HEADER_SIZE
-    + UDP_HEADER_SIZE
-    + BTH_HEADER_SIZE
-    + AETH_HEADER_SIZE
-    + NRETH_HEADER_SIZE
-    + ICRC_SIZE;
-const ACKPACKET_WITHOUT_IPV4_HEADER_SIZE: usize = ACKPACKET_SIZE - IPV4_HEADER_SIZE;
+const ACKPACKET_SIZE_WITHOUT_MAC_AND_IPV4: usize =
+    UDP_HEADER_SIZE + BTH_HEADER_SIZE + AETH_HEADER_SIZE + NRETH_HEADER_SIZE + ICRC_SIZE;
 
+const ACKPACKET_SIZE_WITHOUT_MAC: usize = IPV4_HEADER_SIZE + ACKPACKET_SIZE_WITHOUT_MAC_AND_IPV4;
+
+const ACKPACKET_SIZE: usize = MAC_HEADER_SIZE + ACKPACKET_SIZE_WITHOUT_MAC;
+#[allow(clippy::assertions_on_constants)]
+const _: () = assert!(
+    RDMA_ACK_BUFFER_SLOT_SIZE >= ACKPACKET_SIZE,
+    "RDMA_ACK_BUFFER_SLOT_SIZE too small"
+);
+
+const MAC_SERVICE_LAYER_IPV4: u16 = 8;
 const IP_DEFAULT_VERSION_AND_LEN: u8 = 0x45;
 const IP_DEFAULT_TTL: u8 = 64;
 const IP_DEFAULT_PROTOCOL: u8 = 17;
@@ -505,15 +533,9 @@ mod tests {
         qp_table.write().insert(
             Qpn::new(3),
             QpContext {
-                qp_type: crate::types::QpType::Rc,
-                pmtu: Pmtu::Mtu4096,
                 pd: crate::Pd { handle: 1 },
                 qpn: Qpn::new(3),
-                rq_acc_flags: MemAccessTypeFlag::IbvAccessNoFlags,
-                local_ip: Ipv4Addr::LOCALHOST,
-                dqp_ip: Ipv4Addr::LOCALHOST,
-                dqp_mac_addr: MacAddress::new([0; 6]),
-                sending_psn: Mutex::new(Psn::new(0)),
+                ..Default::default()
             },
         );
         let _responser =

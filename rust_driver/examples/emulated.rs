@@ -4,10 +4,10 @@ use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
     qp::QpManager, types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
     }, AlignedMemory, Device, Mr, Pd
 };
-use std::{ffi::c_void, net::Ipv4Addr, thread::sleep};
+use std::{ffi::c_void, net::Ipv4Addr};
 
 use crate::common::init_logging;
 
@@ -22,7 +22,7 @@ extern crate ctor;
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
 const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT: usize = 1024 * 64;
+const SEND_CNT : usize = 1024 * 6;
 static mut HEAP_START_ADDR: usize = 0;
 
 mod common;
@@ -101,6 +101,7 @@ fn create_and_init_card<'a>(
     let qp = QpBuilder::default()
         .pd(pd)
         .qpn(qpn)
+        .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
         .pmtu(Pmtu::Mtu4096)
@@ -135,101 +136,31 @@ fn main() {
         create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
         create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
-    // sleep(Duration::from_secs(5));
-    sleep(std::time::Duration::from_secs(5));
-    let addr = loop{
-        let addr_result = dev_a.query_mac_address(Ipv4Addr::new(192, 168, 1, 3));
-        if let Ok(addr) = addr_result{
-            break addr
-        }
-    };
-    info!("Query mac address result: {:?}", addr);
-    // let dpqn = qpn;
-    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = idx as u8;
-    // }
-    // for item in mr_buffer_b[0..].iter_mut() {
-    //     *item = 0
-    // }
 
-    // let sge0 = Sge::new(
-    //     &mr_buffer_a[0] as *const u8 as u64,
-    //     SEND_CNT.try_into().unwrap(),
-    //     mr_a.get_key(),
-    // );
+    let dpqn = qpn;
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
+    }
+    for item in mr_buffer_b[0..].iter_mut() {
+        *item = 0
+    }
 
+    let sge0 = Sge::new(
+        &mr_buffer_a[0] as *const u8 as u64,
+        SEND_CNT.try_into().unwrap(),
+        mr_a.get_key(),
+    );
 
-    // let ctx1 = dev_a
-    //     .write(
-    //         dpqn,
-    //         &mr_buffer_b[0] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::empty(),
-    //         sge0,
-    //     )
-    //     .unwrap();
+    let ctx1 = dev_a
+        .write(
+            dpqn,
+            &mr_buffer_b[0] as *const u8 as u64,
+            mr_b.get_key(),
+            WorkReqSendFlag::IbvSendSignaled,
+            sge0,
+        )
+        .unwrap();
 
-    // let _ = ctx1.wait();
-    // // ctx2.wait();
-    // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
-
-    // for item in mr_buffer_a.iter_mut() {
-    //     *item = 0;
-    // }
-    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = idx as u8;
-    // }
-
-    // // we read from b to a
-
-    // let sge_read = Sge {
-    //     addr: &mr_buffer_a[0] as *const u8 as u64,
-    //     len: SEND_CNT as u32,
-    //     key: mr_a.get_key(),
-    // };
-
-    // // // read text from b to a.
-    // let ctx1 = dev_a
-    //     .read(
-    //         dpqn,
-    //         &mr_buffer_b[1024] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessNoFlags,
-    //         sge_read,
-    //     )
-    //     .unwrap();
-    // info!("Read req sent");
-
-    // // assert!(mr_buffer_a[0..SEND_CNT] == mr_buffer_b[1024..1024 + SEND_CNT]);
-
-    // for item in mr_buffer_a.iter_mut() {
-    //     *item = 0;
-    // }
-    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = idx as u8;
-    // }
-
-    // let sge_read = Sge {
-    //     addr: &mr_buffer_a[0] as *const u8 as u64,
-    //     len: SEND_CNT as u32,
-    //     key: mr_a.get_key(),
-    // };
-
-    // // read text from b to a.
-    // let ctx2 = dev_a
-    //     .read(
-    //         dpqn,
-    //         &mr_buffer_b[1024] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessNoFlags,
-    //         sge_read,
-    //     )
-    //     .unwrap();
-    // ctx1.wait();
-    // ctx2.wait();
-
-    info!("Read req sent");
-    // dev_a.dereg_mr(mr_a).unwrap();
-    // dev_b.dereg_mr(mr_b).unwrap();
-    // info!("MR deregistered");
+    let _ = ctx1.wait();
+    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
 }

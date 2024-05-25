@@ -90,7 +90,7 @@ mod tests {
             },
             ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
         },
-        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn},
+        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, WorkReqSendFlag},
     };
 
     pub(crate) fn generate_random_descriptors(
@@ -106,7 +106,7 @@ mod tests {
                 dqpn: Qpn::new(qpn),
                 mac_addr: MacAddress::default(),
                 pmtu: Pmtu::Mtu1024,
-                flags: MemAccessTypeFlag::IbvAccessNoFlags,
+                flags: WorkReqSendFlag::empty(),
                 qp_type: QpType::Rc,
                 psn: Psn::new(1234),
                 msn: Msn::new(0),

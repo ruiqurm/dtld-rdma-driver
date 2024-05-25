@@ -322,7 +322,7 @@ mod test {
         ToCardWorkRbDescWrite,
     };
 
-    use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn};
+    use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, WorkReqSendFlag};
 
     use super::{SGList, MAX_SGL_LENGTH};
 
@@ -404,7 +404,7 @@ mod test {
                 dqpn: Qpn::new(2),
                 mac_addr: MacAddress::default(),
                 pmtu: crate::types::Pmtu::Mtu4096,
-                flags: MemAccessTypeFlag::empty(),
+                flags: WorkReqSendFlag::empty(),
                 qp_type: crate::types::QpType::Rc,
                 psn: Psn::new(0),
                 msn: Msn::new(0x27),

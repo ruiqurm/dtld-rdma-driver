@@ -50,7 +50,8 @@ bitfield! {
     pub get_rq_access_flags, set_rq_access_flags: 143, 136;                         // 8bits
     pub get_pmtu, set_pmtu: 146, 144;                                               // 3bits
     _reserverd2, _: 151, 147;                                                   // 5bits
-    _reserverd1, _: 255, 152;                                                   // 104bits
+    pub get_peer_qpn, set_peer_qpn: 175, 152;                                      // 24bits
+    _reserverd1, _: 255, 176;                                                   // 80bits
 }
 
 bitfield! {
@@ -239,4 +240,13 @@ bitfield! {
     u32;
     pub get_last_retry_psn,set_last_retry_psn: 23, 0; // 24bits
     _padding_0,_: 31, 24;                         // 8its
+}
+
+bitfield! {
+    /// Mac layout
+    pub struct Mac([u8]);
+    u64;
+    pub get_dst_mac_addr,set_dst_mac_addr: 47, 0;               // 48bits
+    pub get_src_mac_addr,set_src_mac_addr: 95, 48;              // 48bits
+    pub get_network_layer_type,set_network_layer_type: 111, 96; // 16bits
 }

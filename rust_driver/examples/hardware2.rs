@@ -4,8 +4,7 @@ use log::{debug, info};
 use open_rdma_driver::{
     qp::QpManager,
     types::{
-        Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
-        RdmaDeviceNetworkParamBuilder, Sge, PAGE_SIZE,
+        Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
     },
     Device, HugePage, Mr, Pd,
 };
@@ -128,9 +127,9 @@ fn main() {
     }
 
     // test write
-    let ctx1 = dev_a
-        .write(dpqn, 0, Key::new(0), MemAccessTypeFlag::empty(), sge0)
-        .unwrap();
+    // let ctx1 = dev_a
+    //     .write(dpqn, 0, Key::new(0), WorkReqSendFlag::IbvSendSignaled, sge0)
+    //     .unwrap();
     // let ctx2 = dev_a
     //     .write(
     //         dpqn,
@@ -142,7 +141,7 @@ fn main() {
     //     .unwrap();
 
     debug!("===========7====================");
-    let _ = ctx1.wait();
+    // let _ = ctx1.wait();
     debug!("===========8====================");
     // let _ = ctx2.wait();
 

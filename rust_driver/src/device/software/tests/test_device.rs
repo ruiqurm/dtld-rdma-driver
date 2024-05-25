@@ -17,7 +17,7 @@ use crate::device::{
     },
     DeviceAdaptor, SoftwareDevice, ToCardWorkRbDescOpcode, ToHostWorkRbDesc,
 };
-use crate::types::{MemAccessTypeFlag, Pmtu, QpType};
+use crate::types::{MemAccessTypeFlag, Pmtu, QpType, WorkReqSendFlag};
 
 use super::ToCardCtrlRbDescBuilder;
 
@@ -101,7 +101,7 @@ fn test_device_read_and_write() {
             .with_raddr(dest_addr)
             .with_rkey(mr1_rkey)
             .with_pmtu(Pmtu::Mtu512)
-            .with_flags(MemAccessTypeFlag::empty())
+            .with_flags(WorkReqSendFlag::empty())
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
@@ -161,7 +161,7 @@ fn test_device_read_and_write() {
             .with_raddr(dest_addr + testing_dest_addr_offset as u64)
             .with_rkey(mr1_rkey)
             .with_pmtu(Pmtu::Mtu512)
-            .with_flags(MemAccessTypeFlag::empty())
+            .with_flags(WorkReqSendFlag::empty())
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
@@ -382,7 +382,7 @@ fn test_software_device() {
             .with_raddr(dest_addr)
             .with_rkey(mr1_rkey)
             .with_pmtu(Pmtu::Mtu512)
-            .with_flags(MemAccessTypeFlag::empty())
+            .with_flags(WorkReqSendFlag::empty())
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)
@@ -445,7 +445,7 @@ fn test_software_device() {
             .with_raddr(dest_addr + testing_dest_addr_offset as u64)
             .with_rkey(mr1_rkey)
             .with_pmtu(Pmtu::Mtu512)
-            .with_flags(MemAccessTypeFlag::empty())
+            .with_flags(WorkReqSendFlag::empty())
             .with_qp_type(QpType::Rc)
             .with_psn(1234)
             .with_dqpn(dqpn)

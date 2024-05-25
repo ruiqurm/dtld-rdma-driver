@@ -246,6 +246,27 @@ bitflags! {
     }
 }
 
+
+bitflags! {
+    /// Work Request Send Flag
+    #[derive(Debug,Clone,Copy,Default)]
+    pub struct WorkReqSendFlag: u8 {
+        /// No flags
+        const IbvSendNoFlags  = 0; // Not defined in rdma-core
+        /// Send fence
+        const IbvSendFence     = 1;
+        /// Send signaled
+        const IbvSendSignaled  = 2;
+        /// Send solicited
+        const IbvSendSolicited = 4;
+        /// Send inline
+        const IbvSendInline    = 8;
+        /// Send IP checksum
+        const IbvSendChecksum   = 16;
+    }
+}
+
+
 /// Queue Pair Type for software/hardware
 #[non_exhaustive]
 #[derive(TryFromPrimitive, Debug, Clone, Copy)]
@@ -356,6 +377,8 @@ pub struct Qp {
     pub pd: Pd,
     /// Queue Pair Number
     pub qpn: Qpn,
+    /// Peer Queue Pair Number
+    pub peer_qpn: Qpn,
     /// Queue Pair Type
     pub qp_type: QpType,
     /// Receive Queue Access Flags

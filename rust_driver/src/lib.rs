@@ -136,6 +136,7 @@
         clippy::let_underscore_untyped,
         clippy::pedantic, 
         clippy::default_numeric_fallback,
+        clippy::print_stderr,
     )
 )]
 use crate::{
@@ -153,20 +154,20 @@ use device::{
 use eui48::MacAddress;
 use flume::unbounded;
 use nic::NicInterface;
-use op_ctx::{CtrlOpCtx, ReadOpCtx, WriteOpCtx};
-use pkt_checker::{PacketChecker, RecvPktMap};
+use op_ctx::{CtrlOpCtx, OpCtx, ReadOpCtx, WriteOpCtx};
+use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
 
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
-        atomic::{AtomicU16, AtomicU32, Ordering},
+        atomic::{AtomicU32, Ordering},
         Arc, OnceLock,
     }
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge};
+use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge, WorkReqSendFlag};
 use utils::{calculate_packet_cnt, Buffer};
 use parking_lot::{Mutex,RwLock};
 
@@ -184,7 +185,7 @@ pub mod types;
 /// adaptor device: hardware, software, emulated
 mod device;
 /// pakcet check thread: checking if the packet is received correctly
-mod pkt_checker;
+mod checker;
 /// poll thread: polling the work descriptor and control descriptor
 mod poll;
 /// responser thread: sending the response(read resp or ack) to the device
@@ -224,11 +225,9 @@ struct DeviceInner<D: ?Sized> {
     mr_table: Mutex<[Option<MrCtx>; MR_TABLE_SIZE]>,
     qp_table: ThreadSafeHashmap<Qpn, QpContext>,
     mr_pgt: Mutex<MrPgt>,
-    read_op_ctx_map: ThreadSafeHashmap<Msn, ReadOpCtx>,
-    write_op_ctx_map: ThreadSafeHashmap<Msn, WriteOpCtx>,
+    user_op_ctx_map: ThreadSafeHashmap<(Qpn,Msn), OpCtx<()>>,
     ctrl_op_ctx_map: ThreadSafeHashmap<u32, CtrlOpCtx>,
     next_ctrl_op_id: AtomicU32,
-    next_msn: AtomicU16,
     responser: OnceLock<DescResponser>,
     work_desc_poller: OnceLock<WorkDescPoller>,
     pkt_checker_thread: OnceLock<PacketChecker>,
@@ -256,11 +255,9 @@ impl Device {
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             next_ctrl_op_id: AtomicU32::new(0),
-            next_msn: AtomicU16::new(0),
             adaptor,
             responser: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
@@ -291,11 +288,9 @@ impl Device {
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             next_ctrl_op_id: AtomicU32::new(0),
-            next_msn: AtomicU16::new(0),
             adaptor,
             responser: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
@@ -332,11 +327,9 @@ impl Device {
             mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
             qp_table:  Arc::new(RwLock::new(HashMap::new())),
             mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            read_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            write_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
             next_ctrl_op_id: AtomicU32::new(0),
-            next_msn: AtomicU16::new(0),
             adaptor,
             responser: OnceLock::new(),
             pkt_checker_thread: OnceLock::new(),
@@ -367,14 +360,14 @@ impl Device {
         dqpn: Qpn,
         raddr: u64,
         rkey: Key,
-        flags: MemAccessTypeFlag,
+        flags: WorkReqSendFlag,
         sge0: Sge
     ) -> Result<WriteOpCtx, Error> {
-        let msn = self.get_msn();
-        let common = {
+        let (common,key) = {
             let total_len = sge0.len;
             let qp_guard = self.0.qp_table.read();
             let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
+            let msn = qp.next_msn();
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
                 raddr,
@@ -396,7 +389,8 @@ impl Device {
                 first_pkt_psn
             };
             common.psn = first_pkt_psn;
-            common
+            let key = (common.dqpn,msn);
+            (common, key)    
         };
 
         let desc = ToCardWorkRbDescBuilder::new_write()
@@ -408,9 +402,9 @@ impl Device {
         let ctx = WriteOpCtx::new_running();
 
         self.0
-            .write_op_ctx_map
+            .user_op_ctx_map
             .write()
-            .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
+            .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
         Ok(ctx)
     }
 
@@ -428,14 +422,14 @@ impl Device {
         dqpn: Qpn,
         raddr: u64,
         rkey: Key,
-        flags: MemAccessTypeFlag,
+        flags: WorkReqSendFlag,
         sge: Sge,
     ) -> Result<ReadOpCtx, Error> {
-        let msn = self.get_msn();
-        let common = {
+        let (common,key) = {
             let total_len = sge.len;
             let qp_guard = self.0.qp_table.read();
             let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
+            let msn = qp.next_msn();
             let mut common = ToCardWorkRbDescCommon {
                 total_len,
                 raddr,
@@ -456,7 +450,8 @@ impl Device {
                 first_pkt_psn
             };
             common.psn = first_pkt_psn;
-            common
+            let key = (common.dqpn,msn);
+            (common, key)   
         };
 
         let desc = ToCardWorkRbDescBuilder::new_read()
@@ -467,9 +462,9 @@ impl Device {
 
         let ctx = WriteOpCtx::new_running();
         self.0
-            .read_op_ctx_map
+            .user_op_ctx_map
             .write()
-            .insert(msn, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
+            .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
 
         Ok(ctx)
     }
@@ -511,13 +506,8 @@ impl Device {
         self.0.next_ctrl_op_id.fetch_add(1, Ordering::AcqRel)
     }
 
-    fn get_msn(&self) -> Msn {
-        Msn::new(self.0.next_msn.fetch_add(1, Ordering::AcqRel))
-    }
-
     fn init(&self) -> Result<(), Error> {
-        let (send_queue, rece_queue) = unbounded();
-        let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
+
 
         // enable ctrl desc poller module
         let ctrl_thread_ctx = ControlPollerContext{
@@ -533,24 +523,24 @@ impl Device {
         let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 
+        let (resp_send_queue, resp_recv_queue) = unbounded();
         let responser = DescResponser::new(
             Arc::new(self.clone()),
-            rece_queue,
+            resp_recv_queue,
             ack_buf,
             Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
        
-        let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
 
         // enable work desc poller module.
+        let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
+        let (checker_send_queue,checker_recv_queue) = unbounded();
         let work_desc_poller_ctx = WorkDescPollerContext{
             work_rb : self.0.adaptor.to_host_work_rb(),
-            recv_pkt_map : Arc::<RwLock<HashMap<Msn, Arc<RecvPktMap>>>>::clone(&recv_pkt_map),
-            qp_table : Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
-            sending_queue : send_queue.clone(),
-            write_op_ctx_map : Arc::<RwLock<HashMap<Msn, WriteOpCtx>>>::clone(&self.0.write_op_ctx_map),
-            nic_notification_queue : nic_notify_send_queue,
+            resp_channel : resp_send_queue.clone(),
+            nic_channel : nic_notify_send_queue,
+            checker_channel: checker_send_queue,
         };
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
         self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
@@ -564,11 +554,13 @@ impl Device {
         *guard = Some(nic_interface);  
 
         // enable packet checker module
-        let pkt_checker_thread = PacketChecker::new(
-            send_queue,
-            recv_pkt_map,
-            Arc::<RwLock<HashMap<Msn, ReadOpCtx>>>::clone(&self.0.read_op_ctx_map),
-        );
+        let packet_checker_ctx = PacketCheckerContext{
+            resp_channel: resp_send_queue,
+            desc_poller_channel: checker_recv_queue,
+            recv_ctx_map: HashMap::new(),
+            user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
+        };
+        let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
 
         // set card network

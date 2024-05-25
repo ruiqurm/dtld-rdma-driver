@@ -1,11 +1,11 @@
 // TODO: implement for handling in big-endian machine
 use crate::{
-    device::descriptor::{
+    device::layout::{
         CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam,
         CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateMrTable,
         CmdQueueReqDescUpdatePGT, MeatReportQueueDescFragSecondaryRETH,
     },
-    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge},
+    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
     utils::u8_slice_to_u64,
     Error,
 };
@@ -13,7 +13,7 @@ use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use std::{net::Ipv4Addr, ops::Range};
 
-use super::descriptor::{
+use super::layout::{
     CmdQueueDescCommonHead, MeatReportQueueDescBthReth, MeatReportQueueDescFragAETH,
     MeatReportQueueDescFragBTH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragRETH,
     SendQueueDescCommonHead, SendQueueReqDescFragSGE, SendQueueReqDescSeg0, SendQueueReqDescSeg1,
@@ -101,6 +101,7 @@ pub(crate) struct ToCardCtrlRbDescQpManagement {
     pub(crate) qp_type: QpType,
     pub(crate) rq_acc_flags: MemAccessTypeFlag,
     pub(crate) pmtu: Pmtu,
+    pub(crate) peer_qpn: Qpn,
 }
 
 #[derive(Debug)]
@@ -159,7 +160,7 @@ pub(crate) struct ToCardWorkRbDescCommon {
     pub(crate) dqpn: Qpn,
     pub(crate) mac_addr: MacAddress,
     pub(crate) pmtu: Pmtu,
-    pub(crate) flags: MemAccessTypeFlag,
+    pub(crate) flags: WorkReqSendFlag,
     pub(crate) qp_type: QpType,
     pub(crate) psn: Psn,
     pub(crate) msn: Msn,
@@ -175,7 +176,7 @@ impl Default for ToCardWorkRbDescCommon {
             dqpn: Qpn::default(),
             mac_addr: MacAddress::default(),
             pmtu: Pmtu::Mtu256,
-            flags: MemAccessTypeFlag::empty(),
+            flags: WorkReqSendFlag::empty(),
             qp_type: QpType::Rc,
             psn: Psn::default(),
             msn: Msn::default(),
@@ -212,7 +213,7 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
     pub(crate) trans: ToHostWorkRbDescTransType,
@@ -238,8 +239,23 @@ pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) is_read_resp: bool,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
     pub(crate) psn: Psn,
+    #[allow(unused)]
     pub(crate) addr: u64,
+    #[allow(unused)]
     pub(crate) len: u32,
+}
+
+impl Default for ToHostWorkRbDescWriteOrReadResp {
+    fn default() -> Self {
+        Self {
+            common: ToHostWorkRbDescCommon::default(),
+            is_read_resp: false,
+            write_type: ToHostWorkRbDescWriteType::Only,
+            psn: Psn::default(),
+            addr: 0,
+            len: 0,
+        }
+    }
 }
 
 #[allow(unused)] // Currently we don't have write imm descriptor
@@ -275,7 +291,7 @@ pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) lost_psn: Range<Psn>,
 }
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub(crate) struct ToHostWorkRbDescRaw {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) addr: u64,
@@ -301,6 +317,12 @@ pub(crate) enum ToHostWorkRbDescStatus {
     Unknown = 6,
 }
 
+impl Default for ToHostWorkRbDescStatus{
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 impl ToHostWorkRbDescStatus {
     pub(crate) fn is_ok(&self) -> bool {
         matches!(self, ToHostWorkRbDescStatus::Normal)
@@ -317,6 +339,12 @@ pub(crate) enum ToHostWorkRbDescTransType {
     Cnp = 0x04,
     Xrc = 0x05,
     DtldExtended = 0x06, // Customize for normal packet.
+}
+
+impl Default for ToHostWorkRbDescTransType {
+    fn default() -> Self {
+        Self::Rc
+    }
 }
 
 #[derive(Debug)]
@@ -544,7 +572,8 @@ impl ToCardCtrlRbDesc {
 
         fn write_qp_management(dst: &mut [u8], desc: &ToCardCtrlRbDescQpManagement) {
             // typedef struct {
-            //     ReservedZero#(104)              reserved1;      // 104 bits
+            //     ReservedZero#(80)              reserved1;       // 80  bits
+            //     QPN                             qpn;            // 24  bits
             //     ReservedZero#(5)                reserved2;      // 5   bits
             //     PMTU                            pmtu;           // 3   bits
             //     FlagsType#(MemAccessTypeFlag)   rqAccessFlags;  // 8   bits
@@ -566,6 +595,7 @@ impl ToCardCtrlRbDesc {
             seg0.set_qp_type(desc.qp_type as u64);
             seg0.set_rq_access_flags(desc.rq_acc_flags.bits().into());
             seg0.set_pmtu(desc.pmtu as u64);
+            seg0.set_peer_qpn(desc.peer_qpn.get().into());
         }
 
         fn write_set_network_param(dst: &mut [u8], desc: &ToCardCtrlRbDescSetNetworkParam) {

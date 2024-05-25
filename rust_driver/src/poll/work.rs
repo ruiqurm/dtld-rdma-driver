@@ -1,24 +1,22 @@
 use core::panic;
 use flume::Sender;
-use log::{debug, error,info};
+use log::{debug, error, info};
 use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::{
     buf::Slot,
+    checker::PacketCheckEvent,
     device::{
         ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescRaw,
         ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp,
-        ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
+        ToHostWorkRbDescWriteWithImm,
     },
     nic::NicRecvNotification,
-    op_ctx::WriteOpCtx,
-    qp::QpContext,
     responser::{RespCommand, RespReadRespCommand},
-    types::{Msn, Qpn},
-    Error, RecvPktMap, ThreadSafeHashmap,
+    Error,
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -30,11 +28,9 @@ pub(crate) struct WorkDescPoller {
 
 pub(crate) struct WorkDescPollerContext {
     pub(crate) work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-    pub(crate) recv_pkt_map: ThreadSafeHashmap<Msn, Arc<RecvPktMap>>,
-    pub(crate) qp_table: ThreadSafeHashmap<Qpn, QpContext>,
-    pub(crate) sending_queue: Sender<RespCommand>,
-    pub(crate) write_op_ctx_map: ThreadSafeHashmap<Msn, WriteOpCtx>,
-    pub(crate) nic_notification_queue: Sender<NicRecvNotification>,
+    pub(crate) resp_channel: Sender<RespCommand>,
+    pub(crate) checker_channel: Sender<PacketCheckEvent>,
+    pub(crate) nic_channel: Sender<NicRecvNotification>,
 }
 
 unsafe impl Send for WorkDescPollerContext {}
@@ -71,16 +67,10 @@ impl WorkDescPollerContext {
 
             let result = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
-                ToHostWorkRbDesc::WriteOrReadResp(desc) => {
-                    ctx.handle_work_desc_write(&desc);
-                    Ok(())
-                }
+                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(desc),
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
-                ToHostWorkRbDesc::Ack(desc) => {
-                    ctx.handle_work_desc_ack(&desc);
-                    Ok(())
-                }
-                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(&desc),
+                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(desc),
+                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(desc),
                 ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
             };
             if let Err(reason) = result {
@@ -90,69 +80,21 @@ impl WorkDescPollerContext {
         }
     }
 
+    #[inline]
     fn handle_work_desc_read(&self, desc: ToHostWorkRbDescRead) -> Result<(), Error> {
         let command = RespCommand::ReadResponse(RespReadRespCommand { desc });
-        self.sending_queue
+        self.resp_channel
             .send(command)
             .map_err(|_| Error::PipeBroken("work polling thread to responser"))?;
         Ok(())
     }
 
-    fn handle_work_desc_write(&self, desc: &ToHostWorkRbDescWriteOrReadResp) {
-        let msn = desc.common.msn;
-
-        if matches!(
-            desc.write_type,
-            ToHostWorkRbDescWriteType::First | ToHostWorkRbDescWriteType::Only
-        ) {
-            let real_payload_len = desc.len;
-            let pmtu = {
-                let guard = self.qp_table.read();
-                if let Some(qp_ctx) = guard.get(&desc.common.dqpn) {
-                    qp_ctx.pmtu
-                } else {
-                    error!("{:?} not found", desc.common.dqpn.get());
-                    return;
-                }
-            };
-
-            let pmtu = u32::from(&pmtu);
-
-            #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
-            let first_pkt_len = if matches!(desc.write_type, ToHostWorkRbDescWriteType::First) {
-                u64::from(pmtu) - (desc.addr & (u64::from(pmtu) - 1))
-            } else {
-                u64::from(real_payload_len)
-            } as u32;
-
-            #[allow(clippy::arithmetic_side_effects)]
-            // real_payload_len must be greater than first_pkt_len
-            let pkt_cnt = 1 + (real_payload_len - first_pkt_len).div_ceil(pmtu);
-            let pkt_map = RecvPktMap::new(
-                desc.is_read_resp,
-                pkt_cnt as usize,
-                desc.psn,
-                desc.common.dqpn,
-            );
-            pkt_map.insert(desc.psn);
-            let mut recv_pkt_map_guard = self.recv_pkt_map.write();
-            if recv_pkt_map_guard
-                .insert(msn, pkt_map.into())
-                .is_some()
-            {
-                error!(
-                    "msn={:?} already exists in recv_pkt_map_guard",
-                    desc.common.msn
-                );
-            }
-        } else {
-            let guard = self.recv_pkt_map.read();
-            if let Some(recv_pkt_map) = guard.get(&msn) {
-                recv_pkt_map.insert(desc.psn);
-            } else {
-                error!("recv_pkt_map not found for {:?}", msn);
-            }
-        }
+    #[inline]
+    fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWriteOrReadResp) -> Result<(), Error> {
+        let msg = PacketCheckEvent::from(desc);
+        self.checker_channel
+            .send(msg)
+            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
     }
 
     fn handle_work_desc_write_with_imm(
@@ -162,27 +104,26 @@ impl WorkDescPollerContext {
         todo!()
     }
 
-    fn handle_work_desc_ack(&self, desc: &ToHostWorkRbDescAck) {
-        let guard = self.write_op_ctx_map.read();
-        let key = desc.msn;
-        if let Some(op_ctx) = guard.get(&key) {
-            if let Err(e) = op_ctx.set_result(()) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("receive ack, but op_ctx not found for {:?}", key);
-        }
+    #[inline]
+    fn handle_work_desc_ack(&self, desc: ToHostWorkRbDescAck) -> Result<(), Error> {
+        let msg = PacketCheckEvent::from(desc);
+        self.checker_channel
+            .send(msg)
+            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
     }
 
-    // This function is still under development
-    #[allow(clippy::unused_self)]
-    fn handle_work_desc_nack(&self, _desc: &ToHostWorkRbDescNack) -> Result<(), Error> {
-        panic!("receive a nack");
+    #[inline]
+    fn handle_work_desc_nack(&self, desc: ToHostWorkRbDescNack) -> Result<(), Error> {
+        let msg = PacketCheckEvent::from(desc);
+        self.checker_channel
+            .send(msg)
+            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
     }
 
+    #[inline]
     fn handle_work_desc_raw(&self, desc: &ToHostWorkRbDescRaw) -> Result<(), Error> {
         let slot = unsafe { Slot::from_raw_parts_mut(desc.addr as *mut u8, desc.key) };
-        self.nic_notification_queue
+        self.nic_channel
             .send(NicRecvNotification {
                 buf: slot,
                 len: desc.len,
@@ -205,21 +146,19 @@ impl Drop for WorkDescPoller {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, net::Ipv4Addr, sync::Arc, thread::sleep};
-
-    use eui48::MacAddress;
+    use std::{collections::HashMap, sync::Arc, thread::sleep};
 
     use crate::{
+        checker::PacketCheckEvent,
         device::{
             DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
-            ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
-            ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
+            ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescStatus,
+            ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         },
         op_ctx::WriteOpCtx,
         qp::QpContext,
         responser::RespCommand,
-        types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn},
-        Pd,
+        types::{Key, Msn, Psn, Qpn},
     };
 
     use super::WorkDescPoller;
@@ -238,7 +177,8 @@ mod tests {
         fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
             let is_empty = self.rb.lock().is_empty();
             if is_empty {
-                sleep(std::time::Duration::from_secs(10))
+                sleep(std::time::Duration::from_secs(1));
+                return Ok(ToHostWorkRbDesc::Raw(ToHostWorkRbDescRaw::default()));
             }
             Ok(self.rb.lock().pop().unwrap())
         }
@@ -250,25 +190,19 @@ mod tests {
             ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
-                    status: ToHostWorkRbDescStatus::Normal,
-                    trans: ToHostWorkRbDescTransType::Rc,
-                    msn: Msn::default(),
-                    expected_psn: Psn::new(0),
+                    ..Default::default()
                 },
-                is_read_resp: false,
-                addr: 0,
-                len: 3192,
+                len: 4096,
                 write_type: ToHostWorkRbDescWriteType::First,
                 psn: Psn::new(0),
+                ..Default::default()
             }),
             // test writeMiddle
             ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
-                    status: ToHostWorkRbDescStatus::Normal,
-                    trans: ToHostWorkRbDescTransType::Rc,
-                    msn: Msn::default(),
                     expected_psn: Psn::new(1),
+                    ..Default::default()
                 },
                 is_read_resp: false,
                 addr: 1024,
@@ -280,10 +214,8 @@ mod tests {
             ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
-                    status: ToHostWorkRbDescStatus::Normal,
-                    trans: ToHostWorkRbDescTransType::Rc,
-                    msn: Msn::default(),
                     expected_psn: Psn::new(2),
+                    ..Default::default()
                 },
                 is_read_resp: false,
                 addr: 1024,
@@ -295,10 +227,7 @@ mod tests {
             ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
-                    status: ToHostWorkRbDescStatus::Normal,
-                    trans: ToHostWorkRbDescTransType::Rc,
-                    msn: Msn::default(),
-                    expected_psn: Psn::default(),
+                    ..Default::default()
                 },
                 len: 2048,
                 laddr: 0,
@@ -309,53 +238,49 @@ mod tests {
             ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                 common: ToHostWorkRbDescCommon {
                     dqpn: Qpn::new(3),
-                    status: ToHostWorkRbDescStatus::Normal,
-                    trans: ToHostWorkRbDescTransType::Rc,
-                    msn: Msn::default(),
-                    expected_psn: Psn::default(),
+                    ..Default::default()
                 },
                 value: 0,
                 msn: Msn::default(),
                 psn: Psn::new(2),
             }),
+            ToHostWorkRbDesc::Raw(ToHostWorkRbDescRaw {
+                common: ToHostWorkRbDescCommon {
+                    dqpn: Qpn::new(3),
+                    ..Default::default()
+                },
+                addr: 0xa00_0000_0000,
+                len: 4096,
+                key: Default::default(),
+            }),
         ];
+
         input.reverse();
 
         let work_rb = Arc::new(MockToHostRb::new(input));
-        let recv_pkt_map = Arc::new(RwLock::new(HashMap::new()));
         let qp_table = Arc::new(RwLock::new(HashMap::new()));
         qp_table.write().insert(
             Qpn::new(3),
             QpContext {
-                pd: Pd { handle: 0 },
                 qpn: Qpn::new(3),
-                qp_type: crate::types::QpType::Rc,
-                rq_acc_flags: MemAccessTypeFlag::IbvAccessRemoteWrite,
-                pmtu: crate::types::Pmtu::Mtu1024,
-                local_ip: Ipv4Addr::LOCALHOST,
-                dqp_ip: Ipv4Addr::LOCALHOST,
-                dqp_mac_addr: MacAddress::new([0; 6]),
-                sending_psn: Mutex::new(Psn::new(0)),
+                ..Default::default()
             },
         );
-        let (sending_queue, recv_queue) = flume::unbounded();
-        let (notification_send_queue, _notification_recv_queue) = flume::unbounded();
+        let (resp_channel, resp_recv_queue) = flume::unbounded();
+        let (checker_channel, checker_recv_queue) = flume::unbounded();
+        let (notification_send_queue, notification_recv_queue) = flume::unbounded();
 
-        let write_op_ctx_map = Arc::new(RwLock::new(HashMap::new()));
-        let key = Msn::default();
-        let ctx = WriteOpCtx::new_running();
-        write_op_ctx_map.write().insert(key, ctx.clone());
         let work_ctx = super::WorkDescPollerContext {
             work_rb,
-            recv_pkt_map,
-            qp_table,
-            sending_queue,
-            write_op_ctx_map,
-            nic_notification_queue: notification_send_queue,
+            resp_channel,
+            checker_channel,
+            nic_channel: notification_send_queue,
         };
         let _poller = WorkDescPoller::new(work_ctx);
-        let _ = ctx.wait();
-        let item = recv_queue.recv().unwrap();
+        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 0);
+        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 1);
+        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 2);
+        let item = resp_recv_queue.recv().unwrap();
         match item {
             RespCommand::ReadResponse(res) => {
                 assert_eq!(res.desc.len, 2048);
@@ -366,5 +291,10 @@ mod tests {
             }
             _ => panic!("unexpected item"),
         }
+        let item = checker_recv_queue.recv().unwrap();
+        assert_eq!(item.psn.get(), 2);
+        let buf = &mut notification_recv_queue.recv().unwrap().buf;
+        assert_eq!(buf.as_mut_slice().as_mut_ptr() as usize, 0xa00_0000_0000);
+        assert_eq!(buf.as_mut_slice().len(), 4096);
     }
 }

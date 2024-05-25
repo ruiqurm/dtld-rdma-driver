@@ -7,7 +7,7 @@ use std::{
 
 // TODO: PD will be shared by multi function call. Use reference counter?
 /// Protection Domain
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Pd {
     pub(crate) handle: u32,
 }
