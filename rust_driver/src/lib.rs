@@ -149,7 +149,7 @@ use crate::{
 };
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
-    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder
+    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
 use eui48::MacAddress;
 use flume::unbounded;
@@ -159,6 +159,7 @@ use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
+use retry::RetryMonitorContext;
 
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
@@ -345,7 +346,67 @@ impl Device {
 
         Ok(dev)
     }
-
+    fn write_or_read(
+        &self,
+        dqpn: Qpn,
+        raddr: u64,
+        rkey: Key,
+        flags: WorkReqSendFlag,
+        sge0: Sge,
+        is_read:bool)-> Result<WriteOpCtx, Error>{
+            let (common,key) = {
+                let total_len = sge0.len;
+                let qp_guard = self.0.qp_table.read();
+                let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
+                let msn = qp.next_msn();
+                let mut common = ToCardWorkRbDescCommon {
+                    total_len,
+                    raddr,
+                    rkey,
+                    dqp_ip: qp.dqp_ip,
+                    dqpn: qp.qpn,
+                    mac_addr: qp.dqp_mac_addr,
+                    pmtu: qp.pmtu,
+                    flags,
+                    qp_type: qp.qp_type,
+                    psn: Psn::default(),
+                    msn,
+                };
+                let packet_cnt = if !is_read{
+                    calculate_packet_cnt(qp.pmtu, raddr, total_len)
+                }else{
+                    1
+                };
+                let first_pkt_psn = {
+                    let mut send_psn = qp.sending_psn.lock();
+                    let first_pkt_psn = *send_psn;
+                    *send_psn = send_psn.wrapping_add(packet_cnt);
+                    first_pkt_psn
+                };
+                common.psn = first_pkt_psn;
+                let key = (common.dqpn,msn);
+                (common, key)    
+            };
+            let opcode = if !is_read{
+                ToCardWorkRbDescOpcode::Write
+            }else{
+                ToCardWorkRbDescOpcode::Read
+            };
+            let desc = ToCardWorkRbDescBuilder::new(opcode)
+                .with_common(common)
+                .with_sge(sge0)
+                .build()?;
+            self.send_work_desc(desc)?;
+    
+            let ctx = WriteOpCtx::new_running();
+    
+            self.0
+                .user_op_ctx_map
+                .write()
+                .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
+            Ok(ctx)
+    }
+    
     /// RDMA write operation
     /// 
     /// # Errors
@@ -363,49 +424,7 @@ impl Device {
         flags: WorkReqSendFlag,
         sge0: Sge
     ) -> Result<WriteOpCtx, Error> {
-        let (common,key) = {
-            let total_len = sge0.len;
-            let qp_guard = self.0.qp_table.read();
-            let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
-            let msn = qp.next_msn();
-            let mut common = ToCardWorkRbDescCommon {
-                total_len,
-                raddr,
-                rkey,
-                dqp_ip: qp.dqp_ip,
-                dqpn: qp.qpn,
-                mac_addr: qp.dqp_mac_addr,
-                pmtu: qp.pmtu,
-                flags,
-                qp_type: qp.qp_type,
-                psn: Psn::default(),
-                msn,
-            };
-            let packet_cnt = calculate_packet_cnt(qp.pmtu, raddr, total_len);
-            let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock();
-                let first_pkt_psn = *send_psn;
-                *send_psn = send_psn.wrapping_add(packet_cnt);
-                first_pkt_psn
-            };
-            common.psn = first_pkt_psn;
-            let key = (common.dqpn,msn);
-            (common, key)    
-        };
-
-        let desc = ToCardWorkRbDescBuilder::new_write()
-            .with_common(common)
-            .with_sge(sge0)
-            .build()?;
-        self.send_work_desc(desc)?;
-
-        let ctx = WriteOpCtx::new_running();
-
-        self.0
-            .user_op_ctx_map
-            .write()
-            .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
-        Ok(ctx)
+        self.write_or_read(dqpn,raddr,rkey,flags,sge0,false)
     }
 
     /// RDMA read operation
@@ -425,48 +444,7 @@ impl Device {
         flags: WorkReqSendFlag,
         sge: Sge,
     ) -> Result<ReadOpCtx, Error> {
-        let (common,key) = {
-            let total_len = sge.len;
-            let qp_guard = self.0.qp_table.read();
-            let qp = qp_guard.get(&dqpn).ok_or(Error::Invalid(format!("Qpn :{dqpn:?}")))?;
-            let msn = qp.next_msn();
-            let mut common = ToCardWorkRbDescCommon {
-                total_len,
-                raddr,
-                rkey,
-                dqp_ip: qp.dqp_ip,
-                dqpn: qp.qpn,
-                mac_addr: qp.dqp_mac_addr,
-                pmtu: qp.pmtu,
-                flags,
-                qp_type: qp.qp_type,
-                psn: Psn::default(),
-                msn,
-            };
-            let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock();
-                let first_pkt_psn = *send_psn;
-                *send_psn = send_psn.wrapping_add(1);
-                first_pkt_psn
-            };
-            common.psn = first_pkt_psn;
-            let key = (common.dqpn,msn);
-            (common, key)   
-        };
-
-        let desc = ToCardWorkRbDescBuilder::new_read()
-            .with_common(common)
-            .with_sge(sge)
-            .build()?;
-        self.send_work_desc(desc)?;
-
-        let ctx = WriteOpCtx::new_running();
-        self.0
-            .user_op_ctx_map
-            .write()
-            .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
-
-        Ok(ctx)
+        self.write_or_read(dqpn,raddr,rkey,flags,sge,true)
     }
 
     /// # Errors
@@ -562,6 +540,16 @@ impl Device {
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
+
+        // install retry monitor
+        // let retry_context = RetryMonitorContext{
+        //     map: HashMap::new(),
+        //     receiver: nic_notify_recv_queue,
+        //     config: RetryConfig::default(),
+        //     user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
+        //     device: self.clone(),
+        // };  
+        // let retry_monitor = retry::RetryMonitor::new(self.clone());
 
         // set card network
         self.set_network(&self.0.local_network)?;
