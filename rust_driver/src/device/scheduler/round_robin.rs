@@ -90,7 +90,7 @@ mod tests {
             },
             ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
         },
-        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, WorkReqSendFlag},
+        types::{Key, Msn, Pmtu, Psn, QpType, Qpn, WorkReqSendFlag},
     };
 
     pub(crate) fn generate_random_descriptors(

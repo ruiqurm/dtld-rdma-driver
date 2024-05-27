@@ -322,7 +322,7 @@ mod test {
         ToCardWorkRbDescWrite,
     };
 
-    use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, WorkReqSendFlag};
+    use crate::types::{Key, Msn, Psn, Qpn, WorkReqSendFlag};
 
     use super::{SGList, MAX_SGL_LENGTH};
 

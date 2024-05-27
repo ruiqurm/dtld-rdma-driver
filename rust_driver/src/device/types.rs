@@ -1178,36 +1178,9 @@ pub(crate) struct ToCardWorkRbDescBuilder {
 }
 
 impl ToCardWorkRbDescBuilder {
-    pub(crate) fn new_write() -> Self {
+    pub(crate) fn new(type_ : ToCardWorkRbDescOpcode) -> Self {
         Self {
-            type_: ToCardWorkRbDescOpcode::Write,
-            common: None,
-            seg_list: Vec::new(),
-            imm: None,
-        }
-    }
-
-    pub(crate) fn new_write_raw() -> Self {
-        Self {
-            type_: ToCardWorkRbDescOpcode::WriteWithImm,
-            common: None,
-            seg_list: Vec::new(),
-            imm: Some(0),
-        }
-    }
-
-    pub(crate) fn new_read_resp() -> Self {
-        Self {
-            type_: ToCardWorkRbDescOpcode::ReadResp,
-            common: None,
-            seg_list: Vec::new(),
-            imm: None,
-        }
-    }
-
-    pub(crate) fn new_read() -> Self {
-        Self {
-            type_: ToCardWorkRbDescOpcode::Read,
+            type_,
             common: None,
             seg_list: Vec::new(),
             imm: None,

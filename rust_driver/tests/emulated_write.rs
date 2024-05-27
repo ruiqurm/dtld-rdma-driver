@@ -3,12 +3,9 @@ use buddy_system_allocator::LockedHeap;
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
-        RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    },
-    AlignedMemory, Device, Mr, Pd,
+    qp::QpManager, types::{
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
+    }, AlignedMemory, Device, Mr, Pd
 };
 use std::{ffi::c_void, net::Ipv4Addr};
 
@@ -25,7 +22,7 @@ extern crate ctor;
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
 const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT: usize = 1024 * 10;
+const SEND_CNT : usize = 1024 * 6;
 static mut HEAP_START_ADDR: usize = 0;
 
 mod common;
@@ -104,6 +101,7 @@ fn create_and_init_card<'a>(
     let qp = QpBuilder::default()
         .pd(pd)
         .qpn(qpn)
+        .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
         .pmtu(Pmtu::Mtu4096)
@@ -116,7 +114,9 @@ fn create_and_init_card<'a>(
 
     (dev, pd, mr, mr_buffer)
 }
-fn main() {
+
+#[test]
+fn test_emulated_write() {
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();

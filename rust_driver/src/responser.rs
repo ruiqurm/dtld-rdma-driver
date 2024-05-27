@@ -11,8 +11,7 @@ use flume::Receiver;
 use log::{error, info};
 
 use crate::device::{
-    ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToHostWorkRbDescAethCode,
-    ToHostWorkRbDescOpcode, ToHostWorkRbDescRead,
+    ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode, ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead
 };
 use crate::utils::{calculate_packet_cnt, u8_slice_to_u64};
 use crate::{Error, Sge, ThreadSafeHashmap, WorkDescriptorSender};
@@ -191,7 +190,7 @@ impl DescResponser {
                     );
                     #[allow(clippy::cast_possible_truncation)]
                     let sge = ack_buf.into_sge(ACKPACKET_SIZE as u32);
-                    ToCardWorkRbDescBuilder::new_write()
+                    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::WriteWithImm)
                         .with_common(common)
                         .with_sge(sge)
                         .build()
@@ -211,7 +210,7 @@ impl DescResponser {
                         len: resp.desc.len,
                         key: resp.desc.lkey,
                     };
-                    ToCardWorkRbDescBuilder::new_read_resp()
+                    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::ReadResp)
                         .with_common(common)
                         .with_sge(sge)
                         .build()
@@ -443,7 +442,7 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::Ipv4Addr, sync::Arc, thread::sleep};
+    use std::{sync::Arc, thread::sleep};
 
     use eui48::MacAddress;
     use flume::unbounded;
@@ -453,7 +452,7 @@ mod tests {
         device::{ToCardWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
         qp::QpContext,
         responser::{calculate_ipv4_checksum, ACKPACKET_SIZE},
-        types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, Qpn},
+        types::{Key, Msn, Pmtu, Psn, Qpn},
     };
 
     use super::calculate_icrc;

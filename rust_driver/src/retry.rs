@@ -18,12 +18,14 @@ use crate::{
     ThreadSafeHashmap, WorkDescriptorSender,
 };
 
-struct RetryContext {
+pub(crate)struct RetryContext {
     descriptor: ToCardWorkRbDesc,
     retry_counter: u32,
     next_timeout: u128,
 }
 
+/// Typically the checking_interval should at most 1% of retry_timeout
+/// So that the retrying won't drift too much
 pub(crate) struct RetryConfig {
     max_retry: u32,
     retry_timeout: u128,
@@ -62,11 +64,11 @@ pub(crate) enum RetryEvent {
 }
 
 pub(crate) struct RetryMonitorContext {
-    map: HashMap<(Qpn, Msn), RetryContext>,
-    receiver: Receiver<RetryEvent>,
-    device: Arc<dyn WorkDescriptorSender>,
-    user_op_ctx_map: ThreadSafeHashmap<(Qpn, Msn), OpCtx<()>>,
-    config: RetryConfig,
+    pub(crate) map: HashMap<(Qpn, Msn), RetryContext>,
+    pub(crate) receiver: Receiver<RetryEvent>,
+    pub(crate) device: Arc<dyn WorkDescriptorSender>,
+    pub(crate) user_op_ctx_map: ThreadSafeHashmap<(Qpn, Msn), OpCtx<()>>,
+    pub(crate) config: RetryConfig,
 }
 
 /// get current time in ms

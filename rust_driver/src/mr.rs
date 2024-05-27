@@ -10,7 +10,8 @@ use crate::{
 };
 use rand::RngCore as _;
 use std::{
-    hash::{Hash, Hasher}, mem, ptr
+    hash::{Hash, Hasher},
+    mem, ptr,
 };
 
 pub(crate) const ACKNOWLEDGE_BUFFER_SIZE: usize = PAGE_SIZE;
@@ -213,10 +214,10 @@ impl Device {
         Ok(mr)
     }
 
-    pub(crate) fn init_buf<const SLOT_SIZE : usize>(
+    pub(crate) fn init_buf<const SLOT_SIZE: usize>(
         &self,
         buffer: &mut Buffer,
-        buffer_size: usize
+        buffer_size: usize,
     ) -> Result<PacketBuf<SLOT_SIZE>, Error> {
         let buffer_addr = buffer.as_ptr() as usize;
         let pd = self.alloc_pd()?;
@@ -300,7 +301,10 @@ impl MrPgt {
             prev: ptr::null_mut(),
             next: ptr::null_mut(),
         }));
-        assert!(buffer.as_ptr() as usize % PAGE_SIZE == 0,"buffer should be aligned to PAGE_SIZE");
+        assert!(
+            buffer.as_ptr() as usize % PAGE_SIZE == 0,
+            "buffer should be aligned to PAGE_SIZE"
+        );
         Self {
             table: buffer,
             free_blk_list: free_blk,

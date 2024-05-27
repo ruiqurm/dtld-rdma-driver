@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    mem,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -19,7 +18,6 @@ use crate::{
 };
 
 use flume::{Receiver, Sender, TryRecvError};
-use parking_lot::Mutex;
 
 use log::{error, info};
 

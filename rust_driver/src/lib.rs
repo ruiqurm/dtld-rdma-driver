@@ -159,16 +159,16 @@ use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
-use retry::RetryMonitorContext;
+use retry::{RetryConfig, RetryMonitorContext};
 
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
         Arc, OnceLock,
-    }
+    }, time::Duration
 };
 use thiserror::Error;
-use types::{Key, MemAccessTypeFlag, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge, WorkReqSendFlag};
+use types::{Key, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge, WorkReqSendFlag};
 use utils::{calculate_packet_cnt, Buffer};
 use parking_lot::{Mutex,RwLock};
 
@@ -485,8 +485,6 @@ impl Device {
     }
 
     fn init(&self) -> Result<(), Error> {
-
-
         // enable ctrl desc poller module
         let ctrl_thread_ctx = ControlPollerContext{
             to_host_ctrl_rb: self.0.adaptor.to_host_ctrl_rb(),
@@ -510,7 +508,6 @@ impl Device {
         );
         self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
        
-
         // enable work desc poller module.
         let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
         let (checker_send_queue,checker_recv_queue) = unbounded();
@@ -542,14 +539,19 @@ impl Device {
         self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
 
         // install retry monitor
+        // let (retry_send_channel, retry_recv_channel) = unbounded();
         // let retry_context = RetryMonitorContext{
         //     map: HashMap::new(),
-        //     receiver: nic_notify_recv_queue,
-        //     config: RetryConfig::default(),
+        //     receiver: retry_recv_channel,
+        //     config: RetryConfig::new(
+        //         1,
+        //         Duration::from_millis(5000),
+        //         Duration::from_millis(1),
+        //     ),
         //     user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
-        //     device: self.clone(),
+        //     device: Arc::new(self.clone()), // not so good here
         // };  
-        // let retry_monitor = retry::RetryMonitor::new(self.clone());
+        // let retry_monitor = retry::RetryMonitor::new(retry_context);
 
         // set card network
         self.set_network(&self.0.local_network)?;

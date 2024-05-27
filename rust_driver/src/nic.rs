@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     buf::{PacketBuf, Slot, NIC_PACKET_BUFFER_SLOT_SIZE},
-    device::{ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon},
+    device::{ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode},
     types::QpType,
     Device as BlueRdmaDevice, WorkDescriptorSender,
 };
@@ -242,7 +242,8 @@ impl TxToken for NicTxToken<'_> {
             ..Default::default()
         };
         // we don't miss any field, so it's impossible to panic
-        let desc = ToCardWorkRbDescBuilder::new_write_raw()
+        // `WriteWithImm` with `Qptype == raw` means raw packet
+        let desc = ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::WriteWithImm)
             .with_common(common)
             .with_sge(sge)
             .build()
