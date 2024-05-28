@@ -1280,8 +1280,6 @@ pub(crate) enum DeviceError {
     Device(String),
     #[error("Overflow")]
     Overflow,
-    #[error("Lock poisoned : {0}")]
-    LockPoisoned(String),
     #[error("Scheduler : {0}")]
     Scheduler(String),
     #[error("Parse descriptor error : {0}")]

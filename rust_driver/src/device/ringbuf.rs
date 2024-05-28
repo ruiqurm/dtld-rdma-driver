@@ -1,4 +1,5 @@
-use std::sync::{Mutex, MutexGuard};
+
+use parking_lot::{Mutex, MutexGuard};
 
 use crate::utils::Buffer;
 
@@ -115,8 +116,7 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
         Ok(RingbufWriter {
             buf: self
                 .buf
-                .lock()
-                .map_err(|_| DeviceError::LockPoisoned("read_op_ctx_map lock".to_owned()))?,
+                .lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             written_cnt: 0,
@@ -135,8 +135,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
         Ok(RingbufReader {
             buf: self
                 .buf
-                .lock()
-                .map_err(|_| DeviceError::LockPoisoned("buf lock".to_owned()))?,
+                .lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             read_cnt: 0,

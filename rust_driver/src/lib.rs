@@ -149,7 +149,7 @@ use crate::{
 };
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use device::{
-    scheduler::{round_robin::RoundRobinStrategy, DescriptorScheduler}, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
+    scheduler::DescriptorScheduler, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
 use eui48::MacAddress;
 use flume::unbounded;
@@ -159,13 +159,11 @@ use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
-use retry::{RetryConfig, RetryMonitorContext};
-
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
         Arc, OnceLock,
-    }, time::Duration
+    }
 };
 use thiserror::Error;
 use types::{Key, Msn, Psn, Qpn, RdmaDeviceNetworkParam, Sge, WorkReqSendFlag};
@@ -201,8 +199,11 @@ mod retry;
 mod utils;
 
 pub use crate::{mr::Mr, pd::Pd};
+pub use device::scheduler::{SchedulerStrategy,SealedDesc,POP_BATCH_SIZE,BatchDescs};
+pub use device::scheduler::round_robin::RoundRobinStrategy;
 pub use types::Error;
 pub use utils::{HugePage,AlignedMemory};
+
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;
@@ -246,8 +247,7 @@ impl Device {
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_hardware(network: &RdmaDeviceNetworkParam,device_name : String) -> Result<Self, Error> {
-        let round_robin = Arc::new(RoundRobinStrategy::new());
-        let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+        let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
         let adaptor = HardwareDevice::new(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
         let use_hugepage =  adaptor.use_hugepage();
         let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
@@ -279,8 +279,7 @@ impl Device {
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new_software(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
-        let round_robin = Arc::new(RoundRobinStrategy::new());
-        let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+        let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
         let adaptor = SoftwareDevice::new(network.ipaddr,DEFAULT_RMDA_PORT,scheduler).map_err(Error::Device)?;
         let use_hugepage =  adaptor.use_hugepage();
         let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
@@ -317,8 +316,7 @@ impl Device {
         network: &RdmaDeviceNetworkParam,
     ) -> Result<Self, Error> {
         let adaptor = {
-            let round_robin = Arc::new(RoundRobinStrategy::new());
-            let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+            let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
             EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?
         };
         let use_hugepage =  adaptor.use_hugepage();

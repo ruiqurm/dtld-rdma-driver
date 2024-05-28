@@ -1,3 +1,4 @@
+#![allow(warnings)] // FIXME: debug only
 use eui48::MacAddress;
 use log::{debug, info};
 use open_rdma_driver::{

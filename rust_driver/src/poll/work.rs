@@ -149,13 +149,11 @@ mod tests {
     use std::{collections::HashMap, sync::Arc, thread::sleep};
 
     use crate::{
-        checker::PacketCheckEvent,
         device::{
             DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
-            ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescStatus,
-            ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
+            ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescWriteOrReadResp,
+            ToHostWorkRbDescWriteType,
         },
-        op_ctx::WriteOpCtx,
         qp::QpContext,
         responser::RespCommand,
         types::{Key, Msn, Psn, Qpn},

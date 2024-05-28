@@ -316,8 +316,7 @@ fn test_device_read_and_write() {
 #[test]
 #[serial]
 fn test_software_device() {
-    let round_robin = Arc::new(RoundRobinStrategy::new());
-    let scheduler = Arc::new(DescriptorScheduler::new(round_robin));
+    let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
     let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,scheduler).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;

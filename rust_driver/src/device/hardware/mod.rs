@@ -1,6 +1,7 @@
 use log::{debug, error};
+use parking_lot::Mutex;
 
-use crate::utils::Buffer;
+use crate::{utils::Buffer, SchedulerStrategy};
 
 use self::{
     csr_cli::{
@@ -11,15 +12,13 @@ use self::{
 };
 
 use super::{
-    constants, ringbuf::Ringbuf, scheduler::DescriptorScheduler, DeviceAdaptor, DeviceError,
-    ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
-    ToHostWorkRbDescError,
+    constants,
+    ringbuf::Ringbuf,
+    scheduler::{DescriptorScheduler, SealedDesc, POP_BATCH_SIZE},
+    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
+    ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-    thread::spawn,
-};
+use std::{path::Path, sync::Arc, thread::spawn};
 
 mod csr_cli;
 mod phys_addr_resolver;
@@ -52,25 +51,25 @@ type ToHostWorkRb = Ringbuf<
     { constants::RINGBUF_PAGE_SIZE },
 >;
 
-#[derive(Debug,Clone)]
-pub(crate) struct HardwareDevice(Arc<HardwareDeviceInner>);
+#[derive(Debug, Clone)]
+pub(crate) struct HardwareDevice<Strat:SchedulerStrategy>(Arc<HardwareDeviceInner<Strat>>);
 
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
-pub(crate) struct HardwareDeviceInner {
+pub(crate) struct HardwareDeviceInner<Strat:SchedulerStrategy> {
     to_card_ctrl_rb: Arc<Mutex<ToCardCtrlRb>>,
     to_host_ctrl_rb: Arc<Mutex<ToHostCtrlRb>>,
     to_host_work_rb: Arc<Mutex<ToHostWorkRb>>,
     csr_cli: CsrClient,
-    scheduler: Arc<DescriptorScheduler>,
+    scheduler: Arc<DescriptorScheduler<Strat>>,
     phys_addr_resolver: PhysAddrResolver,
 }
 
-impl HardwareDevice {
+impl<Strat:SchedulerStrategy> HardwareDevice<Strat> {
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn new<P: AsRef<Path>>(
         device_name: P,
-        scheduler: Arc<DescriptorScheduler>,
+        scheduler: Arc<DescriptorScheduler<Strat>>,
     ) -> Result<Self, DeviceError> {
         let csr_cli =
             CsrClient::new(device_name).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -112,7 +111,7 @@ impl HardwareDevice {
             to_host_ctrl_rb: Mutex::new(to_host_ctrl_rb).into(),
             to_host_work_rb: Mutex::new(to_host_work_rb).into(),
             csr_cli,
-            scheduler: Arc::<DescriptorScheduler>::clone(&scheduler),
+            scheduler: Arc::<DescriptorScheduler<Strat>>::clone(&scheduler),
             phys_addr_resolver,
         }));
 
@@ -159,12 +158,10 @@ impl HardwareDevice {
         let _: std::thread::JoinHandle<_> = spawn(move || {
             let rb = Mutex::new(to_card_work_rb);
             loop {
-                match scheduler.pop() {
-                    Ok(result) => {
-                        if let Some(desc) = result {
-                            if let Err(e) = push_to_card_work_rb_desc(&rb, &desc) {
-                                error!("push to to_card_work_rb failed: {:?}", e);
-                            }
+                match scheduler.pop_batch() {
+                    Ok((result, _n)) => {
+                        if let Err(e) = push_to_card_work_rb_desc(&rb, result) {
+                            error!("push to to_card_work_rb failed: {:?}", e);
                         }
                     }
                     Err(e) => {
@@ -178,7 +175,7 @@ impl HardwareDevice {
     }
 }
 
-impl DeviceAdaptor for HardwareDevice {
+impl<Strat:SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
         Arc::<Mutex<ToCardCtrlRb>>::clone(&self.0.to_card_ctrl_rb)
     }
@@ -188,7 +185,7 @@ impl DeviceAdaptor for HardwareDevice {
     }
 
     fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
-        Arc::<DescriptorScheduler>::clone(&self.0.scheduler)
+        Arc::<DescriptorScheduler<Strat>>::clone(&self.0.scheduler)
     }
 
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>> {
@@ -196,7 +193,8 @@ impl DeviceAdaptor for HardwareDevice {
     }
 
     fn get_phys_addr(&self, virt_addr: usize) -> Result<usize, DeviceError> {
-        self.0.phys_addr_resolver
+        self.0
+            .phys_addr_resolver
             .query(virt_addr)
             .ok_or_else(|| DeviceError::Device(format!("Addr {virt_addr} not found")))
     }
@@ -216,9 +214,7 @@ impl DeviceAdaptor for HardwareDevice {
 
 impl ToCardRb<ToCardCtrlRbDesc> for Mutex<ToCardCtrlRb> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
-        let mut guard = self
-            .lock()
-            .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
+        let mut guard = self.lock();
         let mut writer = guard.write()?;
 
         let mem = writer.next().ok_or(DeviceError::Overflow)?;
@@ -231,9 +227,7 @@ impl ToCardRb<ToCardCtrlRbDesc> for Mutex<ToCardCtrlRb> {
 
 impl ToHostRb<ToHostCtrlRbDesc> for Mutex<ToHostCtrlRb> {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
-        let mut guard = self
-            .lock()
-            .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
+        let mut guard = self.lock();
         let mut reader = guard.read()?;
         let mem = reader.next().ok_or(DeviceError::Device(
             "Failed to read from ringbuf".to_owned(),
@@ -246,30 +240,29 @@ impl ToHostRb<ToHostCtrlRbDesc> for Mutex<ToHostCtrlRb> {
 
 fn push_to_card_work_rb_desc(
     rb: &Mutex<ToCardWorkRb>,
-    desc: &ToCardWorkRbDesc,
+    descs: [Option<SealedDesc>; POP_BATCH_SIZE],
 ) -> Result<(), DeviceError> {
-    debug!("driver send to card SQ: {:?}", &desc);
-    let mut guard = rb
-        .lock()
-        .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
-    let desc_cnt = desc.serialized_desc_cnt();
+    let mut guard = rb.lock();
     let mut writer = guard.write()?;
-    desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
-    desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
-    desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
+    for desc in descs.into_iter().flatten() {
+        let desc = desc.into_desc();
+        debug!("driver send to card SQ: {:?}", &desc);
 
-    if desc_cnt == 4 {
-        desc.write_3(writer.next().ok_or(DeviceError::Overflow)?);
+        let desc_cnt = desc.serialized_desc_cnt();
+        desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
+        desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
+        desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
+
+        if desc_cnt == 4 {
+            desc.write_3(writer.next().ok_or(DeviceError::Overflow)?);
+        }
     }
-
     Ok(())
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for Mutex<ToHostWorkRb> {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
-        let mut guard = self
-            .lock()
-            .map_err(|e| DeviceError::LockPoisoned(e.to_string()))?;
+        let mut guard = self.lock();
         let mut reader = guard.read()?;
 
         let mem = reader.next().ok_or(DeviceError::Device(

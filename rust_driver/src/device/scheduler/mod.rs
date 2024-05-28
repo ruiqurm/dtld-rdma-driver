@@ -1,5 +1,6 @@
 use std::{
     collections::LinkedList,
+    error::Error,
     fmt::Debug,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -23,24 +24,40 @@ const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
 pub(crate) mod round_robin;
+pub(crate) mod testing;
+
+/// A sealed struct of `ToCardWorkRbDesc`
+#[derive(Debug, Clone)]
+pub struct SealedDesc(ToCardWorkRbDesc);
+
+/// Size of each batch pop from the scheduler
+pub const POP_BATCH_SIZE: usize = 8;
 
 /// A descriptor scheduler that cut descriptor into `SCHEDULER_SIZE` size and schedule with a strategy.
 #[derive(Debug)]
 #[allow(dead_code)]
-pub(crate) struct DescriptorScheduler {
+pub(crate) struct DescriptorScheduler<Strat:SchedulerStrategy> {
     sender: Sender<ToCardWorkRbDesc>,
     receiver: Receiver<ToCardWorkRbDesc>,
-    strategy: Arc<dyn SchedulerStrategy>,
+    strategy: Strat,
     thread_handler: Option<std::thread::JoinHandle<()>>,
     stop_flag: Arc<AtomicBool>,
 }
 
-#[allow(clippy::module_name_repetitions)]
-pub(crate) trait SchedulerStrategy: Send + Sync + Debug {
-    #[allow(clippy::linkedlist)]
-    fn push(&self, qpn: Qpn, desc: LinkedList<ToCardWorkRbDesc>) -> Result<(), DeviceError>;
+/// A batch of descriptors.
+pub type BatchDescs = [Option<SealedDesc>; POP_BATCH_SIZE];
 
-    fn pop(&self) -> Result<Option<ToCardWorkRbDesc>, DeviceError>;
+/// A scheduler strategy that schedule the descriptor to the device.
+#[allow(clippy::module_name_repetitions)]
+pub trait SchedulerStrategy: Send + Sync + Debug + Clone + 'static{
+    /// Push the descriptor to the scheduler, where the descriptor is of same `MSN`.
+    #[allow(clippy::linkedlist)]
+    fn push<I>(&self, qpn: Qpn, desc: I) -> Result<(), Box<dyn Error>>
+    where
+        I: Iterator<Item = SealedDesc>;
+
+    /// Pop a batch of descriptors from the scheduler.
+    fn pop_batch(&self) -> Result<(BatchDescs, u32), Box<dyn Error>>;
 }
 
 struct SGList {
@@ -71,13 +88,13 @@ impl Default for SGList {
     }
 }
 
-impl DescriptorScheduler {
-    pub(crate) fn new(strat: Arc<dyn SchedulerStrategy>) -> Self {
+impl<Strat:SchedulerStrategy> DescriptorScheduler<Strat> {
+    pub(crate) fn new(strategy: Strat) -> Self {
         let (sender, receiver) = unbounded();
-        let strategy: Arc<dyn SchedulerStrategy> = Arc::<dyn SchedulerStrategy>::clone(&strat);
         let thread_receiver = receiver.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
+        let strategy_clone = strategy.clone();
         let thread_handler = spawn(move || {
             while !thread_stop_flag.load(Ordering::Relaxed) {
                 let desc = match thread_receiver.try_recv() {
@@ -88,7 +105,7 @@ impl DescriptorScheduler {
                 if let Some(desc) = desc {
                     let dqpn = get_to_card_desc_common(&desc).dqpn;
                     let splited_descs = split_descriptor(desc);
-                    if let Err(e) = strategy.push(dqpn, splited_descs) {
+                    if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
                         error!("failed to push descriptors: {:?}", e);
                     }
                 }
@@ -96,34 +113,60 @@ impl DescriptorScheduler {
         });
         Self {
             sender,
-            strategy: strat,
-            thread_handler : Some(thread_handler),
+            strategy: strategy_clone,
+            thread_handler: Some(thread_handler),
             receiver,
             stop_flag,
         }
     }
 
-    pub(crate) fn pop(self: &Arc<Self>) -> Result<Option<ToCardWorkRbDesc>, DeviceError> {
-        self.strategy.pop()
+    pub(crate) fn pop_batch(&self) -> Result<([Option<SealedDesc>; POP_BATCH_SIZE], u32), DeviceError> {
+        self.strategy
+            .pop_batch()
+            .map_err(|e| DeviceError::Scheduler(e.to_string()))
     }
 }
 
-impl Drop for DescriptorScheduler {
+impl<Strat:SchedulerStrategy> Drop for DescriptorScheduler<Strat> {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) =  self.thread_handler.take(){
-            if let Err(e) = thread.join(){
-                panic!("{}", format!("DescriptorScheduler thread join failed: {e:?}"));
+        if let Some(thread) = self.thread_handler.take() {
+            if let Err(e) = thread.join() {
+                panic!(
+                    "{}",
+                    format!("DescriptorScheduler thread join failed: {e:?}")
+                );
             }
         }
     }
 }
 
-impl ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler {
+impl<Strat:SchedulerStrategy> ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler<Strat> {
     fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
         self.sender
             .send(desc)
             .map_err(|e| DeviceError::Scheduler(e.to_string()))
+    }
+}
+
+impl SealedDesc {
+    pub(crate) fn into_desc(self) -> ToCardWorkRbDesc {
+        self.0
+    }
+
+    /// Get the destination QPN of the descriptor
+    pub fn get_dqpn(&self) -> Qpn {
+        match &self.0 {
+            ToCardWorkRbDesc::Read(desc) => desc.common.dqpn,
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => desc.common.dqpn,
+            ToCardWorkRbDesc::WriteWithImm(desc) => desc.common.dqpn,
+        }
+    }
+}
+
+impl From<ToCardWorkRbDesc> for SealedDesc {
+    fn from(desc: ToCardWorkRbDesc) -> Self {
+        SealedDesc(desc)
     }
 }
 
@@ -199,13 +242,13 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
 
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
 #[allow(clippy::linkedlist)]
-pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkRbDesc> {
+pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc> {
     let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
     #[allow(clippy::cast_possible_truncation)]
     if is_read || total_len < SCHEDULER_SIZE as u32 {
         let mut list = LinkedList::new();
-        list.push_back(desc);
+        list.push_back(SealedDesc(desc));
         return list;
     }
 
@@ -249,7 +292,7 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkR
             }
         }
         base_psn = recalculate_psn(current_va, pmtu, this_length, base_psn);
-        descs.push_back(new_desc);
+        descs.push_back(SealedDesc(new_desc));
         current_va = current_va.wrapping_add(u64::from(this_length));
         remain_data_length = remain_data_length.wrapping_sub(this_length);
         this_length = if remain_data_length > SCHEDULER_SIZE_U32 {
@@ -260,13 +303,13 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkR
     }
     // The above code guarantee there at least 2 descriptors in the list
     if let Some(req) = descs.front_mut() {
-        match req {
+        match &mut req.0 {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
-            ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
+            ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.is_first = true;
                 req.common.total_len = total_len;
             }
-            ToCardWorkRbDesc::WriteWithImm(req) => {
+            ToCardWorkRbDesc::WriteWithImm(ref mut req) => {
                 req.is_first = true;
                 req.common.total_len = total_len;
             }
@@ -274,12 +317,12 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<ToCardWorkR
     }
 
     if let Some(req) = descs.back_mut() {
-        match req {
+        match &mut req.0 {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
-            ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
+            ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.is_last = true;
             }
-            ToCardWorkRbDesc::WriteWithImm(req) => {
+            ToCardWorkRbDesc::WriteWithImm(ref mut req) => {
                 req.is_last = true;
             }
         }
@@ -394,7 +437,7 @@ mod test {
         let va = 29 * 1024;
         let length = 1024 * 36; // should cut into 3 segments: 29k - 32k, 32k - 64k, 64k-65k
         let strategy = super::round_robin::RoundRobinStrategy::new();
-        let scheduler = Arc::new(super::DescriptorScheduler::new(Arc::new(strategy)));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: length,
@@ -423,9 +466,10 @@ mod test {
         scheduler.push(desc).unwrap();
         // schedule the thread;
         sleep(std::time::Duration::from_millis(1));
-        let desc1 = scheduler.pop().unwrap();
+        let (descs, _n) = scheduler.pop_batch().unwrap();
+        let (desc1, desc2, desc3) = (descs[0].clone(), descs[1].clone(), descs[2].clone());
         assert!(desc1.is_some());
-        let desc1 = match desc1.unwrap() {
+        let desc1 = match desc1.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)
@@ -435,8 +479,7 @@ mod test {
         assert!(desc1.is_first);
         assert!(!desc1.is_last);
 
-        let desc2 = scheduler.pop().unwrap();
-        let desc2 = match desc2.unwrap() {
+        let desc2 = match desc2.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)
@@ -446,8 +489,7 @@ mod test {
         assert!(!desc2.is_first);
         assert!(!desc2.is_last);
 
-        let desc3 = scheduler.pop().unwrap();
-        let desc3 = match desc3.unwrap() {
+        let desc3 = match desc3.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)

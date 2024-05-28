@@ -1,3 +1,4 @@
+#![allow(warnings)] // FIXME: debug only
 use core::time;
 use eui48::MacAddress;
 use log::{debug, info};

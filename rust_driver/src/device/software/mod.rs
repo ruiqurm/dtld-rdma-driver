@@ -5,11 +5,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{ spawn, JoinHandle},
+    thread::{spawn, JoinHandle},
 };
 
 use flume::{unbounded, Receiver};
 use log::debug;
+
+use crate::SchedulerStrategy;
 
 use self::{
     logic::{BlueRDMALogic, BlueRdmaLogicError},
@@ -17,9 +19,8 @@ use self::{
 };
 
 use super::{
-    scheduler::DescriptorScheduler,
-    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
-    ToHostRb, ToHostWorkRbDesc,
+    scheduler::DescriptorScheduler, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb,
+    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
 };
 
 mod logic;
@@ -44,18 +45,18 @@ mod types;
 /// ```
 #[allow(dead_code)]
 #[derive(Debug)]
-pub(crate) struct SoftwareDevice {
+pub(crate) struct SoftwareDevice<Strat:SchedulerStrategy> {
     recv_agent: UDPReceiveAgent,
     device: Arc<BlueRDMALogic>,
     stop_flag: Arc<AtomicBool>,
     polling_thread: Option<JoinHandle<()>>,
-    to_card_work_rb: ToCardWorkRb,
+    to_card_work_rb: ToCardWorkRb<Strat>,
     to_host_work_rb: ToHostWorkRb,
     to_host_ctrl_rb: ToHostCtrlRb,
 }
 
 #[derive(Debug, Clone)]
-struct ToCardWorkRb(Arc<DescriptorScheduler>);
+struct ToCardWorkRb<Strat:SchedulerStrategy>(Arc<DescriptorScheduler<Strat>>);
 
 #[derive(Debug, Clone)]
 struct ToHostWorkRb(Receiver<ToHostWorkRbDesc>);
@@ -63,9 +64,13 @@ struct ToHostWorkRb(Receiver<ToHostWorkRbDesc>);
 #[derive(Debug, Clone)]
 struct ToHostCtrlRb(Receiver<ToHostCtrlRbDesc>);
 
-impl SoftwareDevice {
+impl<Strat:SchedulerStrategy> SoftwareDevice<Strat> {
     /// Initializing an software device.
-    pub(crate) fn new(addr: Ipv4Addr, port: u16, scheduler: Arc<DescriptorScheduler>) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(
+        addr: Ipv4Addr,
+        port: u16,
+        scheduler: Arc<DescriptorScheduler<Strat>>,
+    ) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new(addr, port)?;
         let (ctrl_sender, ctrl_receiver) = unbounded();
         let (work_sender, work_receiver) = unbounded();
@@ -76,7 +81,7 @@ impl SoftwareDevice {
         ));
         let recv_agent = UDPReceiveAgent::new(Arc::<BlueRDMALogic>::clone(&device), addr, port)?;
 
-        let this_scheduler = Arc::<DescriptorScheduler>::clone(&scheduler);
+        let this_scheduler = Arc::<DescriptorScheduler<Strat>>::clone(&scheduler);
         let this_device = Arc::<BlueRDMALogic>::clone(&device);
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -84,11 +89,10 @@ impl SoftwareDevice {
 
         let polling_thread = spawn(move || {
             while !thread_stop_flag.load(Ordering::Relaxed) {
-                match this_scheduler.pop() {
-                    Ok(result) => {
-                        if let Some(to_card_ctrl_rb_desc) = result {
-                            let _: Result<(), BlueRdmaLogicError> =
-                                this_device.send(to_card_ctrl_rb_desc);
+                match this_scheduler.pop_batch() {
+                    Ok((result, _n)) => {
+                        for desc in result.into_iter().flatten() {
+                            let _: Result<(), BlueRdmaLogicError> = this_device.send(desc.into_desc());
                         }
                     }
                     Err(e) => {
@@ -110,7 +114,7 @@ impl SoftwareDevice {
     }
 }
 
-impl Drop for SoftwareDevice {
+impl<Strat:SchedulerStrategy> Drop for SoftwareDevice<Strat> {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(thread) = self.polling_thread.take() {
@@ -121,7 +125,7 @@ impl Drop for SoftwareDevice {
     }
 }
 
-impl DeviceAdaptor for SoftwareDevice {
+impl<Strat:SchedulerStrategy> DeviceAdaptor for SoftwareDevice<Strat> {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
         Arc::<BlueRDMALogic>::clone(&self.device)
     }
@@ -165,17 +169,21 @@ impl ToCardRb<ToCardCtrlRbDesc> for BlueRDMALogic {
 
 impl ToHostRb<ToHostCtrlRbDesc> for ToHostCtrlRb {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
-        self.0.recv().map_err(|e|DeviceError::Device(e.to_string()))
+        self.0
+            .recv()
+            .map_err(|e| DeviceError::Device(e.to_string()))
     }
 }
 
 impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
-        self.0.recv().map_err(|e|DeviceError::Device(e.to_string()))
+        self.0
+            .recv()
+            .map_err(|e| DeviceError::Device(e.to_string()))
     }
 }
 
-impl ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb {
+impl<Strat:SchedulerStrategy> ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb<Strat> {
     fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
         debug!("driver to card SQ: {:?}", desc);
         self.0.push(desc)

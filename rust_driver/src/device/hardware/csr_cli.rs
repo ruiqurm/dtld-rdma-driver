@@ -5,10 +5,11 @@ use std::{
     os::fd::AsRawFd,
     path::Path,
     slice::from_raw_parts_mut,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use log::error;
+use parking_lot::Mutex;
 
 use crate::device::{
     constants::{
@@ -141,8 +142,7 @@ impl CsrClient {
         let buf = self
             .0
             .mapping
-            .lock()
-            .map_err(|_| DeviceError::LockPoisoned("csr lock".to_owned()))?;
+            .lock();
         #[allow(clippy::arithmetic_side_effects)]
         let offset = addr / size_of::<u32>();
         #[allow(clippy::indexing_slicing)] // we have checked it before
@@ -156,8 +156,7 @@ impl CsrClient {
         let mut buf = self
             .0
             .mapping
-            .lock()
-            .map_err(|_| DeviceError::LockPoisoned("csr lock".to_owned()))?;
+            .lock();
         #[allow(clippy::arithmetic_side_effects)]
         let offset = addr / size_of::<u32>();
         #[allow(clippy::indexing_slicing)] // we have checked it before
