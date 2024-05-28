@@ -17,7 +17,8 @@ struct RoundRobinStrategyInner {
 }
 
 impl RoundRobinStrategy {
-    pub(crate) fn new() -> Self {
+    /// Create a new round-robin strategy.
+    pub fn new() -> Self {
         Self(
             Mutex::new(RoundRobinStrategyInner {
                 queue: LinkedList::new(),
@@ -157,7 +158,7 @@ mod tests {
         round_robin.push(qpn1, qpn1_descs).unwrap();
         let qpn2_descs = generate_random_descriptors(2, 1).into_iter();
         round_robin.push(qpn2, qpn2_descs).unwrap();
-        let (desc, n) = round_robin.pop_batch().unwrap();
+        let (desc, _n) = round_robin.pop_batch().unwrap();
         let descs = desc
             .into_iter()
             .flatten()

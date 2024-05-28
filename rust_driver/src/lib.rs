@@ -148,6 +148,7 @@ use crate::{
     pd::PdCtx,
 };
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
+use derive_builder::Builder;
 use device::{
     scheduler::DescriptorScheduler, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
@@ -159,6 +160,7 @@ use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
+use retry::RetryConfig;
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
@@ -240,110 +242,126 @@ struct DeviceInner<D: ?Sized> {
     adaptor: D,
 }
 
+/// The type of the device adaptor
+#[derive(Debug,Clone)]
+#[non_exhaustive]
+pub enum DeviceType {
+    /// A real hardware device
+    Hardware{
+        /// The character device that open-rdma-kernel driver created
+        device_path : String
+    },
+
+    /// An emulated device to run hardware code but runs in software framework
+    Emulated{
+        /// The address of the RPC server created by software framework
+        rpc_server_addr: SocketAddr,
+
+        /// The start address of the heap memory
+        /// The framework provides a heap memory, which needs to be shared with the driver.
+        heap_mem_start_addr: usize,
+    },
+
+    /// Pure software device, might be different from the hardware device
+    Software
+}
+
+/// Configuration of the device
+#[derive(Debug,Builder)]
+#[non_exhaustive]
+pub struct DeviceConfig<Strat:SchedulerStrategy>{
+    /// The network configuration of the device
+    network_config : RdmaDeviceNetworkParam,
+    // retry_config : RetryConfig,
+
+    /// The type of the device: hardware, software, or emulated
+    device_type : DeviceType,
+
+    /// The scheduler strategy
+    strategy : Strat
+}
+
 impl Device {
     const MR_TABLE_EMPTY_ELEM: Option<MrCtx> = None;
 
     /// # Errors
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_hardware(network: &RdmaDeviceNetworkParam,device_name : String) -> Result<Self, Error> {
-        let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
-        let adaptor = HardwareDevice::new(device_name,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
-        let use_hugepage =  adaptor.use_hugepage();
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-        let inner = Arc::new(DeviceInner {
-            pd: Mutex::new(HashMap::new()),
-            mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table:  Arc::new(RwLock::new(HashMap::new())),
-            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            next_ctrl_op_id: AtomicU32::new(0),
-            adaptor,
-            responser: OnceLock::new(),
-            pkt_checker_thread: OnceLock::new(),
-            work_desc_poller: OnceLock::new(),
-            ctrl_desc_poller : OnceLock::new(),
-            nic_device : Mutex::new(None),
-            buffer_keeper : Vec::new().into(),
-            local_network : *network,
-        });
-
-        let dev = Self(inner);
-        dev.init()?;
-
-        Ok(dev)
-    }
-
-    /// # Errors
-    ///
-    /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_software(network: &RdmaDeviceNetworkParam) -> Result<Self, Error> {
-        let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
-        let adaptor = SoftwareDevice::new(network.ipaddr,DEFAULT_RMDA_PORT,scheduler).map_err(Error::Device)?;
-        let use_hugepage =  adaptor.use_hugepage();
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-        let inner = Arc::new(DeviceInner {
-            pd: Mutex::new(HashMap::new()),
-            mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table:  Arc::new(RwLock::new(HashMap::new())),
-            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            next_ctrl_op_id: AtomicU32::new(0),
-            adaptor,
-            responser: OnceLock::new(),
-            pkt_checker_thread: OnceLock::new(),
-            work_desc_poller: OnceLock::new(),
-            ctrl_desc_poller : OnceLock::new(),
-            nic_device : Mutex::new(None),
-            buffer_keeper : Vec::new().into(),
-            local_network : *network,
-        });
-
-        let dev = Self(inner);
-        dev.init()?;
-
-        Ok(dev)
-    }
-
-    /// # Errors
-    ///
-    /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
-    pub fn new_emulated(
-        rpc_server_addr: SocketAddr,
-        heap_mem_start_addr: usize,
-        network: &RdmaDeviceNetworkParam,
-    ) -> Result<Self, Error> {
-        let adaptor = {
-            let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
-            EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?
+    pub fn new<Strat:SchedulerStrategy>(config : DeviceConfig<Strat>) -> Result<Self, Error> {
+        let scheduler = DescriptorScheduler::new(config.strategy).into();
+        let dev  = match config.device_type{
+            DeviceType::Hardware{device_path} => {
+                let adaptor = HardwareDevice::new(device_path,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
+                    let use_hugepage =  adaptor.use_hugepage();
+                let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+                Self(Arc::new(DeviceInner {
+                    pd: Mutex::new(HashMap::new()),
+                    mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
+                    qp_table:  Arc::new(RwLock::new(HashMap::new())),
+                    mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
+                    user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    next_ctrl_op_id: AtomicU32::new(0),
+                    adaptor,
+                    responser: OnceLock::new(),
+                    pkt_checker_thread: OnceLock::new(),
+                    work_desc_poller: OnceLock::new(),
+                    ctrl_desc_poller : OnceLock::new(),
+                    nic_device : Mutex::new(None),
+                    buffer_keeper : Vec::new().into(),
+                    local_network : config.network_config,
+                }))
+            },
+            DeviceType::Emulated{rpc_server_addr,heap_mem_start_addr} => {
+                let adaptor = EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
+                let use_hugepage =  adaptor.use_hugepage();
+                let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+                Self(Arc::new(DeviceInner {
+                    pd: Mutex::new(HashMap::new()),
+                    mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
+                    qp_table:  Arc::new(RwLock::new(HashMap::new())),
+                    mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
+                    user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    next_ctrl_op_id: AtomicU32::new(0),
+                    adaptor,
+                    responser: OnceLock::new(),
+                    pkt_checker_thread: OnceLock::new(),
+                    work_desc_poller: OnceLock::new(),
+                    ctrl_desc_poller : OnceLock::new(),
+                    nic_device : Mutex::new(None),
+                    buffer_keeper : Vec::new().into(),
+                    local_network : config.network_config,
+                }))
+            }
+            DeviceType::Software => {
+                let adaptor = SoftwareDevice::new(config.network_config.ipaddr,DEFAULT_RMDA_PORT,scheduler).map_err(Error::Device)?;
+                let use_hugepage =  adaptor.use_hugepage();
+                let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
+                Self(Arc::new(DeviceInner {
+                    pd: Mutex::new(HashMap::new()),
+                    mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
+                    qp_table:  Arc::new(RwLock::new(HashMap::new())),
+                    mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
+                    user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
+                    next_ctrl_op_id: AtomicU32::new(0),
+                    adaptor,
+                    responser: OnceLock::new(),
+                    pkt_checker_thread: OnceLock::new(),
+                    work_desc_poller: OnceLock::new(),
+                    ctrl_desc_poller : OnceLock::new(),
+                    nic_device : Mutex::new(None),
+                    buffer_keeper : Vec::new().into(),
+                    local_network : config.network_config,
+                }))
+            }
         };
-        let use_hugepage =  adaptor.use_hugepage();
-        let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
-        let inner = Arc::new(DeviceInner {
-            pd: Mutex::new(HashMap::new()),
-            mr_table: Mutex::new([Self::MR_TABLE_EMPTY_ELEM; MR_TABLE_SIZE]),
-            qp_table:  Arc::new(RwLock::new(HashMap::new())),
-            mr_pgt: Mutex::new(MrPgt::new(pg_table_buf)),
-            user_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
-            next_ctrl_op_id: AtomicU32::new(0),
-            adaptor,
-            responser: OnceLock::new(),
-            pkt_checker_thread: OnceLock::new(),
-            work_desc_poller: OnceLock::new(),
-            ctrl_desc_poller : OnceLock::new(),
-            nic_device : Mutex::new(None),
-            buffer_keeper : Vec::new().into(),
-            local_network : *network,
-        });
-
-        let dev = Self(inner);
         dev.init()?;
 
         Ok(dev)
     }
+
     fn write_or_read(
         &self,
         dqpn: Qpn,

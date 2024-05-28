@@ -6,7 +6,7 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
     },
-    AlignedMemory, Device, Mr, Pd,
+    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
 };
 use std::net::Ipv4Addr;
 
@@ -20,10 +20,16 @@ mod common;
 fn create_and_init_card<'a>(
     card_id: usize,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetworkParam,
+    local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
-    let dev = Device::new_software(local_network).unwrap();
+    let config = DeviceConfigBuilder::default()
+        .network_config(local_network)
+        .device_type(DeviceType::Software)
+        .strategy(RoundRobinStrategy::new())
+        .build()
+        .unwrap();
+    let dev = Device::new(config).unwrap();
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -78,9 +84,9 @@ fn main() {
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, qpn, &a_network, &b_network);
+        create_and_init_card(0, qpn, a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-        create_and_init_card(1, qpn, &b_network, &a_network);
+        create_and_init_card(1, qpn, b_network, &a_network);
     let dpqn = qpn;
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
         *item = idx as u8;

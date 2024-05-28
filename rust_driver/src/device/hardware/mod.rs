@@ -68,11 +68,11 @@ pub(crate) struct HardwareDeviceInner<Strat:SchedulerStrategy> {
 impl<Strat:SchedulerStrategy> HardwareDevice<Strat> {
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn new<P: AsRef<Path>>(
-        device_name: P,
+        device_path: P,
         scheduler: Arc<DescriptorScheduler<Strat>>,
     ) -> Result<Self, DeviceError> {
         let csr_cli =
-            CsrClient::new(device_name).map_err(|e| DeviceError::Device(e.to_string()))?;
+            CsrClient::new(device_path).map_err(|e| DeviceError::Device(e.to_string()))?;
 
         let to_card_ctrl_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, true)
             .map_err(|e| DeviceError::Device(e.to_string()))?;

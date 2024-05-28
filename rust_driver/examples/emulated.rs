@@ -5,7 +5,7 @@ use log::info;
 use open_rdma_driver::{
     qp::QpManager, types::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
-    }, AlignedMemory, Device, Mr, Pd
+    }, AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy
 };
 use std::{ffi::c_void, net::Ipv4Addr};
 
@@ -60,16 +60,21 @@ fn create_and_init_card<'a>(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetworkParam,
+    local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
-    let dev = Device::new_emulated(
-        mock_server_addr.parse().unwrap(),
-        head_start_addr,
-        local_network,
-    )
-    .unwrap();
+    let config = DeviceConfigBuilder::default()
+        .network_config(local_network)
+        .device_type(DeviceType::Emulated {
+            rpc_server_addr: mock_server_addr.parse().unwrap(),
+            heap_mem_start_addr: head_start_addr,
+        })
+        .strategy(RoundRobinStrategy::new())
+        .build()
+        .unwrap();
+    let dev = Device::new(config).unwrap();
+    
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -133,9 +138,9 @@ fn main() {
         .build()
         .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, "0.0.0.0:9873", qpn, &a_network, &b_network);
+        create_and_init_card(0, "0.0.0.0:9873", qpn, a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-        create_and_init_card(1, "0.0.0.0:9875", qpn, &b_network, &a_network);
+        create_and_init_card(1, "0.0.0.0:9875", qpn, b_network, &a_network);
 
     let dpqn = qpn;
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {

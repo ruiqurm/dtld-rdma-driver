@@ -26,6 +26,7 @@ pub(crate)struct RetryContext {
 
 /// Typically the checking_interval should at most 1% of retry_timeout
 /// So that the retrying won't drift too much
+#[derive(Debug,Clone)]
 pub(crate) struct RetryConfig {
     max_retry: u32,
     retry_timeout: u128,

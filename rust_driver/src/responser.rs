@@ -5,7 +5,7 @@ use std::{net::Ipv4Addr, sync::Arc, thread::spawn};
 use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
 use crate::device::layout::{Aeth, Bth, Ipv4, Mac, NReth, Udp};
 use crate::qp::QpContext;
-use crate::types::{Key, MemAccessTypeFlag, Msn, Psn, QpType, Qpn, WorkReqSendFlag};
+use crate::types::{Key, Msn, Psn, QpType, Qpn, WorkReqSendFlag};
 use eui48::MacAddress;
 use flume::Receiver;
 use log::{error, info};

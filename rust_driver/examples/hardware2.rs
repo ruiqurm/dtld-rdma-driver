@@ -3,11 +3,9 @@ use core::time;
 use eui48::MacAddress;
 use log::{debug, info};
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
+    qp::QpManager, types::{
         Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
-    },
-    Device, HugePage, Mr, Pd,
+    }, Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RoundRobinStrategy
 };
 use std::{net::Ipv4Addr, thread};
 
@@ -21,10 +19,18 @@ mod common;
 fn create_and_init_card<'a>(
     card_id: usize,
     qpn: Qpn,
-    local_network: &RdmaDeviceNetworkParam,
+    local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, HugePage) {
-    let dev = Device::new_hardware(local_network, "/dev/infiniband/uverbs0".to_owned()).unwrap();
+    let config = DeviceConfigBuilder::default()
+    .network_config(local_network)
+    .device_type(DeviceType::Hardware {
+        device_path: "/dev/infiniband/uverbs0".to_owned(),
+    })
+    .strategy(RoundRobinStrategy::new())
+    .build()
+    .unwrap();
+let dev = Device::new(config).unwrap();
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -88,7 +94,7 @@ fn main() {
     let qpn = qp_manager.alloc().unwrap();
     debug!("===========4====================");
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, qpn, &a_network, &b_network);
+        create_and_init_card(0, qpn, a_network, &b_network);
     debug!("===========5====================");
     // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
     //     create_and_init_card(1, qpn, &b_network, &a_network);
