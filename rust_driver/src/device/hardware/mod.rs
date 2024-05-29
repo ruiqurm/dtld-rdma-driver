@@ -184,7 +184,7 @@ impl<Strat:SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
         Arc::<Mutex<ToHostCtrlRb>>::clone(&self.0.to_host_ctrl_rb)
     }
 
-    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
+    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<Box<ToCardWorkRbDesc>>> {
         Arc::<DescriptorScheduler<Strat>>::clone(&self.0.scheduler)
     }
 

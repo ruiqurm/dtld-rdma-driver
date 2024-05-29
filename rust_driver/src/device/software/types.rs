@@ -1,6 +1,6 @@
 use crate::{
     device::{
-        ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode,
+        DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode,
         ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescTransType,
     },
     types::{MemAccessTypeFlag, Psn, QpType},
@@ -358,8 +358,8 @@ impl Default for SGListElementWithKey {
 //     }
 // }
 
-impl From<ToCardCtrlRbDescSge> for SGListElementWithKey {
-    fn from(sge: ToCardCtrlRbDescSge) -> Self {
+impl From<DescSge> for SGListElementWithKey {
+    fn from(sge: DescSge) -> Self {
         SGListElementWithKey {
             addr: sge.addr,
             len: sge.len,
@@ -385,7 +385,7 @@ impl SGList {
         }
     }
 
-    pub(crate) fn new_with_sge(sge: ToCardCtrlRbDescSge) -> Self {
+    pub(crate) fn new_with_sge(sge: DescSge) -> Self {
         SGList {
             data: [
                 SGListElementWithKey::from(sge),
@@ -402,7 +402,7 @@ impl SGList {
         self.data.iter().map(|sge| sge.len).sum()
     }
 
-    fn get_sge_from_option(sge: Option<ToCardCtrlRbDescSge>) -> (SGListElementWithKey, u32) {
+    fn get_sge_from_option(sge: Option<DescSge>) -> (SGListElementWithKey, u32) {
         match sge {
             Some(sge) => (SGListElementWithKey::from(sge), 1),
             None => (SGListElementWithKey::default(), 0),
@@ -411,10 +411,10 @@ impl SGList {
 
     #[allow(clippy::arithmetic_side_effects)] //sge_counter is either 0 or 1
     pub(crate) fn new_with_sge_list(
-        sge0: ToCardCtrlRbDescSge,
-        sge1: Option<ToCardCtrlRbDescSge>,
-        sge2: Option<ToCardCtrlRbDescSge>,
-        sge3: Option<ToCardCtrlRbDescSge>,
+        sge0: DescSge,
+        sge1: Option<DescSge>,
+        sge2: Option<DescSge>,
+        sge3: Option<DescSge>,
     ) -> Self {
         let sge0 = SGListElementWithKey::from(sge0);
         let mut counter = 1;
@@ -479,32 +479,32 @@ impl SGList {
     pub(crate) fn into_four_sges(
         self,
     ) -> (
-        ToCardCtrlRbDescSge,
-        Option<ToCardCtrlRbDescSge>,
-        Option<ToCardCtrlRbDescSge>,
-        Option<ToCardCtrlRbDescSge>,
+        DescSge,
+        Option<DescSge>,
+        Option<DescSge>,
+        Option<DescSge>,
     ) {
         use crate::types::Key;
 
-        let sge1 = (self.len > 1).then(|| ToCardCtrlRbDescSge {
+        let sge1 = (self.len > 1).then(|| DescSge {
             addr: self.data[1].addr,
             len: self.data[1].len,
             key: Key::new(self.data[1].key.get()),
         });
 
-        let sge2 = (self.len > 2).then(|| ToCardCtrlRbDescSge {
+        let sge2 = (self.len > 2).then(|| DescSge {
             addr: self.data[2].addr,
             len: self.data[2].len,
             key: Key::new(self.data[2].key.get()),
         });
 
-        let sge3 = (self.len > 3).then(|| ToCardCtrlRbDescSge {
+        let sge3 = (self.len > 3).then(|| DescSge {
             addr: self.data[3].addr,
             len: self.data[3].len,
             key: Key::new(self.data[3].key.get()),
         });
         (
-            ToCardCtrlRbDescSge {
+            DescSge {
                 addr: self.data[0].addr,
                 len: self.data[0].len,
                 key: Key::new(self.data[0].key.get()),
@@ -626,9 +626,9 @@ pub(crate) struct ToCardReadDescriptor {
     pub(crate) sge: SGList,
 }
 
-impl From<ToCardWorkRbDesc> for ToCardDescriptor {
-    fn from(desc: ToCardWorkRbDesc) -> Self {
-        match desc {
+impl From<Box<ToCardWorkRbDesc>> for ToCardDescriptor {
+    fn from(desc: Box<ToCardWorkRbDesc>) -> Self {
+        match *desc {
             ToCardWorkRbDesc::Write(desc) => ToCardDescriptor::Write(ToCardWriteDescriptor {
                 opcode: ToCardWorkRbDescOpcode::Write,
                 common: desc.common,

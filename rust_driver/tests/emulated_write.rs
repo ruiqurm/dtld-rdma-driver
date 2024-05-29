@@ -69,7 +69,10 @@ fn create_and_init_card<'a>(
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
-        .device_type(DeviceType::Software)
+        .device_type(DeviceType::Emulated {
+            rpc_server_addr: mock_server_addr.parse().unwrap(),
+            heap_mem_start_addr: head_start_addr,
+        })
         .strategy(RoundRobinStrategy::new())
         .build()
         .unwrap();

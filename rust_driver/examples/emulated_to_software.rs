@@ -192,9 +192,9 @@ fn main() {
         .build()
         .unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_emulated_card(0, "0.0.0.0:9873", qpn, a_network.clone(), &b_network);
+        create_and_init_emulated_card(0, "0.0.0.0:9873", qpn, a_network, &b_network);
     let (dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-        create_and_init_software_card(1, qpn, b_network.clone(), &a_network);
+        create_and_init_software_card(1, qpn, b_network, &a_network);
     let dpqn = qpn;
 
     // emulator write to software

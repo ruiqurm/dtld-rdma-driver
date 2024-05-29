@@ -150,7 +150,7 @@ use crate::{
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use derive_builder::Builder;
 use device::{
-    scheduler::DescriptorScheduler, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
+    scheduler::DescriptorScheduler, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
 use eui48::MacAddress;
 use flume::unbounded;
@@ -629,23 +629,13 @@ impl Device {
     }
 }
 
-impl From<Sge> for ToCardCtrlRbDescSge {
-    fn from(sge: Sge) -> Self {
-        Self {
-            addr: sge.addr,
-            len: sge.len,
-            key: sge.key,
-        }
-    }
-}
-
 /// A interface that allows `DescResponser` to push the work descriptor to the device
 pub(crate) trait WorkDescriptorSender: Send + Sync {
-    fn send_work_desc(&self, desc_builder: ToCardWorkRbDesc) -> Result<(), Error>;
+    fn send_work_desc(&self, desc_builder: Box<ToCardWorkRbDesc>) -> Result<(), Error>;
 }
 
 impl WorkDescriptorSender for Device {
-    fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), Error> {
+    fn send_work_desc(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), Error> {
         self.0
             .adaptor
             .to_card_work_rb()

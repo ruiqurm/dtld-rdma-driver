@@ -23,7 +23,7 @@ pub(crate) trait DeviceAdaptor: Send + Sync + Debug {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>>;
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>>;
 
-    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>>;
+    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<Box<ToCardWorkRbDesc>>>;
     fn to_host_work_rb(&self) -> Arc<dyn ToHostRb<ToHostWorkRbDesc>>;
 
     fn read_csr(&self, addr: usize) -> Result<u32, DeviceError>;

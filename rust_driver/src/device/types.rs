@@ -11,7 +11,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::{net::Ipv4Addr, ops::Range};
+use std::{net::Ipv4Addr, ops::Range, sync::Arc};
 
 use super::layout::{
     CmdQueueDescCommonHead, MeatReportQueueDescBthReth, MeatReportQueueDescFragAETH,
@@ -187,7 +187,7 @@ impl Default for ToCardWorkRbDescCommon {
 #[derive(Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescRead {
     pub(crate) common: ToCardWorkRbDescCommon,
-    pub(crate) sge: ToCardCtrlRbDescSge,
+    pub(crate) sge: DescSge,
 }
 
 #[derive(Clone, Debug)]
@@ -195,10 +195,10 @@ pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
     pub(crate) is_first: bool,
-    pub(crate) sge0: ToCardCtrlRbDescSge,
-    pub(crate) sge1: Option<ToCardCtrlRbDescSge>,
-    pub(crate) sge2: Option<ToCardCtrlRbDescSge>,
-    pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
+    pub(crate) sge0: DescSge,
+    pub(crate) sge1: Option<DescSge>,
+    pub(crate) sge2: Option<DescSge>,
+    pub(crate) sge3: Option<DescSge>,
 }
 
 #[derive(Clone, Debug)]
@@ -207,10 +207,10 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) is_last: bool,
     pub(crate) is_first: bool,
     pub(crate) imm: u32,
-    pub(crate) sge0: ToCardCtrlRbDescSge,
-    pub(crate) sge1: Option<ToCardCtrlRbDescSge>,
-    pub(crate) sge2: Option<ToCardCtrlRbDescSge>,
-    pub(crate) sge3: Option<ToCardCtrlRbDescSge>,
+    pub(crate) sge0: DescSge,
+    pub(crate) sge1: Option<DescSge>,
+    pub(crate) sge2: Option<DescSge>,
+    pub(crate) sge3: Option<DescSge>,
 }
 
 #[derive(Debug,Default)]
@@ -300,10 +300,20 @@ pub(crate) struct ToHostWorkRbDescRaw {
 }
 
 #[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct ToCardCtrlRbDescSge {
+pub(crate) struct DescSge {
     pub(crate) addr: u64,
     pub(crate) len: u32,
     pub(crate) key: Key,
+}
+
+impl From<Sge> for DescSge {
+    fn from(sge: Sge) -> Self {
+        Self {
+            addr: sge.addr,
+            len: sge.len,
+            key: sge.key,
+        }
+    }
 }
 
 #[derive(TryFromPrimitive, Debug)]
@@ -1197,11 +1207,11 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub(crate) fn build(mut self) -> Result<ToCardWorkRbDesc, Error> {
+    pub(crate) fn build(mut self) -> Result<Box<ToCardWorkRbDesc>, Error> {
         let common = self
             .common
             .ok_or_else(|| Error::BuildDescFailed("common"))?;
-        match self.type_ {
+        let desc = match self.type_ {
             ToCardWorkRbDescOpcode::Write => {
                 let sge0 = self
                     .seg_list
@@ -1210,7 +1220,7 @@ impl ToCardWorkRbDescBuilder {
                 let sge1 = self.seg_list.pop();
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
-                Ok(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+                ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
                     common,
                     is_last: true,
                     is_first: true,
@@ -1218,7 +1228,7 @@ impl ToCardWorkRbDescBuilder {
                     sge1: sge1.map(bitfield::Into::into),
                     sge2: sge2.map(bitfield::Into::into),
                     sge3: sge3.map(bitfield::Into::into),
-                }))
+                })
             }
             ToCardWorkRbDescOpcode::WriteWithImm => {
                 let sge0 = self
@@ -1229,7 +1239,7 @@ impl ToCardWorkRbDescBuilder {
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
                 let imm = self.imm.ok_or_else(|| Error::BuildDescFailed("imm"))?;
-                Ok(ToCardWorkRbDesc::WriteWithImm(
+                ToCardWorkRbDesc::WriteWithImm(
                     ToCardWorkRbDescWriteWithImm {
                         common,
                         is_last: true,
@@ -1240,17 +1250,17 @@ impl ToCardWorkRbDescBuilder {
                         sge2: sge2.map(bitfield::Into::into),
                         sge3: sge3.map(bitfield::Into::into),
                     },
-                ))
+                )
             }
             ToCardWorkRbDescOpcode::Read => {
                 let sge0 = self
                     .seg_list
                     .pop()
                     .ok_or_else(|| Error::BuildDescFailed("sge"))?;
-                Ok(ToCardWorkRbDesc::Read(ToCardWorkRbDescRead {
+                ToCardWorkRbDesc::Read(ToCardWorkRbDescRead {
                     common,
                     sge: sge0.into(),
-                }))
+                })
             }
             ToCardWorkRbDescOpcode::ReadResp => {
                 let sge0 = self
@@ -1260,7 +1270,7 @@ impl ToCardWorkRbDescBuilder {
                 let sge1 = self.seg_list.pop();
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
-                Ok(ToCardWorkRbDesc::ReadResp(ToCardWorkRbDescWrite {
+                ToCardWorkRbDesc::ReadResp(ToCardWorkRbDescWrite {
                     common,
                     is_last: true,
                     is_first: true,
@@ -1268,9 +1278,10 @@ impl ToCardWorkRbDescBuilder {
                     sge1: sge1.map(bitfield::Into::into),
                     sge2: sge2.map(bitfield::Into::into),
                     sge3: sge3.map(bitfield::Into::into),
-                }))
+                })
             }
-        }
+        };
+        Ok(Box::new(desc))
     }
 }
 

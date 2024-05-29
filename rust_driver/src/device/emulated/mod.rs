@@ -158,7 +158,10 @@ impl<Strat:SchedulerStrategy> EmulatedDevice<Strat> {
             let rb = Mutex::new(to_card_work_rb);
             loop {
                 match scheduler.pop_batch() {
-                    Ok((result, _n)) => {
+                    Ok((result, n)) => {
+                        if n == 0{
+                            continue;
+                        }
                         if let Err(e) = push_to_card_work_rb_desc(&rb, result) {
                             error!("push to to_card_work_rb failed: {:?}", e);
                         }
@@ -183,7 +186,7 @@ impl<Strat:SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
         Arc::<EmulatedDevice<Strat>>::clone(self)
     }
 
-    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
+    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<Box<ToCardWorkRbDesc>>> {
         Arc::<DescriptorScheduler<Strat>>::clone(&self.scheduler)
     }
 

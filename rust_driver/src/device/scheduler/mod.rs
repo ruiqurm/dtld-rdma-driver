@@ -12,7 +12,7 @@ use std::{
 use flume::{unbounded, Receiver, Sender, TryRecvError};
 use log::error;
 
-use super::{DeviceError, ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
+use super::{DeviceError, DescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon};
 
 use crate::{
     types::{Pmtu, Psn, Qpn},
@@ -28,7 +28,7 @@ pub(crate) mod testing;
 
 /// A sealed struct of `ToCardWorkRbDesc`
 #[derive(Debug, Clone)]
-pub struct SealedDesc(ToCardWorkRbDesc);
+pub struct SealedDesc(Box<ToCardWorkRbDesc>);
 
 /// Size of each batch pop from the scheduler
 pub const POP_BATCH_SIZE: usize = 8;
@@ -37,8 +37,8 @@ pub const POP_BATCH_SIZE: usize = 8;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) struct DescriptorScheduler<Strat:SchedulerStrategy> {
-    sender: Sender<ToCardWorkRbDesc>,
-    receiver: Receiver<ToCardWorkRbDesc>,
+    sender: Sender<Box<ToCardWorkRbDesc>>,
+    receiver: Receiver<Box<ToCardWorkRbDesc>>,
     strategy: Strat,
     thread_handler: Option<std::thread::JoinHandle<()>>,
     stop_flag: Arc<AtomicBool>,
@@ -61,15 +61,15 @@ pub trait SchedulerStrategy: Send + Sync + Debug + Clone + 'static{
 }
 
 struct SGList {
-    pub(crate) data: [ToCardCtrlRbDescSge; MAX_SGL_LENGTH],
+    pub(crate) data: [DescSge; MAX_SGL_LENGTH],
     pub(crate) cur_level: u32,
     pub(crate) len: u32,
 }
 
 impl SGList {
-    pub(crate) fn new_from_sge(sge: ToCardCtrlRbDescSge) -> Self {
+    pub(crate) fn new_from_sge(sge: DescSge) -> Self {
         let mut sge_list = Self {
-            data: [ToCardCtrlRbDescSge::default(); MAX_SGL_LENGTH],
+            data: [DescSge::default(); MAX_SGL_LENGTH],
             cur_level: 0,
             len: 1,
         };
@@ -81,7 +81,7 @@ impl SGList {
 impl Default for SGList {
     fn default() -> Self {
         Self {
-            data: [ToCardCtrlRbDescSge::default(); MAX_SGL_LENGTH],
+            data: [DescSge::default(); MAX_SGL_LENGTH],
             cur_level: 0,
             len: 0,
         }
@@ -91,7 +91,7 @@ impl Default for SGList {
 impl<Strat:SchedulerStrategy> DescriptorScheduler<Strat> {
     pub(crate) fn new(strategy: Strat) -> Self {
         let (sender, receiver) = unbounded();
-        let thread_receiver = receiver.clone();
+        let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
         let strategy_clone = strategy.clone();
@@ -141,8 +141,8 @@ impl<Strat:SchedulerStrategy> Drop for DescriptorScheduler<Strat> {
     }
 }
 
-impl<Strat:SchedulerStrategy> ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler<Strat> {
-    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
+impl<Strat:SchedulerStrategy> ToCardRb<Box<ToCardWorkRbDesc>> for DescriptorScheduler<Strat> {
+    fn push(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), DeviceError> {
         self.sender
             .send(desc)
             .map_err(|e| DeviceError::Scheduler(e.to_string()))
@@ -150,13 +150,13 @@ impl<Strat:SchedulerStrategy> ToCardRb<ToCardWorkRbDesc> for DescriptorScheduler
 }
 
 impl SealedDesc {
-    pub(crate) fn into_desc(self) -> ToCardWorkRbDesc {
+    pub(crate) fn into_desc(self) -> Box<ToCardWorkRbDesc> {
         self.0
     }
 
     /// Get the destination QPN of the descriptor
     pub fn get_dqpn(&self) -> Qpn {
-        match &self.0 {
+        match &*self.0 {
             ToCardWorkRbDesc::Read(desc) => desc.common.dqpn,
             ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => desc.common.dqpn,
             ToCardWorkRbDesc::WriteWithImm(desc) => desc.common.dqpn,
@@ -164,8 +164,8 @@ impl SealedDesc {
     }
 }
 
-impl From<ToCardWorkRbDesc> for SealedDesc {
-    fn from(desc: ToCardWorkRbDesc) -> Self {
+impl From<Box<ToCardWorkRbDesc>> for SealedDesc {
+    fn from(desc: Box<ToCardWorkRbDesc>) -> Self {
         SealedDesc(desc)
     }
 }
@@ -200,7 +200,7 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
         // if we can cut from current level, just cut and return
         if origin_sgl.data[current_level].len >= length {
             let addr = origin_sgl.data[current_level].addr;
-            new_sgl.data[new_sgl_level] = ToCardCtrlRbDescSge {
+            new_sgl.data[new_sgl_level] = DescSge {
                 addr,
                 len: length,
                 key: origin_sgl.data[current_level].key,
@@ -219,7 +219,7 @@ fn cut_from_sgl(mut length: u32, origin_sgl: &mut SGList) -> SGList {
         }
         // otherwise check next level
         let addr = origin_sgl.data[current_level].addr as *mut u8;
-        new_sgl.data[new_sgl_level] = ToCardCtrlRbDescSge {
+        new_sgl.data[new_sgl_level] = DescSge {
             addr: addr as u64,
             len: origin_sgl.data[current_level].len,
             key: origin_sgl.data[current_level].key,
@@ -242,8 +242,8 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
 
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
 #[allow(clippy::linkedlist)]
-pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc> {
-    let is_read = matches!(desc, ToCardWorkRbDesc::Read(_));
+pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<SealedDesc> {
+    let is_read = matches!(*desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
     #[allow(clippy::cast_possible_truncation)]
     if is_read || total_len < SCHEDULER_SIZE as u32 {
@@ -252,7 +252,7 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc>
         return list;
     }
 
-    let (raddr, pmtu, psn, sge) = match &desc {
+    let (raddr, pmtu, psn, sge) = match &*desc {
         ToCardWorkRbDesc::Read(_) => unreachable!(),
         ToCardWorkRbDesc::Write(req) | ToCardWorkRbDesc::ReadResp(req) => {
             (req.common.raddr, req.common.pmtu, req.common.psn, req.sge0)
@@ -272,7 +272,7 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc>
     while remain_data_length > 0 {
         let mut new_desc = desc.clone();
         let new_sge = cut_from_sgl(this_length, &mut sg_list).data[0];
-        match &mut new_desc {
+        match &mut *new_desc {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
             ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.sge0 = new_sge;
@@ -303,7 +303,7 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc>
     }
     // The above code guarantee there at least 2 descriptors in the list
     if let Some(req) = descs.front_mut() {
-        match &mut req.0 {
+        match &mut *req.0 {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
             ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.is_first = true;
@@ -317,7 +317,7 @@ pub(crate) fn split_descriptor(desc: ToCardWorkRbDesc) -> LinkedList<SealedDesc>
     }
 
     if let Some(req) = descs.back_mut() {
-        match &mut req.0 {
+        match &mut *req.0 {
             ToCardWorkRbDesc::Read(_) => unreachable!(),
             ToCardWorkRbDesc::Write(ref mut req) | ToCardWorkRbDesc::ReadResp(ref mut req) => {
                 req.is_last = true;
@@ -361,7 +361,7 @@ mod test {
 
     use crate::device::scheduler::SCHEDULER_SIZE;
     use crate::device::{
-        ToCardCtrlRbDescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
+        DescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
         ToCardWorkRbDescWrite,
     };
 
@@ -370,7 +370,7 @@ mod test {
     use super::{SGList, MAX_SGL_LENGTH};
 
     pub(crate) struct SGListBuilder {
-        sg_list: Vec<ToCardCtrlRbDescSge>,
+        sg_list: Vec<DescSge>,
     }
 
     impl SGListBuilder {
@@ -381,7 +381,7 @@ mod test {
         }
 
         pub(crate) fn with_sge(&mut self, addr: u64, len: u32, key: Key) -> &mut Self {
-            self.sg_list.push(ToCardCtrlRbDescSge { addr, len, key });
+            self.sg_list.push(DescSge { addr, len, key });
             self
         }
 
@@ -392,7 +392,7 @@ mod test {
                 sg_list.len += 1;
             }
             while sg_list.len < MAX_SGL_LENGTH.try_into().unwrap() {
-                sg_list.data[sg_list.len as usize] = ToCardCtrlRbDescSge {
+                sg_list.data[sg_list.len as usize] = DescSge {
                     addr: 0,
                     len: 0,
                     key: Key::default(),
@@ -454,7 +454,7 @@ mod test {
             },
             is_last: true,
             is_first: true,
-            sge0: ToCardCtrlRbDescSge {
+            sge0: DescSge {
                 addr: 0,
                 len: length,
                 key: Key::new(3),
@@ -462,14 +462,14 @@ mod test {
             sge1: None,
             sge2: None,
             sge3: None,
-        });
+        }).into();
         scheduler.push(desc).unwrap();
         // schedule the thread;
         sleep(std::time::Duration::from_millis(1));
         let (descs, _n) = scheduler.pop_batch().unwrap();
         let (desc1, desc2, desc3) = (descs[0].clone(), descs[1].clone(), descs[2].clone());
         assert!(desc1.is_some());
-        let desc1 = match desc1.unwrap().0 {
+        let desc1 = match *desc1.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)
@@ -479,7 +479,7 @@ mod test {
         assert!(desc1.is_first);
         assert!(!desc1.is_last);
 
-        let desc2 = match desc2.unwrap().0 {
+        let desc2 = match *desc2.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)
@@ -489,7 +489,7 @@ mod test {
         assert!(!desc2.is_first);
         assert!(!desc2.is_last);
 
-        let desc3 = match desc3.unwrap().0 {
+        let desc3 = match *desc3.unwrap().0 {
             ToCardWorkRbDesc::Write(req) => req,
             ToCardWorkRbDesc::Read(_)
             | ToCardWorkRbDesc::WriteWithImm(_)

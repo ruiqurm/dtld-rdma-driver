@@ -134,7 +134,7 @@ impl<Strat:SchedulerStrategy> DeviceAdaptor for SoftwareDevice<Strat> {
         Arc::new(self.to_host_ctrl_rb.clone())
     }
 
-    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<ToCardWorkRbDesc>> {
+    fn to_card_work_rb(&self) -> Arc<dyn ToCardRb<Box<ToCardWorkRbDesc>>> {
         Arc::new(self.to_card_work_rb.clone())
     }
 
@@ -183,8 +183,8 @@ impl ToHostRb<ToHostWorkRbDesc> for ToHostWorkRb {
     }
 }
 
-impl<Strat:SchedulerStrategy> ToCardRb<ToCardWorkRbDesc> for ToCardWorkRb<Strat> {
-    fn push(&self, desc: ToCardWorkRbDesc) -> Result<(), DeviceError> {
+impl<Strat:SchedulerStrategy> ToCardRb<Box<ToCardWorkRbDesc>> for ToCardWorkRb<Strat> {
+    fn push(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), DeviceError> {
         debug!("driver to card SQ: {:?}", desc);
         self.0.push(desc)
     }

@@ -24,8 +24,7 @@ use super::{
     },
 };
 use std::{
-    collections::HashMap,
-    sync::{Arc, PoisonError, RwLock},
+    collections::HashMap, ops::Deref, sync::{Arc, PoisonError, RwLock}
 };
 
 #[allow(dead_code)]
@@ -176,7 +175,7 @@ impl BlueRDMALogic {
     }
 
     /// Convert a `ToCardWorkRbDesc` to a `RdmaMessage` and call the `net_send_agent` to send through the network.
-    pub(crate) fn send(&self, desc: ToCardWorkRbDesc) -> Result<(), BlueRdmaLogicError> {
+    pub(crate) fn send(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), BlueRdmaLogicError> {
         let desc = ToCardDescriptor::from(desc);
         // if it's a raw packet, send it directly
         if desc.is_raw_packet() {

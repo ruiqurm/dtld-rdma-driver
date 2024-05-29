@@ -152,7 +152,7 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub(crate) fn build(&mut self) -> ToCardWorkRbDesc {
+    pub(crate) fn build(&mut self) -> Box<ToCardWorkRbDesc> {
         let common = ToCardWorkRbDescCommon {
             total_len: self.total_len.unwrap(),
             raddr: self.raddr.unwrap(),
@@ -167,7 +167,7 @@ impl ToCardWorkRbDescBuilder {
             msn: crate::types::Msn::new(0),
         };
         let (sge0, sge1, sge2, sge3) = self.sg_list.take().unwrap().into_four_sges();
-        match self.opcode.clone().unwrap() {
+        let desc = match self.opcode.clone().unwrap() {
             ToCardWorkRbDescOpcode::Write => ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
                 common,
                 is_first: self.is_first.unwrap(),
@@ -201,7 +201,8 @@ impl ToCardWorkRbDescBuilder {
                 sge2,
                 sge3,
             }),
-        }
+        };
+        Box::new(desc)
     }
 }
 

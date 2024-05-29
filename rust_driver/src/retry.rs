@@ -19,7 +19,7 @@ use crate::{
 };
 
 pub(crate)struct RetryContext {
-    descriptor: ToCardWorkRbDesc,
+    descriptor: Box<ToCardWorkRbDesc>,
     retry_counter: u32,
     next_timeout: u128,
 }
@@ -49,7 +49,7 @@ impl RetryConfig {
 
 // Main thread will send a retry record to retry monitor
 pub(crate) struct RetryRecord {
-    descriptor: ToCardWorkRbDesc,
+    descriptor: Box<ToCardWorkRbDesc>,
     qpn: Qpn,
     msn: Msn,
 }
@@ -173,22 +173,22 @@ fn retry_monitor_working_thread(stop_flag: &AtomicBool, monitor: &mut RetryMonit
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
 
     use parking_lot::{lock_api::RwLock, Mutex, RawRwLock};
 
     use crate::{
         device::{
-            ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
-        }, op_ctx::{self, CtxStatus}, retry::get_current_time, types::{Key, Msn, Qpn, ThreeBytesStruct}, Error, WorkDescriptorSender
+            DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
+        }, op_ctx::{self, CtxStatus}, types::{Key, Msn, Qpn, ThreeBytesStruct}, Error, WorkDescriptorSender
     };
 
     use super::{RetryConfig, RetryEvent, RetryMonitorContext};
     struct MockDevice(Mutex<Vec<ToCardWorkRbDesc>>);
 
     impl WorkDescriptorSender for MockDevice {
-        fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), Error> {
-            self.0.lock().push(desc);
+        fn send_work_desc(&self, desc:  Box<ToCardWorkRbDesc>) -> Result<(), Error> {
+            self.0.lock().push(*desc);
             Ok(())
         }
     }
@@ -216,13 +216,13 @@ mod test {
             op_ctx::OpCtx::new_running(),
         );
         let _monitor = super::RetryMonitor::new(context);
-        let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+        let desc = Box::new(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 ..Default::default()
             },
             is_last: true,
             is_first: true,
-            sge0: ToCardCtrlRbDescSge {
+            sge0: DescSge {
                 addr: 0x1000,
                 len: 512,
                 key: Key::new(0x1234_u32),
@@ -230,7 +230,7 @@ mod test {
             sge1: None,
             sge2: None,
             sge3: None,
-        });
+        }));
         for i in 0..4 {
             sender
                 .send(RetryEvent::Retry(super::RetryRecord {

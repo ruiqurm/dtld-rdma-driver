@@ -522,8 +522,8 @@ mod tests {
         let ack_buffers = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
         struct Dummy(Mutex<Vec<ToCardWorkRbDesc>>);
         impl super::WorkDescriptorSender for Dummy {
-            fn send_work_desc(&self, desc: ToCardWorkRbDesc) -> Result<(), crate::Error> {
-                self.0.lock().push(desc);
+            fn send_work_desc(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), crate::Error> {
+                self.0.lock().push(*desc);
                 Ok(())
             }
         }

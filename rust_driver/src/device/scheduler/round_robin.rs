@@ -93,14 +93,14 @@ mod tests {
     use crate::{
         device::{
             scheduler::{round_robin::RoundRobinStrategy, SchedulerStrategy},
-            ToCardCtrlRbDescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
+            DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
         },
         types::{Key, Msn, Pmtu, Psn, QpType, Qpn, WorkReqSendFlag},
         SealedDesc,
     };
 
     pub(crate) fn generate_random_descriptors(qpn: u32, num: usize) -> LinkedList<SealedDesc> {
-        let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+        let desc = Box::new(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: 512,
                 raddr: 0x0,
@@ -116,7 +116,7 @@ mod tests {
             },
             is_last: true,
             is_first: true,
-            sge0: ToCardCtrlRbDescSge {
+            sge0: DescSge {
                 addr: 0x1000,
                 len: 512,
                 key: Key::new(0x1234_u32),
@@ -124,7 +124,7 @@ mod tests {
             sge1: None,
             sge2: None,
             sge3: None,
-        });
+        }));
         let mut ret = LinkedList::new();
         for _ in 0..num {
             ret.push_back(SealedDesc::from(desc.clone()));
