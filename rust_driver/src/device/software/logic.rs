@@ -24,11 +24,11 @@ use super::{
     },
 };
 use std::{
-    collections::HashMap, ops::Deref, sync::{Arc, PoisonError, RwLock}
+    collections::HashMap,
+    sync::{Arc, PoisonError, RwLock},
 };
 
-#[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 struct QueuePairInner {
     pmtu: Pmtu,
     qp_type: QpType,
@@ -90,7 +90,11 @@ impl<T> From<PoisonError<T>> for BlueRdmaLogicError {
 }
 
 impl BlueRDMALogic {
-    pub(crate) fn new(net_sender: Arc<dyn NetSendAgent>,ctrl_sender:Sender<ToHostCtrlRbDesc>,work_sender:Sender<ToHostWorkRbDesc>) -> Self {
+    pub(crate) fn new(
+        net_sender: Arc<dyn NetSendAgent>,
+        ctrl_sender: Sender<ToHostCtrlRbDesc>,
+        work_sender: Sender<ToHostWorkRbDesc>,
+    ) -> Self {
         BlueRDMALogic {
             // mr_lkey_table: RwLock::new(HashMap::new()),
             mr_rkey_table: RwLock::new(HashMap::new()),
@@ -302,16 +306,15 @@ impl BlueRDMALogic {
                 };
                 let is_success = if desc.is_valid {
                     // create
-                    if qp_table.get(&qpn).is_some() {
-                        // exist
-                        false
-                    } else {
-                        // otherwise insert a new qp context
-                        let qp = Arc::new(QueuePair { inner: qp_inner });
-                        // we have ensured that the qpn is not exists.
-                        let _: Option<Arc<QueuePair>> = qp_table.insert(qpn, qp);
-                        true
-                    }
+                    let _result = qp_table
+                        .entry(qpn)
+                        .and_modify(|existing_qp| {
+                            *existing_qp = Arc::new(QueuePair {
+                                inner: qp_inner.clone(),
+                            });
+                        })
+                        .or_insert(Arc::new(QueuePair { inner: qp_inner }));
+                    true
                 } else {
                     // delete
                     if qp_table.get(&qpn).is_some() {
@@ -385,7 +388,9 @@ impl BlueRDMALogic {
         };
         #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
         {
-            self.to_host_ctrl_descriptor_queue.send(result_desc).unwrap();
+            self.to_host_ctrl_descriptor_queue
+                .send(result_desc)
+                .unwrap();
         }
         Ok(())
     }
@@ -418,7 +423,8 @@ impl BlueRDMALogic {
 
         // check if the va and length are valid.
         if read_guard.addr > va
-            || read_guard.addr.wrapping_add(read_guard.len as u64) < va.wrapping_add(u64::from(length))
+            || read_guard.addr.wrapping_add(read_guard.len as u64)
+                < va.wrapping_add(u64::from(length))
         {
             return Ok(ToHostWorkRbDescStatus::InvMrRegion);
         }
@@ -428,7 +434,6 @@ impl BlueRDMALogic {
 
 unsafe impl Send for BlueRDMALogic {}
 unsafe impl Sync for BlueRDMALogic {}
-
 
 fn recv_default_meta(message: &RdmaMessage) -> ToHostWorkRbDescCommon {
     #[allow(clippy::cast_possible_truncation)]
@@ -602,7 +607,7 @@ mod tests {
         let agent = Arc::new(DummpyProxy);
         let (ctrl_sender, _ctrl_receiver) = unbounded();
         let (work_sender, _work_receiver) = unbounded();
-        let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent),ctrl_sender,work_sender);
+        let logic = BlueRDMALogic::new(Arc::<DummpyProxy>::clone(&agent), ctrl_sender, work_sender);
         // test updating qp
         {
             let desc = ToCardCtrlRbDesc::QpManagement(ToCardCtrlRbDescQpManagement {

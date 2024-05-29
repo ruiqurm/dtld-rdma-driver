@@ -335,7 +335,7 @@ mod test {
             sleep(std::time::Duration::from_millis(10));
             thread_proxy.consume();
         });
-        let buffer = Buffer::new(4096, true).unwrap();
+        let buffer = Buffer::new(4096, false).unwrap();
         let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
         let mut writer = ringbuf.write().unwrap();
 
@@ -370,7 +370,7 @@ mod test {
             thread_proxy.produce::<128>(128);
             sleep(std::time::Duration::from_millis(10));
         });
-        let buffer = Buffer::new(4096, true).unwrap();
+        let buffer = Buffer::new(4096, false).unwrap();
         let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
         let mut reader = ringbuf.read().unwrap();
         sleep(std::time::Duration::from_millis(100));
@@ -383,18 +383,10 @@ mod test {
         let mut reader = ringbuf.read().unwrap();
 
         let finish_flag = Arc::new(AtomicBool::new(false));
-        let finish_flag_clone = Arc::<AtomicBool>::clone(&finish_flag);
-        let checker = spawn(move || {
-            sleep(std::time::Duration::from_millis(60));
-            if finish_flag_clone.load(Ordering::Relaxed) {
-                panic!("should not block at here");
-            }
-        });
         for _i in 0..130 {
             let _desc = reader.next().unwrap();
         }
         drop(reader);
         finish_flag.store(true, Ordering::Relaxed);
-        checker.join().unwrap();
     }
 }

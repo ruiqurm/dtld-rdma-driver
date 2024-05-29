@@ -137,11 +137,11 @@ impl UDPReceiveAgent {
 impl Drop for UDPReceiveAgent {
     fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) =  self.listen_thread.take(){
-            if let Err(e) = thread.join(){
-                panic!("{}", format!("UDPReceiveAgent thread join failed: {e:?}"));
-            }
-        }
+        // if let Some(thread) =  self.listen_thread.take(){
+        //     if let Err(e) = thread.join(){
+        //         panic!("{}", format!("UDPReceiveAgent thread join failed: {e:?}"));
+        //     }
+        // }
     }
 }
 

@@ -5,7 +5,7 @@ use crate::{
         CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateMrTable,
         CmdQueueReqDescUpdatePGT, MeatReportQueueDescFragSecondaryRETH,
     },
-    types::{Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
+    types::{Imm, Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
     utils::u8_slice_to_u64,
     Error,
 };
@@ -1204,6 +1204,11 @@ impl ToCardWorkRbDescBuilder {
 
     pub(crate) fn with_sge(mut self, seg: Sge) -> Self {
         self.seg_list.push(seg);
+        self
+    }
+
+    pub(crate) fn with_imm(mut self, imm: Imm) -> Self{
+        self.imm = Some(imm.get());
         self
     }
 

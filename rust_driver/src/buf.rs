@@ -97,7 +97,7 @@ mod tests {
         let mem = Box::leak(Box::new([0u8; 1024 * RDMA_ACK_BUFFER_SLOT_SIZE]));
         let base_va = mem.as_ptr() as usize;
         let buffer: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE> =
-            PacketBuf::new(base_va, 1024 * 64, Key::new(0x1000));
+            PacketBuf::new(base_va, 1024 * RDMA_ACK_BUFFER_SLOT_SIZE, Key::new(0x1000));
         for i in 0..2048 {
             let slot = buffer.recycle_buf();
             assert_eq!(

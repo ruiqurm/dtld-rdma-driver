@@ -13,7 +13,7 @@ use crate::Pd;
 pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
 
 /// Type for `Imm`
-#[derive(Debug, Clone, Copy, Hash)]
+#[derive(Debug, Clone, Copy, Hash, Default)]
 pub struct Imm(u32);
 impl Imm {
     /// Create a new `Imm` with the given value.

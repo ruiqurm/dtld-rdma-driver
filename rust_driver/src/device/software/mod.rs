@@ -32,17 +32,6 @@ pub(crate) mod tests;
 mod types;
 
 /// An software device implementation of the device.
-///
-/// # Examples:
-/// ```
-/// let device = SoftwareDevice::init().unwrap();
-/// let ctrl_rb = device.to_card_ctrl_rb();
-// // ctrl_rb.push(desc) // create mr or qp
-/// let data_send_rb = device.to_card_work_rb();
-/// // data_rb.push(desc) // send data
-/// let data_recv_rb = device.to_host_work_rb();
-/// // data_recv_rb.pop() // recv data
-/// ```
 #[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct SoftwareDevice<Strat:SchedulerStrategy> {
