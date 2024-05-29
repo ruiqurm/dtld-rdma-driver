@@ -162,6 +162,15 @@ impl SealedDesc {
             ToCardWorkRbDesc::WriteWithImm(desc) => desc.common.dqpn,
         }
     }
+
+    /// Get the PSN of the descriptor
+    pub fn get_psn(&self) -> Psn {
+        match &*self.0 {
+            ToCardWorkRbDesc::Read(desc) => desc.common.psn,
+            ToCardWorkRbDesc::Write(desc) | ToCardWorkRbDesc::ReadResp(desc) => desc.common.psn,
+            ToCardWorkRbDesc::WriteWithImm(desc) => desc.common.psn,
+        }
+    }
 }
 
 impl From<Box<ToCardWorkRbDesc>> for SealedDesc {

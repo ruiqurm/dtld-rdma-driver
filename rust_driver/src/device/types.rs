@@ -184,13 +184,13 @@ impl Default for ToCardWorkRbDescCommon {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Default, Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescRead {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) sge: DescSge,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Default, Clone, Debug)]
 pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
