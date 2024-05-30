@@ -1,14 +1,14 @@
 name: open-rdma-driver CI test
 on:
   pull_request:
-    branches: [ci]
+    branches: [main-dev]
   push:
-    branches: [ci]
+    branches: [main-dev]
 
 jobs:
   ci-check:
     name: CI test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,9 +24,10 @@ jobs:
         id: cache-building-emulator
         with:
           path: |
-            $HOME/.bash_profile
+            ~/.bash_profile
             blue-rdma/bsc-2023.01-ubuntu-22.04
             blue-rdma/test
+            ~/.cache/pip
           key: ${{ runner.os }}-blue-rdma-next
       - name: build emulator
         if: steps.cache-building-emulator.outputs.cache-hit != 'true'
@@ -34,18 +35,13 @@ jobs:
           cd ./blue-rdma
           ./setup.sh
           ./run_one.sh || true
-      - name: Save building emulator
-        id: cache-building-emulator-save
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            $HOME/.bash_profile
-            blue-rdma/bsc-2023.01-ubuntu-22.04
-            blue-rdma/test
-          key: ${{ runner.os }}-build
+          pip install scapy 
       - name: run cargo build
         working-directory: rust_driver
         run : cargo build --verbose 
       - name: run cargo test
         working-directory: rust_driver
-        run : cargo test --verbose --skip test_loopback_software_device # currently skip because of permission denied
+        run : cargo test --verbose -- --skip test_loopback_software_device # currently skip because of permission denied
+      - name: Setup tmate session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
