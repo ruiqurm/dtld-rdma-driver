@@ -21,8 +21,9 @@ jobs:
           path: blue-rdma
       - name: build and simulate
         run : |
-          ./blue-rdma/setup.sh
-          ./blue-rdma/run_one.sh
+          cd ./blue-rdma
+          ./setup.sh
+          ./run_one.sh
       - name: run cargo build
         run : cargo build --verbose
       - name: run cargo test
