@@ -35,6 +35,8 @@ jobs:
           ./setup.sh
           ./run_one.sh || true
       - name: run cargo build
+        working-directory: rust_driver
         run : cargo build --verbose
       - name: run cargo test
+        working-directory: rust_driver
         run : cargo test --verbose

@@ -1,4 +1,3 @@
-use buddy_system_allocator::LockedHeap;
 
 use eui48::MacAddress;
 use log::info;
@@ -10,54 +9,22 @@ use open_rdma_driver::{
     },
     AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
 };
-use std::{ffi::c_void, net::Ipv4Addr, process::Command, thread::sleep, time::Duration};
+use serial_test::serial;
+use std::net::Ipv4Addr;
 
 use crate::common::init_logging;
 
-const ORDER: usize = 32;
+
+
 const SHM_PATH: &str = "/bluesim1\0";
-
-#[macro_use]
-extern crate ctor;
-
-/// Use `LockedHeap` as global allocator
-#[global_allocator]
-static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
-const BUFFER_LENGTH: usize = 1024 * 128;
+const MAGIC_VIRT_ADDR: usize = 0x7f7e8e600000;
 const SEND_CNT: usize = 1024 * 6;
-static mut HEAP_START_ADDR: usize = 0;
+const BUFFER_LENGTH: usize = 1024 * 128;
 
 mod common;
 
-#[ctor]
-fn init_global_allocator() {
-    unsafe {
-        let shm_fd = libc::shm_open(
-            SHM_PATH.as_ptr() as *const libc::c_char,
-            libc::O_RDWR,
-            0o600,
-        );
-
-        let heap = libc::mmap(
-            0x7f7e8e600000 as *mut c_void,
-            HEAP_BLOCK_SIZE,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            shm_fd,
-            0,
-        );
-
-        // let align_addr = (heap as usize + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-
-        // let padding = align_addr - heap as usize;
-        let addr = heap as usize;
-        let size = HEAP_BLOCK_SIZE;
-        HEAP_START_ADDR = addr;
-
-        HEAP_ALLOCATOR.lock().init(addr, size);
-    }
-}
+setup_emulator!(MAGIC_VIRT_ADDR, HEAP_BLOCK_SIZE, SHM_PATH, "../blue-rdma", "run_system_test.sh");
 
 fn create_and_init_card<'a>(
     card_id: usize,
@@ -122,21 +89,9 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
-// #[test]
+#[test]
+#[serial]
 fn test_emulated_write() {
-    let handle = Command::new("bash")
-        .current_dir("../blue-rdma")
-        .arg("run_system_test.sh")
-        .spawn()
-        .expect("Failed to execute script");
-    let output = handle.wait_with_output().expect("Failed to wait on child");
-    if !output.status.success() {
-        let s = String::from_utf8_lossy(&output.stderr);
-        panic!("Failed to execute script: {}", s);
-    }else{
-        let s = String::from_utf8_lossy(&output.stdout);
-        info!("script output: {}", s);
-    }
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
