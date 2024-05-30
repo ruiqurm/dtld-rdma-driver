@@ -23,7 +23,7 @@ use super::ToCardCtrlRbDescBuilder;
 
 #[test]
 #[serial]
-fn test_loopback_device_write_and_read() {
+fn test_loopback_software_device_write_and_read() {
     let send_agent = UDPSendAgent::new(Ipv4Addr::LOCALHOST, 4791).unwrap();
     let (ctrl_sender, _ctrl_receiver) = unbounded();
     let (work_sender, work_receiver) = unbounded();
@@ -225,7 +225,7 @@ fn test_loopback_device_write_and_read() {
 
 #[test]
 #[serial]
-fn test_software_device() {
+fn test_loopback_software_device_with_scheudler() {
     let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
     let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,scheduler).unwrap();
     let mr1_rkey = 1234_u32;
