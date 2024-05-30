@@ -17,9 +17,9 @@ jobs:
         with:
           repository: datenlord/blue-rdma
           ref: next
-          fetch-depth: 1
+          fetch-depth: 2
           path: blue-rdma
-      - name: build and simulate
+      - name: build
         run : |
           cd ./blue-rdma
           ./setup.sh
