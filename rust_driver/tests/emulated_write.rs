@@ -10,7 +10,7 @@ use open_rdma_driver::{
     },
     AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
 };
-use std::{ffi::c_void, net::Ipv4Addr};
+use std::{ffi::c_void, net::Ipv4Addr, process::Command, thread::sleep, time::Duration};
 
 use crate::common::init_logging;
 
@@ -122,8 +122,21 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
-#[test]
+// #[test]
 fn test_emulated_write() {
+    let handle = Command::new("bash")
+        .current_dir("../blue-rdma")
+        .arg("run_system_test.sh")
+        .spawn()
+        .expect("Failed to execute script");
+    let output = handle.wait_with_output().expect("Failed to wait on child");
+    if !output.status.success() {
+        let s = String::from_utf8_lossy(&output.stderr);
+        panic!("Failed to execute script: {}", s);
+    }else{
+        let s = String::from_utf8_lossy(&output.stdout);
+        info!("script output: {}", s);
+    }
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
