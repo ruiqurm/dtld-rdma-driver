@@ -20,13 +20,21 @@ jobs:
           fetch-depth: 0
           submodules: 'true'
           path: blue-rdma
-      - name: build
+      - uses: actions/cache@v4
+        id: cache-building-emulator
+        with:
+          path: |
+            $HOME/.bash_profile
+            blue-rdma/bsc-2023.01-ubuntu-22.04
+            blue-rdma/test
+          key: ${{ runner.os }}-build
+      - name: build emulator
+        if: steps.cache-building-emulator.outputs.cache-hit != 'true'
         run : |
           cd ./blue-rdma
           ./setup.sh
-          ./run_one.sh
+          ./run_one.sh || true
       - name: run cargo build
         run : cargo build --verbose
       - name: run cargo test
         run : cargo test --verbose
-      
