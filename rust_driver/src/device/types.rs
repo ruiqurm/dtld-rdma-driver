@@ -2,8 +2,9 @@
 use crate::{
     device::layout::{
         CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam,
-        CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateMrTable,
-        CmdQueueReqDescUpdatePGT, MeatReportQueueDescFragSecondaryRETH,
+        CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateErrRecoverPoint,
+        CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT,
+        MeatReportQueueDescFragSecondaryRETH,
     },
     types::{Imm, Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
     utils::u8_slice_to_u64,
@@ -11,7 +12,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::{net::Ipv4Addr, ops::Range, sync::Arc};
+use std::{net::Ipv4Addr, ops::Range};
 
 use super::layout::{
     CmdQueueDescCommonHead, MeatReportQueueDescBthReth, MeatReportQueueDescFragAETH,
@@ -26,15 +27,12 @@ pub(crate) enum ToCardCtrlRbDesc {
     QpManagement(ToCardCtrlRbDescQpManagement),
     SetNetworkParam(ToCardCtrlRbDescSetNetworkParam),
     SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta),
+    SetQpNormal(ToCardCtrlRbDescUpdateErrPsnRecoverPoint),
 }
 
 #[derive(Debug)]
-pub(crate) enum ToHostCtrlRbDesc {
-    UpdateMrTable(ToHostCtrlRbDescUpdateMrTable),
-    UpdatePageTable(ToHostCtrlRbDescUpdatePageTable),
-    QpManagement(ToHostCtrlRbDescQpManagement),
-    SetNetworkParam(ToHostCtrlRbDescSetNetworkParam),
-    SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta),
+pub(crate) struct ToHostCtrlRbDesc {
+    pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
 #[derive(Clone, Debug)]
@@ -121,34 +119,16 @@ pub(crate) struct ToCardCtrlRbDescSetRawPacketReceiveMeta {
 }
 
 #[derive(Debug)]
+pub(crate) struct ToCardCtrlRbDescUpdateErrPsnRecoverPoint {
+    pub(crate) common: ToCardCtrlRbDescCommon,
+    pub(crate) qpn: Qpn,
+    pub(crate) rev_psn: Psn,
+}
+
+#[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
     pub(crate) is_success: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostCtrlRbDescUpdateMrTable {
-    pub(crate) common: ToHostCtrlRbDescCommon,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostCtrlRbDescUpdatePageTable {
-    pub(crate) common: ToHostCtrlRbDescCommon,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostCtrlRbDescQpManagement {
-    pub(crate) common: ToHostCtrlRbDescCommon,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostCtrlRbDescSetNetworkParam {
-    pub(crate) common: ToHostCtrlRbDescCommon,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostCtrlRbDescSetRawPacketReceiveMeta {
-    pub(crate) common: ToHostCtrlRbDescCommon,
 }
 
 #[derive(Clone, Debug)]
@@ -213,7 +193,7 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) sge3: Option<DescSge>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
     pub(crate) trans: ToHostWorkRbDescTransType,
@@ -291,7 +271,7 @@ pub(crate) struct ToHostWorkRbDescNack {
     pub(crate) lost_psn: Range<Psn>,
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ToHostWorkRbDescRaw {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) addr: u64,
@@ -327,7 +307,7 @@ pub(crate) enum ToHostWorkRbDescStatus {
     Unknown = 6,
 }
 
-impl Default for ToHostWorkRbDescStatus{
+impl Default for ToHostWorkRbDescStatus {
     fn default() -> Self {
         Self::Normal
     }
@@ -368,7 +348,7 @@ pub(crate) enum ToHostWorkRbDescWriteType {
 pub(crate) struct IncompleteToHostWorkRbDesc {
     parsed: ToHostWorkRbDesc,
     #[allow(unused)] // we reserve this in case that we will receive more than 2 descriptors.
-    parsed_cnt: usize, 
+    parsed_cnt: usize,
 }
 
 pub(crate) enum ToHostWorkRbDescError {
@@ -384,6 +364,7 @@ enum CtrlRbDescOpcode {
     QpManagement = 0x02,
     SetNetworkParam = 0x03,
     SetRawPacketReceiveMeta = 0x04,
+    UpdateErrorPsnRecoverPoint = 0x05,
 }
 
 #[derive(Debug, Clone)]
@@ -625,6 +606,15 @@ impl ToCardCtrlRbDesc {
             raw_packet_recv_meta.set_write_mr_key(u64::from(desc.key.get()));
         }
 
+        fn write_update_err_psn_recover_point(
+            dst: &mut [u8],
+            desc: &ToCardCtrlRbDescUpdateErrPsnRecoverPoint,
+        ) {
+            let mut raw_packet_recv_meta = CmdQueueReqDescUpdateErrRecoverPoint(dst);
+            raw_packet_recv_meta.set_qpn(desc.qpn.get());
+            raw_packet_recv_meta.set_psn(desc.rev_psn.get());
+        }
+
         match self {
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
                 write_common_header(dst, CtrlRbDescOpcode::UpdateMrTable, desc.common.op_id);
@@ -649,6 +639,14 @@ impl ToCardCtrlRbDesc {
                     desc.common.op_id,
                 );
                 write_set_raw_packet_receive_meta(dst, desc);
+            }
+            ToCardCtrlRbDesc::SetQpNormal(desc) => {
+                write_common_header(
+                    dst,
+                    CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint,
+                    desc.common.op_id,
+                );
+                write_update_err_psn_recover_point(dst, desc);
             }
         }
     }
@@ -688,25 +686,7 @@ impl ToHostCtrlRbDesc {
 
         let common = ToHostCtrlRbDescCommon { op_id, is_success };
 
-        let desc = match opcode {
-            CtrlRbDescOpcode::UpdateMrTable => {
-                ToHostCtrlRbDesc::UpdateMrTable(ToHostCtrlRbDescUpdateMrTable { common })
-            }
-            CtrlRbDescOpcode::UpdatePageTable => {
-                ToHostCtrlRbDesc::UpdatePageTable(ToHostCtrlRbDescUpdatePageTable { common })
-            }
-            CtrlRbDescOpcode::QpManagement => {
-                ToHostCtrlRbDesc::QpManagement(ToHostCtrlRbDescQpManagement { common })
-            }
-            CtrlRbDescOpcode::SetNetworkParam => {
-                ToHostCtrlRbDesc::SetNetworkParam(ToHostCtrlRbDescSetNetworkParam { common })
-            }
-            CtrlRbDescOpcode::SetRawPacketReceiveMeta => {
-                ToHostCtrlRbDesc::SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta {
-                    common,
-                })
-            }
-        };
+        let desc = ToHostCtrlRbDesc { common };
         Ok(desc)
     }
 }
@@ -1188,7 +1168,7 @@ pub(crate) struct ToCardWorkRbDescBuilder {
 }
 
 impl ToCardWorkRbDescBuilder {
-    pub(crate) fn new(type_ : ToCardWorkRbDescOpcode) -> Self {
+    pub(crate) fn new(type_: ToCardWorkRbDescOpcode) -> Self {
         Self {
             type_,
             common: None,
@@ -1207,7 +1187,7 @@ impl ToCardWorkRbDescBuilder {
         self
     }
 
-    pub(crate) fn with_imm(mut self, imm: Imm) -> Self{
+    pub(crate) fn with_imm(mut self, imm: Imm) -> Self {
         self.imm = Some(imm.get());
         self
     }
@@ -1244,18 +1224,16 @@ impl ToCardWorkRbDescBuilder {
                 let sge2 = self.seg_list.pop();
                 let sge3 = self.seg_list.pop();
                 let imm = self.imm.ok_or_else(|| Error::BuildDescFailed("imm"))?;
-                ToCardWorkRbDesc::WriteWithImm(
-                    ToCardWorkRbDescWriteWithImm {
-                        common,
-                        is_last: true,
-                        is_first: true,
-                        imm,
-                        sge0: sge0.into(),
-                        sge1: sge1.map(bitfield::Into::into),
-                        sge2: sge2.map(bitfield::Into::into),
-                        sge3: sge3.map(bitfield::Into::into),
-                    },
-                )
+                ToCardWorkRbDesc::WriteWithImm(ToCardWorkRbDescWriteWithImm {
+                    common,
+                    is_last: true,
+                    is_first: true,
+                    imm,
+                    sge0: sge0.into(),
+                    sge1: sge1.map(bitfield::Into::into),
+                    sge2: sge2.map(bitfield::Into::into),
+                    sge3: sge3.map(bitfield::Into::into),
+                })
             }
             ToCardWorkRbDescOpcode::Read => {
                 let sge0 = self

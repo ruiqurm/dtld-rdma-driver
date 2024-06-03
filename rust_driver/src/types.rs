@@ -135,7 +135,8 @@ pub struct ThreeBytesStruct(u32);
 impl ThreeBytesStruct {
     const WIDTH: usize = 24;
     const MASK: u32 = u32::MAX >> (32 - Self::WIDTH);
-    const MAX: u32 = Self::MASK + 1;
+    const BORDER: u32 = Self::MASK + 1;
+    pub(crate) const MAX_VALUE : u32 = Self::MASK;
 
     /// Create a new `ThreeBytesStruct` with the given value.
     /// 
@@ -176,18 +177,18 @@ impl ThreeBytesStruct {
     #[allow(clippy::arithmetic_side_effects)] 
     pub fn wrapping_add(&self, rhs: u32) -> Self {
         // since (a+b) mod p  = (a + (b mod p)) mod p, we don't have to let rhs= rhs%p here
-        Self((self.0 + rhs) % Self::MAX)
+        Self((self.0 + rhs) % Self::BORDER)
     }
 
     /// wrapping sub the current value with rhs
     #[must_use]
     #[allow(clippy::arithmetic_side_effects)] 
     pub fn wrapping_sub(&self, rhs: u32) -> Self {
-        let rhs = rhs % Self::MAX;
-        if self.0 > rhs {
+        let rhs = rhs % Self::BORDER;
+        if self.0 >= rhs {
             Self(self.0 - rhs)
         } else {
-            Self(Self::MAX - rhs + self.0)
+            Self(Self::BORDER - rhs + self.0)
         }
     }
 
@@ -200,7 +201,7 @@ impl ThreeBytesStruct {
         if self.0 >= rhs.0 {
             self.0 - rhs.get()
         } else {
-            self.0 + Self::MAX - rhs.0
+            self.0 + Self::MAX_VALUE - rhs.0
         }
     }
 }

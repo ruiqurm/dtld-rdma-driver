@@ -173,7 +173,7 @@ fn retry_monitor_working_thread(stop_flag: &AtomicBool, monitor: &mut RetryMonit
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, ops::Deref, sync::Arc, time::Duration};
+    use std::{collections::HashMap, sync::Arc, time::Duration};
 
     use parking_lot::{lock_api::RwLock, Mutex, RawRwLock};
 

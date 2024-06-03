@@ -4,9 +4,7 @@ use thiserror::Error;
 use crate::{
     device::{
         ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostCtrlRbDescCommon,
-        ToHostCtrlRbDescQpManagement, ToHostCtrlRbDescSetNetworkParam,
-        ToHostCtrlRbDescSetRawPacketReceiveMeta, ToHostCtrlRbDescUpdateMrTable,
-        ToHostCtrlRbDescUpdatePageTable, ToHostWorkRbDesc, ToHostWorkRbDescAck,
+        ToHostWorkRbDesc, ToHostWorkRbDescAck,
         ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode,
         ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
         ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
@@ -73,8 +71,6 @@ pub(crate) struct BlueRDMALogic {
 pub(crate) enum BlueRdmaLogicError {
     #[error("packet process error")]
     NetAgentError(#[from] NetAgentError),
-    // #[error("convert qp type to transport type error")]
-    // QpTypeToTransTypeError(#[from] QpTypeToTransTypeError),
     #[error("Raw packet length is too long. Pmtu is `{0}`, length is `{1}`")]
     RawPacketLengthTooLong(u32, u32),
     #[error("Poison error")]
@@ -96,7 +92,6 @@ impl BlueRDMALogic {
         work_sender: Sender<ToHostWorkRbDesc>,
     ) -> Self {
         BlueRDMALogic {
-            // mr_lkey_table: RwLock::new(HashMap::new()),
             mr_rkey_table: RwLock::new(HashMap::new()),
             qp_table: RwLock::new(HashMap::new()),
             net_send_agent: net_sender,
@@ -294,7 +289,7 @@ impl BlueRDMALogic {
 
     #[allow(clippy::unwrap_in_result)]
     pub(crate) fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
-        let result_desc = match desc {
+        let (op_id,is_succ) = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;
                 let qpn = Qpn::new(desc.qpn.get());
@@ -325,13 +320,7 @@ impl BlueRDMALogic {
                         false
                     }
                 };
-
-                ToHostCtrlRbDesc::QpManagement(ToHostCtrlRbDescQpManagement {
-                    common: ToHostCtrlRbDescCommon {
-                        op_id: desc.common.op_id,
-                        is_success,
-                    },
-                })
+                (desc.common.op_id, is_success)
             }
             ToCardCtrlRbDesc::UpdateMrTable(desc) => {
                 let mut mr_table = self.mr_rkey_table.write()?;
@@ -352,44 +341,32 @@ impl BlueRDMALogic {
                     // we have ensured that the qpn is not exists.
                     let _: Option<Arc<RwLock<MemoryRegion>>> = mr_table.insert(key, mr);
                 }
-
-                ToHostCtrlRbDesc::UpdateMrTable(ToHostCtrlRbDescUpdateMrTable {
-                    common: ToHostCtrlRbDescCommon {
-                        op_id: desc.common.op_id,
-                        is_success: true,
-                    },
-                })
+                (desc.common.op_id,true)
             }
             // Userspace types use virtual address directly
             ToCardCtrlRbDesc::UpdatePageTable(desc) => {
-                ToHostCtrlRbDesc::UpdatePageTable(ToHostCtrlRbDescUpdatePageTable {
-                    common: ToHostCtrlRbDescCommon {
-                        op_id: desc.common.op_id,
-                        is_success: true,
-                    },
-                })
+                (desc.common.op_id,true)
             }
             ToCardCtrlRbDesc::SetNetworkParam(desc) => {
-                ToHostCtrlRbDesc::SetNetworkParam(ToHostCtrlRbDescSetNetworkParam {
-                    common: ToHostCtrlRbDescCommon {
-                        op_id: desc.common.op_id,
-                        is_success: true,
-                    },
-                })
+                (desc.common.op_id,true)
             }
             ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
-                ToHostCtrlRbDesc::SetRawPacketReceiveMeta(ToHostCtrlRbDescSetRawPacketReceiveMeta {
-                    common: ToHostCtrlRbDescCommon {
-                        op_id: desc.common.op_id,
-                        is_success: false,
-                    },
-                })
+                (desc.common.op_id,true)
+            }
+            ToCardCtrlRbDesc::SetQpNormal(desc) => {
+                (desc.common.op_id,true)
             }
         };
+        let resp_desc = ToHostCtrlRbDesc{
+            common: ToHostCtrlRbDescCommon{
+                op_id,
+                is_success: is_succ,
+            },
+        };  
         #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
         {
             self.to_host_ctrl_descriptor_queue
-                .send(result_desc)
+                .send(resp_desc)
                 .unwrap();
         }
         Ok(())

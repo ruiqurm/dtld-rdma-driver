@@ -7,9 +7,7 @@ use log::{error,info};
 
 use crate::{
     device::{
-        ToHostCtrlRbDesc, ToHostCtrlRbDescQpManagement, ToHostCtrlRbDescSetNetworkParam,
-        ToHostCtrlRbDescSetRawPacketReceiveMeta, ToHostCtrlRbDescUpdateMrTable,
-        ToHostCtrlRbDescUpdatePageTable, ToHostRb,
+        ToHostCtrlRbDesc, ToHostRb
     },
     op_ctx::CtrlOpCtx, ThreadSafeHashmap,
 };
@@ -51,79 +49,11 @@ impl ControlPollerContext {
                     return;
                 }
             };
-
-            match desc {
-                ToHostCtrlRbDesc::UpdateMrTable(desc) => {
-                    ctx.handle_ctrl_desc_update_mr_table(&desc);
-                }
-                ToHostCtrlRbDesc::UpdatePageTable(desc) => {
-                    ctx.handle_ctrl_desc_update_page_table(&desc);
-                }
-
-                ToHostCtrlRbDesc::QpManagement(desc) => ctx.handle_ctrl_desc_qp_management(&desc),
-                ToHostCtrlRbDesc::SetNetworkParam(desc) => {
-                    ctx.handle_ctrl_desc_network_management(&desc);
-                }
-
-                ToHostCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
-                    ctx.handle_ctrl_desc_raw_packet_receive_meta(&desc);
-                }
-            };
+            ctx.handle_ctrl_desc_resp(&desc);
         }
     }
 
-    fn handle_ctrl_desc_update_mr_table(&self, desc: &ToHostCtrlRbDescUpdateMrTable) {
-        let ctx_map = self.ctrl_op_ctx_map.read();
-
-        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
-            if let Err(e) = ctx.set_result(desc.common.is_success) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("no ctrl cmd ctx found");
-        }
-    }
-
-    fn handle_ctrl_desc_update_page_table(&self, desc: &ToHostCtrlRbDescUpdatePageTable) {
-        let ctx_map = self.ctrl_op_ctx_map.read();
-
-        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
-            if let Err(e) = ctx.set_result(desc.common.is_success) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("no ctrl cmd ctx found");
-        }
-    }
-
-    fn handle_ctrl_desc_qp_management(&self, desc: &ToHostCtrlRbDescQpManagement) {
-        let ctx_map = self.ctrl_op_ctx_map.read();
-
-        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
-            if let Err(e) = ctx.set_result(desc.common.is_success) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("no ctrl cmd ctx found");
-        }
-    }
-
-    fn handle_ctrl_desc_network_management(&self, desc: &ToHostCtrlRbDescSetNetworkParam) {
-        let ctx_map = self.ctrl_op_ctx_map.read();
-
-        if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
-            if let Err(e) = ctx.set_result(desc.common.is_success) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("no ctrl cmd ctx found");
-        }
-    }
-
-    fn handle_ctrl_desc_raw_packet_receive_meta(
-        &self,
-        desc: &ToHostCtrlRbDescSetRawPacketReceiveMeta,
-    ) {
+    fn handle_ctrl_desc_resp(&self, desc: &ToHostCtrlRbDesc) {
         let ctx_map = self.ctrl_op_ctx_map.read();
 
         if let Some(ctx) = ctx_map.get(&desc.common.op_id) {

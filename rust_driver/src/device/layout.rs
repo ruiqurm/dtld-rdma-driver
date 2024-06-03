@@ -76,6 +76,23 @@ bitfield! {
     _reserverd2, _:                             255, 240;                                   // 64bits
 }
 
+// typedef struct {
+//     ReservedZero#(136)              reserved1;      // 136 bits
+//     QPN                             qpn;            // 24  bits
+//     ReservedZero#(8)                reserved2;      // 8   bits
+//     PSN                             recoverPoint;   // 24  bits
+//     CmdQueueDescCommonHead          commonHeader;   // 64  bits
+// } CmdQueueReqDescUpdateErrorPsnRecoverPoint deriving(Bits, FShow);
+bitfield! {
+    pub struct CmdQueueReqDescUpdateErrRecoverPoint([u8]);
+    u32;
+    _cmd_queue_desc_common_head,_:              63 ,   0;  // 64bits
+    pub get_psn, set_psn:                       87 ,  64;  // 24bits
+    _reserverd1, _:                             95 ,  88;  // 8 bits
+    pub get_qpn, set_qpn:                       119,  96;  // 24bits
+    _reserverd2, _:                             255, 120;  // 64bits
+}
+
 bitfield! {
     pub struct SendQueueDescCommonHead([u8]);
     u32;

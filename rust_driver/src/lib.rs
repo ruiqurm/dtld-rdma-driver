@@ -64,7 +64,7 @@
     clippy::arithmetic_side_effects,
  
     // clippy::pattern_type_mismatch, // cause some false postive and unneeded copy
-    clippy::print_stderr,
+    // clippy::print_stderr,
     clippy::print_stdout,
     clippy::rc_buffer,
     clippy::rc_mutex,
@@ -160,7 +160,6 @@ use checker::{PacketChecker, PacketCheckerContext};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
-use retry::RetryConfig;
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
