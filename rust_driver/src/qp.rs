@@ -1,3 +1,4 @@
+use atomic_enum::atomic_enum;
 use eui48::MacAddress;
 
 use crate::{
@@ -16,13 +17,19 @@ use parking_lot::Mutex;
 const QP_MAX_CNT: usize = 1024;
 
 /// The status of current QP
-#[derive(Debug)]
+#[atomic_enum]
 #[non_exhaustive]
 pub enum QpStatus {
     /// The QP is normal
-    Normal, 
+    Normal = 0,
     /// The QP is out of order
-    OutOfOrder,
+    OutOfOrder = 1,
+}
+
+impl QpStatus{
+    pub(crate) fn is_normal(&self) -> bool{
+        matches!(self, QpStatus::Normal)
+    }
 }
 
 impl Default for QpStatus {
@@ -47,7 +54,7 @@ pub struct QpContext {
     pub(crate) dqp_ip: Ipv4Addr,
     pub(crate) dqp_mac_addr: MacAddress,
     pub(crate) sending_psn: Mutex<Psn>,
-    pub(crate) status: QpStatus,
+    pub(crate) status: AtomicQpStatus,
     pub(crate) _next_msn: AtomicU16,
 }
 
@@ -69,7 +76,7 @@ impl QpContext {
             dqp_ip: qp.dqp_ip,
             dqp_mac_addr: qp.dqp_mac,
             sending_psn: Mutex::new(Psn::new(0)),
-            status: QpStatus::Normal,
+            status: AtomicQpStatus::new(QpStatus::Normal),
             _next_msn: AtomicU16::default(),
         }
     }
@@ -93,7 +100,7 @@ impl Default for QpContext {
             dqp_ip: Ipv4Addr::LOCALHOST,
             dqp_mac_addr: Default::default(),
             sending_psn: Default::default(),
-            status: Default::default(),
+            status: AtomicQpStatus::new(QpStatus::Normal),
             _next_msn: Default::default(),
         }
     }

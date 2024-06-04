@@ -256,6 +256,8 @@ impl IndexMut<usize> for Buffer {
     }
 }
 
+// pub(crate) struct Threadsafe
+
 #[cfg(test)]
 mod tests {
     use crate::types::Pmtu;

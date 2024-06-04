@@ -30,6 +30,19 @@ pub(crate) enum ToCardCtrlRbDesc {
     SetQpNormal(ToCardCtrlRbDescUpdateErrPsnRecoverPoint),
 }
 
+impl ToCardCtrlRbDesc{
+    pub(crate) fn set_id(&mut self, id: u32) {
+        match self {
+            ToCardCtrlRbDesc::UpdateMrTable(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::UpdatePageTable(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::QpManagement(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::SetNetworkParam(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::SetQpNormal(desc) => desc.common.op_id = id,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDesc {
     pub(crate) common: ToHostCtrlRbDescCommon,
@@ -66,7 +79,7 @@ impl ToHostWorkRbDesc {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Default)]
 pub(crate) struct ToCardCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
 }
@@ -122,7 +135,7 @@ pub(crate) struct ToCardCtrlRbDescSetRawPacketReceiveMeta {
 pub(crate) struct ToCardCtrlRbDescUpdateErrPsnRecoverPoint {
     pub(crate) common: ToCardCtrlRbDescCommon,
     pub(crate) qpn: Qpn,
-    pub(crate) rev_psn: Psn,
+    pub(crate) recover_psn: Psn,
 }
 
 #[derive(Debug)]
@@ -612,7 +625,7 @@ impl ToCardCtrlRbDesc {
         ) {
             let mut raw_packet_recv_meta = CmdQueueReqDescUpdateErrRecoverPoint(dst);
             raw_packet_recv_meta.set_qpn(desc.qpn.get());
-            raw_packet_recv_meta.set_psn(desc.rev_psn.get());
+            raw_packet_recv_meta.set_psn(desc.recover_psn.get());
         }
 
         match self {

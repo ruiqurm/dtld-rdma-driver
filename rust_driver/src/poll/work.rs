@@ -10,9 +10,8 @@ use crate::{
     buf::Slot,
     checker::PacketCheckEvent,
     device::{
-        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescRaw,
-        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteOrReadResp,
-        ToHostWorkRbDescWriteWithImm,
+        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescRaw, ToHostWorkRbDescRead,
+        ToHostWorkRbDescStatus, ToHostWorkRbDescWriteWithImm,
     },
     nic::NicRecvNotification,
     responser::{RespCommand, RespReadRespCommand},
@@ -67,10 +66,10 @@ impl WorkDescPollerContext {
 
             let result = match desc {
                 ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
-                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_write(desc),
+                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_to_checker(desc),
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
-                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_ack(desc),
-                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_nack(desc),
+                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_to_checker(desc),
+                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_to_checker(desc),
                 ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
             };
             if let Err(reason) = result {
@@ -90,7 +89,10 @@ impl WorkDescPollerContext {
     }
 
     #[inline]
-    fn handle_work_desc_write(&self, desc: ToHostWorkRbDescWriteOrReadResp) -> Result<(), Error> {
+    fn handle_work_desc_to_checker<T>(&self, desc: T) -> Result<(), Error>
+    where
+        PacketCheckEvent: From<T>,
+    {
         let msg = PacketCheckEvent::from(desc);
         self.checker_channel
             .send(msg)
@@ -102,22 +104,6 @@ impl WorkDescPollerContext {
         _desc: &ToHostWorkRbDescWriteWithImm,
     ) -> Result<(), Error> {
         todo!()
-    }
-
-    #[inline]
-    fn handle_work_desc_ack(&self, desc: ToHostWorkRbDescAck) -> Result<(), Error> {
-        let msg = PacketCheckEvent::from(desc);
-        self.checker_channel
-            .send(msg)
-            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
-    }
-
-    #[inline]
-    fn handle_work_desc_nack(&self, desc: ToHostWorkRbDescNack) -> Result<(), Error> {
-        let msg = PacketCheckEvent::from(desc);
-        self.checker_channel
-            .send(msg)
-            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
     }
 
     #[inline]

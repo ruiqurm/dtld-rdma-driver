@@ -48,7 +48,7 @@ impl From<u32> for Imm {
 }
 
 /// Message Sequence Number
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
 pub struct Msn(u16);
 impl Msn {
     /// Create a new `Msn` with the given value.
@@ -201,7 +201,7 @@ impl ThreeBytesStruct {
         if self.0 >= rhs.0 {
             self.0 - rhs.get()
         } else {
-            self.0 + Self::MAX_VALUE - rhs.0
+            self.0 + Self::BORDER - rhs.0
         }
     }
 }
@@ -310,6 +310,12 @@ pub enum Pmtu {
 
     /// 4096 bytes
     Mtu4096 = 5,
+}
+
+impl Default for Pmtu {
+    fn default() -> Self {
+        Pmtu::Mtu256
+    }
 }
 
 impl From<&Pmtu> for u64 {

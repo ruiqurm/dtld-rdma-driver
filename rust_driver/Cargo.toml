@@ -27,6 +27,7 @@ derive_builder = "0.20.0"
 smoltcp = {version = "0.11.0", features = ["verbose"]}
 parking_lot = "0.12.2"
 flume = "0.11.0"
+atomic_enum = "0.3.0"
 
 
 [dev-dependencies]

@@ -156,7 +156,7 @@ use eui48::MacAddress;
 use flume::unbounded;
 use nic::NicInterface;
 use op_ctx::{CtrlOpCtx, OpCtx, ReadOpCtx, WriteOpCtx};
-use checker::{PacketChecker, PacketCheckerContext};
+use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
 use responser::DescResponser;
@@ -547,8 +547,10 @@ impl Device {
         let packet_checker_ctx = PacketCheckerContext{
             resp_channel: resp_send_queue,
             desc_poller_channel: checker_recv_queue,
-            recv_ctx_map: HashMap::new(),
             user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
+            qp_table : Arc::clone(&self.0.qp_table),
+            recv_ctx_map : RecvContextMap::new(),
+            device : Arc::new(self.clone()),
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
@@ -633,6 +635,10 @@ pub(crate) trait WorkDescriptorSender: Send + Sync {
     fn send_work_desc(&self, desc_builder: Box<ToCardWorkRbDesc>) -> Result<(), Error>;
 }
 
+pub(crate) trait CtrlDescriptorSender: Send + Sync {
+    fn send_ctrl_desc(&self, desc_builder: ToCardCtrlRbDesc) -> Result<u32, Error>;
+}
+
 impl WorkDescriptorSender for Device {
     fn send_work_desc(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), Error> {
         self.0
@@ -643,3 +649,17 @@ impl WorkDescriptorSender for Device {
         Ok(())
     }
 }
+
+impl CtrlDescriptorSender for Device {
+    fn send_ctrl_desc(&self, mut desc: ToCardCtrlRbDesc) -> Result<u32, Error> {
+        let id = self.get_ctrl_op_id();
+        desc.set_id(id);
+        self.0
+            .adaptor
+            .to_card_ctrl_rb()
+            .push(desc)
+            .map_err(|_| Error::DeviceBusy)?;
+        Ok(id)
+    }
+}
+
