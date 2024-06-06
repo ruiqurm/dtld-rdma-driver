@@ -2,7 +2,7 @@ use atomic_enum::atomic_enum;
 use eui48::MacAddress;
 
 use crate::{
-    device::{layout::Mac, ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
+    device::{ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescQpManagement},
     types::{MemAccessTypeFlag, Msn, Pmtu, Psn, Qp, QpType, Qpn},
     Device, Error, Pd,
 };

@@ -103,6 +103,7 @@ macro_rules! setup_emulator {
         #[dtor]
         fn cleanup_global_allocator() {
             unsafe {
+                libc::munmap(HEAP_START_ADDR as *mut std::ffi::c_void, $heap_block_size);
                 libc::shm_unlink($shm_path.as_ptr() as *const libc::c_char);
             }
         }

@@ -472,6 +472,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                             psn: header.common_meta.psn,
                             addr: header.reth.va,
                             len: header.reth.len,
+                            can_auto_ack: false,
                         })
                     }
                     ToHostWorkRbDescOpcode::RdmaWriteLastWithImmediate

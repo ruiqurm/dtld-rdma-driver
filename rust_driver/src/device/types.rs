@@ -4,7 +4,7 @@ use crate::{
         CmdQueueReqDescQpManagementSeg0, CmdQueueReqDescSetNetworkParam,
         CmdQueueReqDescSetRawPacketReceiveMeta, CmdQueueReqDescUpdateErrRecoverPoint,
         CmdQueueReqDescUpdateMrTable, CmdQueueReqDescUpdatePGT,
-        MeatReportQueueDescFragSecondaryRETH,
+        MetaReportQueueDescFragSecondaryRETH,
     },
     types::{Imm, Key, MemAccessTypeFlag, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
     utils::u8_slice_to_u64,
@@ -15,8 +15,8 @@ use num_enum::TryFromPrimitive;
 use std::{net::Ipv4Addr, ops::Range};
 
 use super::layout::{
-    CmdQueueDescCommonHead, MeatReportQueueDescBthReth, MeatReportQueueDescFragAETH,
-    MeatReportQueueDescFragBTH, MeatReportQueueDescFragImmDT, MeatReportQueueDescFragRETH,
+    CmdQueueDescCommonHead, MetaReportQueueDescBthReth, MetaReportQueueDescFragAETH,
+    MetaReportQueueDescFragBTH, MetaReportQueueDescFragImmDT, MetaReportQueueDescFragRETH,
     SendQueueDescCommonHead, SendQueueReqDescFragSGE, SendQueueReqDescSeg0, SendQueueReqDescSeg1,
 };
 
@@ -232,10 +232,9 @@ pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) is_read_resp: bool,
     pub(crate) write_type: ToHostWorkRbDescWriteType,
     pub(crate) psn: Psn,
-    #[allow(unused)]
     pub(crate) addr: u64,
-    #[allow(unused)]
     pub(crate) len: u32,
+    pub(crate) can_auto_ack: bool,
 }
 
 impl Default for ToHostWorkRbDescWriteOrReadResp {
@@ -247,6 +246,7 @@ impl Default for ToHostWorkRbDescWriteOrReadResp {
             psn: Psn::default(),
             addr: 0,
             len: 0,
+            can_auto_ack: false
         }
     }
 }
@@ -921,11 +921,11 @@ impl ToHostWorkRbDesc {
         //     Length                  dlen;         // 32
         //     RKEY                    rkey;         // 32
         //     ADDR                    va;           // 64
-        // } MeatReportQueueDescFragRETH deriving(Bits, FShow);
+        // } MetaReportQueueDescFragRETH deriving(Bits, FShow);
 
         // first 12 bytes are desc type, status and bth
         #[allow(clippy::indexing_slicing)]
-        let frag_reth = MeatReportQueueDescFragRETH(&src[12..]);
+        let frag_reth = MetaReportQueueDescFragRETH(&src[12..]);
         let addr = frag_reth.get_va();
         // bitfield restricts the field is not longer than 32 bits.
         #[allow(clippy::cast_possible_truncation)]
@@ -940,11 +940,11 @@ impl ToHostWorkRbDesc {
     fn read_imm(src: &[u8]) -> u32 {
         // typedef struct {
         //     IMM                             data;           // 32
-        // } MeatReportQueueDescFragImmDT deriving(Bits, FShow);
+        // } MetaReportQueueDescFragImmDT deriving(Bits, FShow);
 
         // first 28 bytes are desc type, status, bth and reth
         #[allow(clippy::indexing_slicing)]
-        let imm = MeatReportQueueDescFragImmDT(&src[28..32]);
+        let imm = MetaReportQueueDescFragImmDT(&src[28..32]);
         // call the `to_be` to convert order
         imm.get_imm()
     }
@@ -957,11 +957,11 @@ impl ToHostWorkRbDesc {
         //     AethValue               value;        // 5
         //     MSN                     msn;          // 24
         //     PSN                     lastRetryPSN; // 24
-        // } MeatReportQueueDescFragAETH deriving(Bits, FShow);
+        // } MetaReportQueueDescFragAETH deriving(Bits, FShow);
 
         // first 12 bytes are desc type, status and bth
         #[allow(clippy::indexing_slicing)]
-        let frag_aeth = MeatReportQueueDescFragAETH(&src[12..]);
+        let frag_aeth = MetaReportQueueDescFragAETH(&src[12..]);
         let psn = Psn::new(frag_aeth.get_psn());
         let msg_seq_number = Msn::new(frag_aeth.get_msn() as u16);
         let value = frag_aeth.get_aeth_value() as u8;
@@ -984,12 +984,12 @@ impl ToHostWorkRbDesc {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
         //     MSN                             msn;            // 24
-        //     MeatReportQueueDescFragRETH     reth;           // 128
-        //     MeatReportQueueDescFragBTH      bth;            // 64
+        //     MetaReportQueueDescFragRETH     reth;           // 128
+        //     MetaReportQueueDescFragBTH      bth;            // 64
         //     RdmaReqStatus                   reqStatus;      // 8
         //     PSN                             expectedPSN;    // 24
-        // } MeatReportQueueDescBthRethReth deriving(Bits, FShow);
-        let desc_bth = MeatReportQueueDescBthReth(&src[0..32]);
+        // } MetaReportQueueDescBthRethReth deriving(Bits, FShow);
+        let desc_bth = MetaReportQueueDescBthReth(&src[0..32]);
 
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
@@ -1010,9 +1010,9 @@ impl ToHostWorkRbDesc {
         //     QPN                             dqpn;         // 24
         //     RdmaOpCode                      opcode;       // 5
         //     TransType                       trans;        // 3
-        // } MeatReportQueueDescFragBTH deriving(Bits, FShow);
+        // } MetaReportQueueDescFragBTH deriving(Bits, FShow);
 
-        let desc_frag_bth = MeatReportQueueDescFragBTH(&src[4..12]);
+        let desc_frag_bth = MetaReportQueueDescFragBTH(&src[4..12]);
         let trans = ToHostWorkRbDescTransType::try_from(desc_frag_bth.get_trans_type() as u8)
             .map_err(|_| {
                 ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
@@ -1054,7 +1054,7 @@ impl ToHostWorkRbDesc {
             | ToHostWorkRbDescOpcode::RdmaReadResponseLast
             | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                 let (addr, _, len) = Self::read_reth(src);
-
+                let can_auto_ack = desc_bth.get_can_auto_ack();
                 Ok(ToHostWorkRbDesc::WriteOrReadResp(
                     ToHostWorkRbDescWriteOrReadResp {
                         common,
@@ -1063,6 +1063,7 @@ impl ToHostWorkRbDesc {
                         psn,
                         addr,
                         len,
+                        can_auto_ack
                     },
                 ))
             }
@@ -1149,8 +1150,8 @@ impl IncompleteToHostWorkRbDesc {
             // typedef struct {
             //     RKEY                            secondaryRkey;   // 32
             //     ADDR                            secondaryVa;     // 64
-            // } MeatReportQueueDescFragSecondaryRETH deriving(Bits, FShow);
-            let secondary_reth = MeatReportQueueDescFragSecondaryRETH(&src);
+            // } MetaReportQueueDescFragSecondaryRETH deriving(Bits, FShow);
+            let secondary_reth = MetaReportQueueDescFragSecondaryRETH(&src);
             let addr = secondary_reth.get_secondary_va();
             let key = Key::new(secondary_reth.get_secondary_rkey() as u32);
 

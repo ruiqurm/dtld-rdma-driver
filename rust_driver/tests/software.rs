@@ -1,4 +1,3 @@
-
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
@@ -14,32 +13,20 @@ use std::net::Ipv4Addr;
 
 use crate::common::init_logging;
 
-
-
-const SHM_PATH: &str = "/bluesim1\0";
-const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
-const MAGIC_VIRT_ADDR: usize = 0x7f7e8e600000;
-const SEND_CNT: usize = 1024 * 6;
 const BUFFER_LENGTH: usize = 1024 * 128;
+const SEND_CNT: usize = 1024 * 64;
 
 mod common;
 
-setup_emulator!(MAGIC_VIRT_ADDR, HEAP_BLOCK_SIZE, SHM_PATH, "../blue-rdma", "run_system_test.sh");
-
 fn create_and_init_card<'a>(
     card_id: usize,
-    mock_server_addr: &str,
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, AlignedMemory<'a>) {
-    let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
-        .device_type(DeviceType::Emulated {
-            rpc_server_addr: mock_server_addr.parse().unwrap(),
-            heap_mem_start_addr: head_start_addr,
-        })
+        .device_type(DeviceType::Software)
         .strategy(RoundRobinStrategy::new())
         .build()
         .unwrap();
@@ -50,14 +37,6 @@ fn create_and_init_card<'a>(
     info!("[{}] PD allocated", card_id);
 
     let mut mr_buffer = AlignedMemory::new(BUFFER_LENGTH).unwrap();
-
-    unsafe {
-        info!(
-            "[{}] MR's PA_START={:X}",
-            card_id,
-            mr_buffer.as_mut_ptr() as usize - HEAP_START_ADDR
-        );
-    }
 
     let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
         | MemAccessTypeFlag::IbvAccessRemoteWrite
@@ -75,12 +54,12 @@ fn create_and_init_card<'a>(
     let qp = QpBuilder::default()
         .pd(pd)
         .qpn(qpn)
-        .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu4096)
+        .pmtu(Pmtu::Mtu1024)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
+        .peer_qpn(qpn)
         .build()
         .unwrap();
     dev.create_qp(&qp).unwrap();
@@ -91,29 +70,27 @@ fn create_and_init_card<'a>(
 
 #[test]
 #[serial]
-fn test_emulated_write() {
-    init_logging("log.txt").unwrap();
-    let qp_manager = QpManager::new();
-    let qpn = qp_manager.alloc().unwrap();
+fn test_software_write_and_read() {
     let a_network = RdmaDeviceNetworkParamBuilder::default()
-        .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
-        .netmask(Ipv4Addr::new(255, 255, 255, 0))
-        .ipaddr(Ipv4Addr::new(192, 168, 0, 2))
-        .macaddr(MacAddress::new([0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xFE]))
+        .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
+        .netmask(Ipv4Addr::new(255, 0, 0, 0))
+        .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
+        .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
         .build()
         .unwrap();
     let b_network = RdmaDeviceNetworkParamBuilder::default()
-        .gateway(Ipv4Addr::new(192, 168, 0, 0x1))
-        .netmask(Ipv4Addr::new(255, 255, 255, 0))
-        .ipaddr(Ipv4Addr::new(192, 168, 0, 3))
+        .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
+        .netmask(Ipv4Addr::new(255, 0, 0, 0))
+        .ipaddr(Ipv4Addr::new(127, 0, 0, 3))
         .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
         .build()
         .unwrap();
+    let qp_manager = QpManager::new();
+    let qpn = qp_manager.alloc().unwrap();
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, "0.0.0.0:9873", qpn, a_network, &b_network);
+        create_and_init_card(0, qpn, a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-        create_and_init_card(1, "0.0.0.0:9875", qpn, b_network, &a_network);
-
+        create_and_init_card(1, qpn, b_network, &a_network);
     let dpqn = qpn;
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
         *item = idx as u8;
@@ -128,16 +105,68 @@ fn test_emulated_write() {
         mr_a.get_key(),
     );
 
+    let sge1 = Sge::new(
+        &mr_buffer_a[SEND_CNT] as *const u8 as u64,
+        SEND_CNT.try_into().unwrap(),
+        mr_a.get_key(),
+    );
+
+    // test write
     let ctx1 = dev_a
         .write(
             dpqn,
             &mr_buffer_b[0] as *const u8 as u64,
             mr_b.get_key(),
-            WorkReqSendFlag::IbvSendSignaled,
+            WorkReqSendFlag::empty(),
             sge0,
+        )
+        .unwrap();
+    let ctx2 = dev_a
+        .write(
+            dpqn,
+            &mr_buffer_b[SEND_CNT] as *const u8 as u64,
+            mr_b.get_key(),
+            WorkReqSendFlag::empty(),
+            sge1,
         )
         .unwrap();
 
     let _ = ctx1.wait();
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    let _ = ctx2.wait();
+
+    if mr_buffer_a[0..SEND_CNT * 2] != mr_buffer_b[0..SEND_CNT * 2] {
+        for i in 0..SEND_CNT * 2 {
+            if mr_buffer_a[i] != mr_buffer_b[i] {
+                panic!("{}: {} != {}", i, mr_buffer_a[i], mr_buffer_b[i]);
+            }
+        }
+    }
+    info!("Write succ");
+    // test read
+
+    for item in mr_buffer_a.iter_mut() {
+        *item = 0;
+    }
+    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        *item = idx as u8;
+    }
+
+
+    let sge_read = Sge::new(
+        &mr_buffer_a[SEND_CNT] as *const u8 as u64,
+        SEND_CNT.try_into().unwrap(),
+        mr_a.get_key(),
+    );
+
+    let ctx1 = dev_a
+        .read(
+            dpqn,
+            &mr_buffer_b[0] as *const u8 as u64,
+            mr_b.get_key(),
+            WorkReqSendFlag::empty(),
+            sge_read,
+        )
+        .unwrap();
+    let _ = ctx1.wait();
+    info!("Read succ");
 }

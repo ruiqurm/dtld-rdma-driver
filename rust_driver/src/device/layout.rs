@@ -147,7 +147,7 @@ bitfield! {
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescFragRETH([u8]);
+    pub struct MetaReportQueueDescFragRETH([u8]);
     u64;
     pub get_va, set_va: 63, 0;          // 64bits
     pub get_rkey, set_rkey: 95, 64;     // 32bits
@@ -155,13 +155,13 @@ bitfield! {
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescFragImmDT([u8]);
+    pub struct MetaReportQueueDescFragImmDT([u8]);
     u32;
     pub get_imm, set_imm: 32, 0;          // 32bits
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescFragAETH([u8]);
+    pub struct MetaReportQueueDescFragAETH([u8]);
     u32;
     pub get_psn, set_psn: 23, 0;          // 24bits
     pub get_msn, set_msn: 47, 24;         // 24bits
@@ -170,18 +170,19 @@ bitfield! {
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescBthReth([u8]);
+    pub struct MetaReportQueueDescBthReth([u8]);
     u64;
     pub get_expected_psn, _: 23,0;      // 24bits
     pub get_req_status, _: 31,24;       // 8bit
     pub get_bth, _: 95, 32;             // 64bits
     pub get_reth, _: 223, 96;           // 128bits
     pub get_msn, _: 247,224;            // 24bits
-    reserved1,_ : 255, 248;         // 8bits
+    reserved1,_ : 254, 248;             // 7bits
+    pub get_can_auto_ack, _: 255;           // 1bit
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescFragBTH([u8]);
+    pub struct MetaReportQueueDescFragBTH([u8]);
     u32;
     pub get_trans_type,set_trans_type: 2, 0; // 3bits
     pub get_opcode,set_opcode: 7, 3;         // 5bits
@@ -193,7 +194,7 @@ bitfield! {
 }
 
 bitfield! {
-    pub struct MeatReportQueueDescFragSecondaryRETH([u8]);
+    pub struct MetaReportQueueDescFragSecondaryRETH([u8]);
     u64;
     pub get_secondary_va,set_secondary_va: 63, 0; // 64bits
     pub get_secondary_rkey,set_secondary_rkey: 95, 64; // 32bits

@@ -248,6 +248,11 @@ impl Drop for DescResponser {
     }
 }
 
+fn mac_to_be64(mac: MacAddress) -> u64 {
+    let mac = mac.as_bytes();
+    u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0])
+}
+
 /// Write the IP header and UDP header
 ///
 /// # Panic
@@ -269,8 +274,9 @@ fn write_packet(
 
     // write the mac header
     let mut mac_header = Mac(buf);
-    mac_header.set_src_mac_addr(u8_slice_to_u64(src_mac.as_bytes()));
-    mac_header.set_dst_mac_addr(u8_slice_to_u64(dst_mac.as_bytes()));
+    // note that we write in big endian directly
+    mac_header.set_src_mac_addr(mac_to_be64(src_mac));
+    mac_header.set_dst_mac_addr(mac_to_be64(dst_mac));
     mac_header.set_network_layer_type(MAC_SERVICE_LAYER_IPV4.into());
 
     // write a ip header
@@ -652,5 +658,12 @@ mod tests {
                 panic!("Unexpected desc type");
             }
         }
+    }
+
+    #[test]
+    fn test_mac_to_be64(){
+        let mac_addr = MacAddress::new([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+        let be64 = super::mac_to_be64(mac_addr);
+        assert_eq!(be64, 0xbc9a78563412);
     }
 }

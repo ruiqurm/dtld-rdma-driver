@@ -15,7 +15,7 @@ use crate::{
     },
     op_ctx::OpCtx,
     qp::QpContext,
-    responser::RespCommand,
+    responser::{RespAckCommand, RespCommand},
     types::{Msn, Pmtu, Psn, Qpn},
     CtrlDescriptorSender, ThreadSafeHashmap,
 };
@@ -48,6 +48,7 @@ pub(crate) struct PacketCheckEvent {
     type_: PacketCheckEventType,
     expected_psn: Psn,
     pub(crate) is_read_resp: bool,
+    pub(crate) can_auto_ack: bool,
 }
 
 impl Default for PacketCheckEvent {
@@ -61,6 +62,7 @@ impl Default for PacketCheckEvent {
             expected_psn: Psn::default(),
             is_read_resp: false,
             addr: 0,
+            can_auto_ack: false,
         }
     }
 }
@@ -113,7 +115,7 @@ impl PacketCheckerContext {
                 Ok(event) => {
                     let qpn = event.qpn;
                     if event.expected_psn != event.psn {
-                        self.enter_qp_error_status(qpn, event.expected_psn, event.psn);
+                        // self.enter_qp_error_status(qpn, event.expected_psn, event.psn);
                     }
                     let (is_normal, pmtu) = if let Some(qp) = self.qp_table.read().get(&qpn) {
                         (qp.status.load(Ordering::Acquire).is_normal(), qp.pmtu)
@@ -137,7 +139,7 @@ impl PacketCheckerContext {
                 error!("Set result failed {:?}", e);
             }
         } else {
-            error!("No read op ctx found for {:?}", (event.qpn, event.msn));
+            error!("No op ctx found for {:?}", (event.qpn, event.msn));
         }
     }
 
@@ -154,6 +156,16 @@ impl PacketCheckerContext {
                 self.recv_ctx_map.remove(event.qpn, event.msn);
                 if event.is_read_resp {
                     self.wakeup_user_op_ctx(&event);
+                } else {
+                    let command = RespCommand::Acknowledge(RespAckCommand {
+                        msn: event.msn,
+                        psn: event.psn,
+                        last_retry_psn: None,
+                        dpqn: event.qpn,
+                    });
+                    if let Err(e) = self.resp_channel.send(command) {
+                        error!("Send ack command failed {:?}", e);
+                    }
                 }
             }
             PacketCheckEventType::Only => {
@@ -495,6 +507,7 @@ impl From<ToHostWorkRbDescWriteOrReadResp> for PacketCheckEvent {
             type_: PacketCheckEventType::from(desc.write_type),
             expected_psn: desc.common.expected_psn,
             is_read_resp: desc.is_read_resp,
+            can_auto_ack: desc.can_auto_ack,
         }
     }
 }
@@ -503,13 +516,14 @@ impl From<ToHostWorkRbDescAck> for PacketCheckEvent {
     fn from(desc: ToHostWorkRbDescAck) -> Self {
         Self {
             qpn: desc.common.dqpn,
-            msn: desc.common.msn,
+            msn: desc.msn,
             psn: desc.psn,
             len: 0,
             addr: 0,
             type_: PacketCheckEventType::Ack,
             expected_psn: desc.common.expected_psn,
             is_read_resp: false,
+            can_auto_ack: false,
         }
     }
 }
@@ -518,13 +532,14 @@ impl From<ToHostWorkRbDescNack> for PacketCheckEvent {
     fn from(desc: ToHostWorkRbDescNack) -> Self {
         Self {
             qpn: desc.common.dqpn,
-            msn: desc.common.msn,
+            msn: desc.msn,
             psn: desc.lost_psn.start,
             len: 0,
             addr: 0,
             type_: PacketCheckEventType::Nack,
             expected_psn: desc.lost_psn.end,
             is_read_resp: false,
+            can_auto_ack: false,
         }
     }
 }

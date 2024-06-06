@@ -188,11 +188,11 @@ mod tests {
                     expected_psn: Psn::new(1),
                     ..Default::default()
                 },
-                is_read_resp: false,
                 addr: 1024,
                 len: 1024,
                 write_type: ToHostWorkRbDescWriteType::First,
                 psn: Psn::new(1),
+                ..Default::default()
             }),
             // test writeLast
             ToHostWorkRbDesc::WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp {
@@ -201,11 +201,11 @@ mod tests {
                     expected_psn: Psn::new(2),
                     ..Default::default()
                 },
-                is_read_resp: false,
                 addr: 1024,
                 len: 1024,
                 write_type: ToHostWorkRbDescWriteType::First,
                 psn: Psn::new(2),
+                ..Default::default()
             }),
             // test read
             ToHostWorkRbDesc::Read(ToHostWorkRbDescRead {

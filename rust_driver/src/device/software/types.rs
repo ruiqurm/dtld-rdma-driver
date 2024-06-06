@@ -189,11 +189,17 @@ impl PayloadInfo {
 
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
-    pub(crate) fn direct_data_ptr(&self) -> Option<&[u8]> {
+    pub(crate) fn direct_data_ptr(&self,skip_eth:bool) -> Option<&[u8]> {
         let buf = self.sg_list.first();
         buf.map(|first|{
-            unsafe { std::slice::from_raw_parts(first.data, first.len) }
-        }) 
+            let data = unsafe { std::slice::from_raw_parts(first.data, first.len)};
+            if skip_eth{
+                &data[14..]
+            } else{
+                data
+            }
+        })
+        
     }
 }
 
@@ -526,7 +532,7 @@ impl ToCardDescriptor {
     pub(crate) fn is_raw_packet(&self) -> bool {
         match self {
             ToCardDescriptor::Write(desc) => {
-                matches!(desc.opcode, ToCardWorkRbDescOpcode::Write)
+                matches!(desc.opcode, ToCardWorkRbDescOpcode::WriteWithImm)
                     && matches!(desc.common.qp_type, QpType::RawPacket)
             }
             ToCardDescriptor::Read(_) => false,

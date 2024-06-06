@@ -186,7 +186,7 @@ impl NetSendAgent for UDPSendAgent {
         payload: &PayloadInfo,
     ) -> Result<(), NetAgentError> {
         let buf = payload
-            .direct_data_ptr()
+            .direct_data_ptr(true)
             .ok_or(NetAgentError::InvalidRdmaMessage(
                 "PayloadInfo should have at least one item".to_owned(),
             ))?;
