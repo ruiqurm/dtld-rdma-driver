@@ -1,14 +1,17 @@
 name: open-rdma-driver CI test
 on:
   pull_request:
-    branches: [main]
+    branches: [main-dev]
   push:
-    branches: [main]
+    branches: [main-dev, ci]
 
 jobs:
   ci-check:
     name: CI test
     runs-on: self-hosted
+    container:
+      image: ghcr.io/myrfy001/hard_devcontainer:main
+      options: --privileged
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,16 +35,17 @@ jobs:
       - name: build emulator
         if: steps.cache-building-emulator.outputs.cache-hit != 'true'
         run : |
+          apt update && apt install -y python3-pip
+          pip3 install scapy 
           cd ./blue-rdma
           ./setup.sh
           ./run_one.sh || true
-          pip install scapy 
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
       - name: run cargo build
         working-directory: rust_driver
         run : cargo build --verbose 
       - name: run cargo test
         working-directory: rust_driver
         run : cargo test --verbose -- --skip test_loopback_software_device # currently skip because of permission denied
-      - name: Setup tmate session
-        if: ${{ failure() }}
-        uses: mxschmitt/action-tmate@v3
