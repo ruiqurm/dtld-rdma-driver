@@ -46,25 +46,40 @@ macro_rules! setup_emulator {
         static HEAP_ALLOCATOR: buddy_system_allocator::LockedHeap<ORDER> =
             buddy_system_allocator::LockedHeap::<ORDER>::new();
         static mut HEAP_START_ADDR: usize = 0;
-
+        static SCRIPT: &str = $script_file;
+        static SCRIPT_PATH: &str = $script_path;
         #[macro_use]
         extern crate ctor;
+        use std::{ffi::CStr,ptr};
 
         #[ctor]
         fn init_global_allocator() {
+            unsafe{
+                let pid = libc::fork();
+                if pid == 0{
+                    libc::chdir(SCRIPT_PATH.as_bytes().as_ptr() as *const i8);
+                    let script = CStr::from_bytes_with_nul_unchecked(SCRIPT.as_bytes());
+
+                    let args = [script.as_ptr(), ptr::null()];
+
+                    libc::execvp(script.as_ptr(), args.as_ptr());
+                    std::process::exit(1);
+                }else if pid > 0{
+                    let mut status = 0;
+                    libc::waitpid(pid, &mut status, 0);
+                }else{
+                    panic!("fork failed");
+                }
+            }
             unsafe {
-                libc::shm_unlink($shm_path.as_ptr() as *const libc::c_char);
+                // libc::shm_unlink($shm_path.as_ptr() as *const libc::c_char);
 
                 let shm_fd = libc::shm_open(
                     $shm_path.as_ptr() as *const libc::c_char,
-                    libc::O_RDWR | libc::O_CREAT,
+                    libc::O_RDWR,
                     0o600,
                 );
                 assert!(shm_fd != -1, "shm_open failed");
-                if libc::ftruncate(shm_fd, $heap_block_size as i64) == -1 {
-                    libc::close(shm_fd);
-                    return;
-                }
 
                 let heap = libc::mmap(
                     $magic_virt_addr as *mut std::ffi::c_void,
@@ -82,29 +97,6 @@ macro_rules! setup_emulator {
                 HEAP_START_ADDR = addr;
 
                 HEAP_ALLOCATOR.lock().init(addr, size);
-            }
-
-            // run simulator script
-            let handle = std::process::Command::new("bash")
-                .current_dir($script_path)
-                .arg($script_file)
-                .spawn()
-                .expect("Failed to execute script");
-            let output = handle.wait_with_output().expect("Failed to wait on child");
-            if !output.status.success() {
-                let s = String::from_utf8_lossy(&output.stderr);
-                panic!("Failed to execute script: {}", s);
-            } else {
-                let s = String::from_utf8_lossy(&output.stdout);
-                info!("script output: {}", s);
-            }
-        }
-
-        #[dtor]
-        fn cleanup_global_allocator() {
-            unsafe {
-                libc::munmap(HEAP_START_ADDR as *mut std::ffi::c_void, $heap_block_size);
-                libc::shm_unlink($shm_path.as_ptr() as *const libc::c_char);
             }
         }
     };

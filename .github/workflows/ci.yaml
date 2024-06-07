@@ -46,6 +46,10 @@ jobs:
       - name: run cargo build
         working-directory: rust_driver
         run : cargo build --verbose 
+      - name: pre run emulator
+        run : |
+          cd blue-rdma
+          ./run_system_test.sh
       - name: run cargo test
         working-directory: rust_driver
-        run : cargo test --verbose -- --skip test_loopback_software_device # currently skip because of permission denied
+        run : cargo test --verbose

@@ -23,7 +23,7 @@ const BUFFER_LENGTH: usize = 1024 * 128;
 
 mod common;
 
-setup_emulator!(0x7f7e8e600000, HEAP_BLOCK_SIZE, SHM_PATH, "../blue-rdma", "run_system_test.sh");
+setup_emulator!(0x7f7e8e600000, HEAP_BLOCK_SIZE, SHM_PATH, "../blue-rdma\0","run_system_test.sh\0");
 
 fn create_and_init_card<'a>(
     card_id: usize,
