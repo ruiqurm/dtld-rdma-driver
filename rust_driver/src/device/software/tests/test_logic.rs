@@ -430,7 +430,7 @@ fn test_logic_send_raw() {
     {
         let desc = ToCardWorkRbDescBuilder::default()
             .with_qp_type(QpType::RawPacket)
-            .with_opcode(ToCardWorkRbDescOpcode::Write)
+            .with_opcode(ToCardWorkRbDescOpcode::WriteWithImm)
             .with_total_len(4096)
             .with_raddr(0)
             .with_rkey(1234)

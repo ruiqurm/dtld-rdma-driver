@@ -181,11 +181,16 @@ impl ToCardWorkRbDescBuilder {
                 ToCardWorkRbDesc::Read(ToCardWorkRbDescRead { common, sge: sge0 })
             }
             ToCardWorkRbDescOpcode::WriteWithImm => {
+                let imm = if matches!(common.qp_type, QpType::RawPacket) {
+                    0
+                }else{
+                    self.imm.unwrap()
+                };
                 ToCardWorkRbDesc::WriteWithImm(ToCardWorkRbDescWriteWithImm {
                     common,
                     is_first: self.is_first.unwrap(),
                     is_last: self.is_last.unwrap(),
-                    imm: self.imm.unwrap(),
+                    imm: imm,
                     sge0,
                     sge1,
                     sge2,
