@@ -12,7 +12,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::{net::Ipv4Addr, ops::Range};
+use std::net::Ipv4Addr;
 
 use super::layout::{
     CmdQueueDescCommonHead, MetaReportQueueDescBthReth, MetaReportQueueDescFragAETH,
@@ -27,10 +27,10 @@ pub(crate) enum ToCardCtrlRbDesc {
     QpManagement(ToCardCtrlRbDescQpManagement),
     SetNetworkParam(ToCardCtrlRbDescSetNetworkParam),
     SetRawPacketReceiveMeta(ToCardCtrlRbDescSetRawPacketReceiveMeta),
-    SetQpNormal(ToCardCtrlRbDescUpdateErrPsnRecoverPoint),
+    UpdateErrorPsnRecoverPoint(ToCardCtrlRbDescUpdateErrPsnRecoverPoint),
 }
 
-impl ToCardCtrlRbDesc{
+impl ToCardCtrlRbDesc {
     pub(crate) fn set_id(&mut self, id: u32) {
         match self {
             ToCardCtrlRbDesc::UpdateMrTable(desc) => desc.common.op_id = id,
@@ -38,7 +38,7 @@ impl ToCardCtrlRbDesc{
             ToCardCtrlRbDesc::QpManagement(desc) => desc.common.op_id = id,
             ToCardCtrlRbDesc::SetNetworkParam(desc) => desc.common.op_id = id,
             ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => desc.common.op_id = id,
-            ToCardCtrlRbDesc::SetQpNormal(desc) => desc.common.op_id = id,
+            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => desc.common.op_id = id,
         }
     }
 }
@@ -62,7 +62,6 @@ pub(crate) enum ToHostWorkRbDesc {
     WriteOrReadResp(ToHostWorkRbDescWriteOrReadResp),
     WriteWithImm(ToHostWorkRbDescWriteWithImm),
     Ack(ToHostWorkRbDescAck),
-    Nack(ToHostWorkRbDescNack),
     Raw(ToHostWorkRbDescRaw),
 }
 
@@ -73,13 +72,12 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDesc::WriteOrReadResp(desc) => &desc.common.status,
             ToHostWorkRbDesc::WriteWithImm(desc) => &desc.common.status,
             ToHostWorkRbDesc::Ack(desc) => &desc.common.status,
-            ToHostWorkRbDesc::Nack(desc) => &desc.common.status,
             ToHostWorkRbDesc::Raw(desc) => &desc.common.status,
         }
     }
 }
 
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ToCardCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
 }
@@ -141,6 +139,7 @@ pub(crate) struct ToCardCtrlRbDescUpdateErrPsnRecoverPoint {
 #[derive(Debug)]
 pub(crate) struct ToHostCtrlRbDescCommon {
     pub(crate) op_id: u32, // user_data
+    pub(crate) opcode: CtrlRbDescOpcode,
     pub(crate) is_success: bool,
 }
 
@@ -212,7 +211,6 @@ pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) trans: ToHostWorkRbDescTransType,
     pub(crate) dqpn: Qpn,
     pub(crate) msn: Msn,
-    #[allow(unused)] // the field is used to handling out of order packets.
     pub(crate) expected_psn: Psn,
 }
 
@@ -246,7 +244,7 @@ impl Default for ToHostWorkRbDescWriteOrReadResp {
             psn: Psn::default(),
             addr: 0,
             len: 0,
-            can_auto_ack: false
+            can_auto_ack: false,
         }
     }
 }
@@ -267,21 +265,10 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) msn: Msn,
-    #[allow(unused)] // we may use value and psn in future ack checking
-    pub(crate) value: u8,
-    #[allow(unused)] // we may use value and psn in future ack checking
     pub(crate) psn: Psn,
-}
-
-#[derive(Debug)]
-pub(crate) struct ToHostWorkRbDescNack {
-    pub(crate) common: ToHostWorkRbDescCommon,
-    #[allow(unused)] // used in nack checking
-    pub(crate) msn: Msn,
+    pub(crate) code: ToHostWorkRbDescAethCode,
     #[allow(unused)] // used in nack checking
     pub(crate) value: u8,
-    #[allow(unused)] // used in nack checking
-    pub(crate) lost_psn: Range<Psn>,
 }
 
 #[derive(Debug, Default)]
@@ -369,9 +356,9 @@ pub(crate) enum ToHostWorkRbDescError {
     DeviceError(DeviceError),
 }
 
-#[derive(TryFromPrimitive)]
+#[derive(Debug, TryFromPrimitive)]
 #[repr(u8)]
-enum CtrlRbDescOpcode {
+pub(crate) enum CtrlRbDescOpcode {
     UpdateMrTable = 0x00,
     UpdatePageTable = 0x01,
     QpManagement = 0x02,
@@ -653,7 +640,7 @@ impl ToCardCtrlRbDesc {
                 );
                 write_set_raw_packet_receive_meta(dst, desc);
             }
-            ToCardCtrlRbDesc::SetQpNormal(desc) => {
+            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
                 write_common_header(
                     dst,
                     CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint,
@@ -697,7 +684,11 @@ impl ToHostCtrlRbDesc {
         })?;
         let op_id = head.get_user_data().to_le();
 
-        let common = ToHostCtrlRbDescCommon { op_id, is_success };
+        let common = ToHostCtrlRbDescCommon {
+            op_id,
+            opcode,
+            is_success,
+        };
 
         let desc = ToHostCtrlRbDesc { common };
         Ok(desc)
@@ -1063,7 +1054,7 @@ impl ToHostWorkRbDesc {
                         psn,
                         addr,
                         len,
-                        can_auto_ack
+                        can_auto_ack,
                     },
                 ))
             }
@@ -1117,27 +1108,13 @@ impl ToHostWorkRbDesc {
             ToHostWorkRbDescOpcode::Acknowledge => {
                 let (last_psn, msn_in_ack, value, code) =
                     Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
-
-                match code {
-                    ToHostWorkRbDescAethCode::Ack => {
-                        Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
-                            common,
-                            msn: msn_in_ack,
-                            value,
-                            psn,
-                        }))
-                    }
-                    ToHostWorkRbDescAethCode::Nak => {
-                        Ok(ToHostWorkRbDesc::Nack(ToHostWorkRbDescNack {
-                            common,
-                            msn: msn_in_ack,
-                            value,
-                            lost_psn: psn..last_psn,
-                        }))
-                    }
-                    ToHostWorkRbDescAethCode::Rnr => unimplemented!(),
-                    ToHostWorkRbDescAethCode::Rsvd => unimplemented!(),
-                }
+                Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
+                    common,
+                    msn: msn_in_ack,
+                    value,
+                    psn,
+                    code,
+                }))
             }
         }
     }
@@ -1167,7 +1144,6 @@ impl IncompleteToHostWorkRbDesc {
             }
             ToHostWorkRbDesc::Raw(desc) => Ok(ToHostWorkRbDesc::Raw(desc)), // ignore the redundant imm
             ToHostWorkRbDesc::WriteOrReadResp(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_) => unreachable!(),
         }

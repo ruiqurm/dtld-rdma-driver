@@ -159,7 +159,6 @@ use op_ctx::{CtrlOpCtx, OpCtx, ReadOpCtx, WriteOpCtx};
 use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
-use responser::DescResponser;
 use std::{
     collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
@@ -231,7 +230,6 @@ struct DeviceInner<D: ?Sized> {
     user_op_ctx_map: ThreadSafeHashmap<(Qpn,Msn), OpCtx<()>>,
     ctrl_op_ctx_map: ThreadSafeHashmap<u32, CtrlOpCtx>,
     next_ctrl_op_id: AtomicU32,
-    responser: OnceLock<DescResponser>,
     work_desc_poller: OnceLock<WorkDescPoller>,
     pkt_checker_thread: OnceLock<PacketChecker>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
@@ -287,10 +285,9 @@ impl Device {
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new<Strat:SchedulerStrategy>(config : DeviceConfig<Strat>) -> Result<Self, Error> {
-        let scheduler = DescriptorScheduler::new(config.strategy).into();
         let dev  = match config.device_type{
             DeviceType::Hardware{device_path} => {
-                let adaptor = HardwareDevice::new(device_path,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
+                let adaptor = HardwareDevice::new(device_path,config.strategy).map_err(|e| Error::Device(Box::new(e)))?;
                     let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
@@ -302,7 +299,6 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
-                    responser: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -312,7 +308,7 @@ impl Device {
                 }))
             },
             DeviceType::Emulated{rpc_server_addr,heap_mem_start_addr} => {
-                let adaptor = EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,scheduler).map_err(|e| Error::Device(Box::new(e)))?;
+                let adaptor = EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,config.strategy).map_err(|e| Error::Device(Box::new(e)))?;
                 let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
@@ -324,7 +320,6 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
-                    responser: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -334,7 +329,7 @@ impl Device {
                 }))
             }
             DeviceType::Software => {
-                let adaptor = SoftwareDevice::new(config.network_config.ipaddr,DEFAULT_RMDA_PORT,scheduler).map_err(Error::Device)?;
+                let adaptor = SoftwareDevice::new(config.network_config.ipaddr,DEFAULT_RMDA_PORT,config.strategy).map_err(Error::Device)?;
                 let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
@@ -346,7 +341,6 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
-                    responser: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -514,21 +508,11 @@ impl Device {
         let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;
         self.0.buffer_keeper.lock().push(buf);
 
-        let (resp_send_queue, resp_recv_queue) = unbounded();
-        let responser = DescResponser::new(
-            Arc::new(self.clone()),
-            resp_recv_queue,
-            ack_buf,
-            Arc::<RwLock<HashMap<Qpn, QpContext>>>::clone(&self.0.qp_table),
-        );
-        self.0.responser.set(responser).map_err(|_|Error::DoubleInit("responser has been set".to_owned()))?;
-       
         // enable work desc poller module.
         let (nic_notify_send_queue, nic_notify_recv_queue) = unbounded();
         let (checker_send_queue,checker_recv_queue) = unbounded();
         let work_desc_poller_ctx = WorkDescPollerContext{
             work_rb : self.0.adaptor.to_host_work_rb(),
-            resp_channel : resp_send_queue.clone(),
             nic_channel : nic_notify_send_queue,
             checker_channel: checker_send_queue,
         };
@@ -545,12 +529,13 @@ impl Device {
 
         // enable packet checker module
         let packet_checker_ctx = PacketCheckerContext{
-            resp_channel: resp_send_queue,
             desc_poller_channel: checker_recv_queue,
             user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
             qp_table : Arc::clone(&self.0.qp_table),
             recv_ctx_map : RecvContextMap::new(),
-            device : Arc::new(self.clone()),
+            ctrl_desc_sender: Arc::new(self.clone()),
+            work_desc_sender: Arc::new(self.clone()),
+            ack_buffers: ack_buf,
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;

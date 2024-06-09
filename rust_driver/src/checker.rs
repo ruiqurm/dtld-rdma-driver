@@ -1,4 +1,5 @@
 use std::{
+    cell::{RefCell, RefMut},
     collections::{BTreeMap, HashMap},
     ops::Bound,
     sync::{
@@ -8,19 +9,20 @@ use std::{
 };
 
 use crate::{
+    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
     device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateErrPsnRecoverPoint,
-        ToHostWorkRbDescAck, ToHostWorkRbDescNack, ToHostWorkRbDescWriteOrReadResp,
-        ToHostWorkRbDescWriteType,
+        ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescRead,
+        ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
     },
     op_ctx::OpCtx,
     qp::QpContext,
-    responser::{RespAckCommand, RespCommand},
+    responser::make_ack,
     types::{Msn, Pmtu, Psn, Qpn},
-    CtrlDescriptorSender, ThreadSafeHashmap,
+    CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
-use flume::{Receiver, Sender, TryRecvError};
+use flume::{Receiver, TryRecvError};
 
 use log::{error, info};
 
@@ -30,50 +32,14 @@ pub(crate) struct PacketChecker {
     stop_flag: Arc<AtomicBool>,
 }
 
-enum PacketCheckEventType {
-    First,
-    Middle,
-    Last,
-    Only,
-    Ack,
-    Nack,
-}
-
-pub(crate) struct PacketCheckEvent {
-    pub(crate) qpn: Qpn,
-    pub(crate) msn: Msn,
-    pub(crate) psn: Psn,
-    pub(crate) len: u32,
-    pub(crate) addr: u64,
-    type_: PacketCheckEventType,
-    expected_psn: Psn,
-    pub(crate) is_read_resp: bool,
-    pub(crate) can_auto_ack: bool,
-}
-
-impl Default for PacketCheckEvent {
-    fn default() -> Self {
-        Self {
-            qpn: Qpn::default(),
-            msn: Msn::default(),
-            psn: Psn::default(),
-            len: 0,
-            type_: PacketCheckEventType::Only,
-            expected_psn: Psn::default(),
-            is_read_resp: false,
-            addr: 0,
-            can_auto_ack: false,
-        }
-    }
-}
-
 pub(crate) struct PacketCheckerContext {
-    pub(crate) resp_channel: Sender<RespCommand>,
     pub(crate) desc_poller_channel: Receiver<PacketCheckEvent>,
     pub(crate) recv_ctx_map: RecvContextMap,
     pub(crate) qp_table: ThreadSafeHashmap<Qpn, QpContext>,
     pub(crate) user_op_ctx_map: ThreadSafeHashmap<(Qpn, Msn), OpCtx<()>>,
-    pub(crate) device: Arc<dyn CtrlDescriptorSender>,
+    pub(crate) ctrl_desc_sender: Arc<dyn CtrlDescriptorSender>,
+    pub(crate) work_desc_sender: Arc<dyn WorkDescriptorSender>,
+    pub(crate) ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
 }
 
 impl PacketChecker {
@@ -81,7 +47,7 @@ impl PacketChecker {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
         let thread = std::thread::spawn(move || {
-            PacketCheckerContext::working_thread(&mut context, &thread_stop_flag);
+            working_thread(&mut context, &thread_stop_flag);
         });
         Self {
             thread: Some(thread),
@@ -102,150 +68,178 @@ impl Drop for PacketChecker {
     }
 }
 
+fn working_thread(ctx: &mut PacketCheckerContext, stop_flag: &AtomicBool) {
+    while !stop_flag.load(Ordering::Relaxed) {
+        let result = ctx.desc_poller_channel.try_recv();
+        match result {
+            Err(TryRecvError::Disconnected) => {
+                error!("PacketChecker is stopped due to pipe brocken");
+                return;
+            }
+            Err(TryRecvError::Empty) => {}
+            Ok(event) => {
+                ctx.handle_check_event(event);
+            }
+        }
+    }
+}
+
 impl PacketCheckerContext {
-    fn working_thread(&mut self, stop_flag: &AtomicBool) {
-        while !stop_flag.load(Ordering::Relaxed) {
-            let result = self.desc_poller_channel.try_recv();
-            match result {
-                Err(TryRecvError::Disconnected) => {
-                    error!("PacketChecker is stopped due to pipe brocken");
-                    return;
+    fn handle_check_event(&mut self, event: PacketCheckEvent) {
+        match event {
+            PacketCheckEvent::Write(event) => {
+                let qpn = event.common.dqpn;
+                let expected_psn = event.common.expected_psn;
+                let psn = event.psn;
+                if expected_psn != psn {
+                    self.enter_qp_error_status(qpn, expected_psn, psn);
                 }
-                Err(TryRecvError::Empty) => {}
-                Ok(event) => {
-                    let qpn = event.qpn;
-                    if event.expected_psn != event.psn {
-                        // self.enter_qp_error_status(qpn, event.expected_psn, event.psn);
-                    }
-                    let (is_normal, pmtu) = if let Some(qp) = self.qp_table.read().get(&qpn) {
-                        (qp.status.load(Ordering::Acquire).is_normal(), qp.pmtu)
-                    } else {
-                        continue;
-                    };
-                    if is_normal {
-                        self.handle_qp_normal(event, pmtu);
-                    } else {
-                        self.handle_qp_ooo(event, pmtu);
-                    }
+                let (is_normal, pmtu) = if let Some(qp) = self.qp_table.read().get(&qpn) {
+                    (qp.status.load(Ordering::Acquire).is_normal(), qp.pmtu)
+                } else {
+                    return;
+                };
+                if is_normal {
+                    self.handle_qp_normal(&event, pmtu);
+                } else {
+                    self.handle_qp_ooo(&event, pmtu);
+                }
+            }
+            PacketCheckEvent::ReadReq(_) => {
+                // convert read req directly
+            }
+            PacketCheckEvent::Ack(event) => {
+                let code = event.code;
+                let qpn = event.common.dqpn;
+                let msn = event.common.msn;
+                if matches!(code, ToHostWorkRbDescAethCode::Ack) {
+                    self.wakeup_user_op_ctx(qpn, msn);
                 }
             }
         }
     }
 
     #[inline]
-    fn wakeup_user_op_ctx(&self, event: &PacketCheckEvent) {
-        if let Some(ctx) = self.user_op_ctx_map.read().get(&(event.qpn, event.msn)) {
+    fn wakeup_user_op_ctx(&self, qpn: Qpn, msn: Msn) {
+        if let Some(ctx) = self.user_op_ctx_map.read().get(&(qpn, msn)) {
             if let Err(e) = ctx.set_result(()) {
                 error!("Set result failed {:?}", e);
             }
         } else {
-            error!("No op ctx found for {:?}", (event.qpn, event.msn));
+            error!("No op ctx found for {:?}", (qpn, msn));
         }
     }
 
     #[allow(unused_results)]
-    fn handle_qp_normal(&mut self, event: PacketCheckEvent, pmtu: Pmtu) {
-        match event.type_ {
-            PacketCheckEventType::First => {
-                let qpn = event.qpn;
-                let msn = event.msn;
+    fn handle_qp_normal(&mut self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
+        let qpn = event.common.dqpn;
+        let msn = event.common.msn;
+
+        match event.write_type {
+            ToHostWorkRbDescWriteType::First => {
                 let ctx = RecvContext::from(event);
-                self.recv_ctx_map.insert(qpn, msn, ctx, pmtu);
+                self.recv_ctx_map.insert_ctx(qpn, msn, ctx, pmtu);
             }
-            PacketCheckEventType::Last => {
-                self.recv_ctx_map.remove(event.qpn, event.msn);
+            ToHostWorkRbDescWriteType::Last => {
+                self.recv_ctx_map.remove_ctx(qpn, msn);
                 if event.is_read_resp {
-                    self.wakeup_user_op_ctx(&event);
-                } else {
-                    let command = RespCommand::Acknowledge(RespAckCommand {
-                        msn: event.msn,
-                        psn: event.psn,
-                        last_retry_psn: None,
-                        dpqn: event.qpn,
-                    });
-                    if let Err(e) = self.resp_channel.send(command) {
-                        error!("Send ack command failed {:?}", e);
-                    }
+                    self.wakeup_user_op_ctx(qpn, msn);
+                } else if !event.can_auto_ack {
+                    self.send_ack(qpn, msn, event.psn);
                 }
             }
-            PacketCheckEventType::Only => {
+            ToHostWorkRbDescWriteType::Only => {
                 if event.is_read_resp {
-                    self.wakeup_user_op_ctx(&event);
+                    self.wakeup_user_op_ctx(qpn, msn);
                 }
             }
-            PacketCheckEventType::Ack => {
-                self.wakeup_user_op_ctx(&event);
-            }
-            PacketCheckEventType::Nack | PacketCheckEventType::Middle => {}
+            ToHostWorkRbDescWriteType::Middle => {}
         };
     }
 
-    // handle qp that out-of-order
-    fn handle_qp_ooo(&mut self, event: PacketCheckEvent, pmtu: Pmtu) {
-        let qpn = event.qpn;
-        let msn = event.msn;
-        match event.type_ {
-            PacketCheckEventType::First => {
-                let ctx = RecvContext::new_with_recvmap(event, u32::from(&pmtu));
-                self.recv_ctx_map.insert(qpn, msn, ctx, pmtu);
+    fn send_ack(&self, qpn: Qpn, msn: Msn, psn: Psn) {
+        let mut slot = self.ack_buffers.recycle_buf();
+        if let Ok(desc) = make_ack(slot, &self.qp_table, qpn, msn, psn) {
+            if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
+                error!("Send ack failed {:?}", e);
             }
-            PacketCheckEventType::Middle => {
-                if let Some(recv_ctx) = self.recv_ctx_map.get_mut(qpn, msn) {
-                    recv_ctx.recv_map.as_mut().unwrap().insert(event.psn);
-                }
-            }
-            PacketCheckEventType::Last => {
-                if let Some(recv_ctx) = self.recv_ctx_map.get_mut(qpn, msn) {
-                    recv_ctx.recv_map.as_mut().unwrap().insert(event.psn);
-                }
-                // self.recv_ctx_map.remove(event.qpn, event.msn);
-                // if event.is_read_resp {
-                //     self.wakeup_user_op_ctx(&event);
-                // }
-            }
-            PacketCheckEventType::Only => {
-                if event.is_read_resp {
-                    self.wakeup_user_op_ctx(&event);
-                }
-            }
-            PacketCheckEventType::Ack => {
-                self.wakeup_user_op_ctx(&event);
-            }
-            PacketCheckEventType::Nack => {}
-        };
-
-        // remove complete recv context
-        let map = self
-            .recv_ctx_map
-            .get_per_qp_mut(qpn)
-            .map(|perqp_map| &mut perqp_map.map)
-            .unwrap();
-        map.retain(|_, ctx| !ctx.recv_map.as_ref().unwrap().is_complete());
-
-        // if there is only one recv context and it's in-order,
-        // we can try to recover the qp status
-        if map.len() == 1 {
-            let (_, ctx) = map.iter().next().unwrap();
-            let recv_map = ctx.recv_map.as_ref().unwrap();
-            if let Some(recover_psn) = recv_map.try_get_recover_psn() {
-                self.try_recover(qpn, recover_psn);
-            }
+        } else {
+            error!("send ack failed");
         }
     }
 
-    fn try_recover(&self, qpn: Qpn, recover_psn: Psn) {
-        let desc = ToCardCtrlRbDesc::SetQpNormal(ToCardCtrlRbDescUpdateErrPsnRecoverPoint {
-            common: ToCardCtrlRbDescCommon::default(),
-            qpn,
-            recover_psn,
-        });
-        if self.device.send_ctrl_desc(desc).is_err() {
-            error!("Send recover desc failed");
+    // handle qp that out-of-order
+    fn handle_qp_ooo(&mut self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
+        let qpn = event.common.dqpn;
+        let msn = event.common.msn;
+        let mut need_check_completed_or_try_recover = false;
+        match event.write_type {
+            ToHostWorkRbDescWriteType::First => {
+                let ctx = RecvContext::new_with_recvmap(event, u32::from(&pmtu));
+                self.recv_ctx_map.insert_ctx(qpn, msn, ctx, pmtu);
+            }
+            ToHostWorkRbDescWriteType::Middle | ToHostWorkRbDescWriteType::Last => {
+                if let Some(mut ctx) = self.recv_ctx_map.get_ctx_mut(qpn, msn){
+                    ctx.recv_map.as_mut().unwrap().insert(event.psn);
+                    need_check_completed_or_try_recover = true;
+                }
+                // otherwise, we ignore this packet
+            }
+            ToHostWorkRbDescWriteType::Only => {
+                if event.is_read_resp {
+                    self.wakeup_user_op_ctx(qpn, msn);
+                }
+            }
+        };
+        if need_check_completed_or_try_recover {
+            self.check_completed_and_try_recover(qpn, msn);
+        }
+    }
+
+    /// Check if corresponding msn is completed and try to recover the qp status
+    fn check_completed_and_try_recover(&self, qpn: Qpn, msn: Msn) {
+        let mut perqp_map = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap();
+        let (is_read_resp, is_completed, last_psn) = if let Some(ctx) = perqp_map.map.get_mut(&msn)
+        {
+            let recv_map = ctx.recv_map.as_ref().unwrap();
+            (
+                ctx.is_read_resp,
+                recv_map.is_complete(),
+                recv_map.last_psn(),
+            )
+        } else {
+            (false, false, Psn::default())
+        };
+
+        // decrease borrow
+        drop(perqp_map);
+
+        if is_completed {
+            self.recv_ctx_map.remove_ctx(qpn, msn);
+            if is_read_resp {
+                self.wakeup_user_op_ctx(qpn, msn);
+            } else {
+                // we should manually send ack the packet
+                self.send_ack(qpn, msn, last_psn);
+            }
+        }
+
+        let perqp_map = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap();
+        // if there is only one recv context and it's in-order,
+        // we can try to recover the qp status
+        if perqp_map.map.len() <= 1 {
+            let (_, ctx) = perqp_map.map.iter().next().unwrap();
+            let recv_map = ctx.recv_map.as_ref().unwrap();
+            if let Some(recover_psn) = recv_map.try_get_recover_psn() {
+                try_recover(&self.ctrl_desc_sender, qpn, recover_psn);
+            }
+            if perqp_map.map.is_empty() {
+                self.recv_ctx_map.remove_per_qp_ctx(qpn);
+            }
         }
     }
 
     // store the error status in qp
-    #[inline]
     fn enter_qp_error_status(&mut self, qpn: Qpn, expected_psn: Psn, recved_psn: Psn) {
         if let Some(qp) = self.qp_table.read().get(&qpn) {
             // set flag
@@ -254,7 +248,7 @@ impl PacketCheckerContext {
         };
 
         // create context for all msn
-        if let Some(per_qp_map) = self.recv_ctx_map.0.get_mut(&qpn) {
+        if let Some(mut per_qp_map) = self.recv_ctx_map.get_per_qp_ctx_mut(qpn) {
             let pmtu = u32::from(&per_qp_map.pmtu);
 
             // we know that if we are previous in the normal status,
@@ -270,9 +264,21 @@ impl PacketCheckerContext {
     }
 }
 
+fn try_recover(ctrl_desc_sender: &Arc<dyn CtrlDescriptorSender>, qpn: Qpn, recover_psn: Psn) {
+    let desc =
+        ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(ToCardCtrlRbDescUpdateErrPsnRecoverPoint {
+            common: ToCardCtrlRbDescCommon::default(),
+            qpn,
+            recover_psn,
+        });
+    if ctrl_desc_sender.send_ctrl_desc(desc).is_err() {
+        error!("Send recover desc failed");
+    }
+}
+
 /// The RecvContextMap is a map from (Qpn, Msn) to RecvContext
 #[derive(Default)]
-pub(crate) struct RecvContextMap(HashMap<Qpn, PerQpContextMap>);
+pub(crate) struct RecvContextMap(RefCell<HashMap<Qpn, PerQpContextMap>>);
 
 struct PerQpContextMap {
     pmtu: Pmtu,
@@ -290,32 +296,62 @@ impl PerQpContextMap {
 
 impl RecvContextMap {
     pub(crate) fn new() -> Self {
-        Self(HashMap::new())
+        Self(HashMap::new().into())
     }
 
-    fn insert(&mut self, qpn: Qpn, msn: Msn, ctx: RecvContext, qp_pmtu: Pmtu) {
-        let per_qp_map = self.0.entry(qpn).or_insert(PerQpContextMap::new(qp_pmtu));
+    fn insert_ctx(&self, qpn: Qpn, msn: Msn, ctx: RecvContext, qp_pmtu: Pmtu) {
+        // the `per qp context` might leak here?
+        let mut inner = self.0.borrow_mut();
+        let per_qp_map = inner.entry(qpn).or_insert(PerQpContextMap::new(qp_pmtu));
         if per_qp_map.map.insert(msn, ctx).is_some() {
             log::error!("create duplicate msn({:?}) record for qpn={:?}", msn, qpn);
         }
     }
 
-    fn remove(&mut self, qpn: Qpn, msn: Msn) {
-        if let Some(per_qp_map) = self.0.get_mut(&qpn) {
+    fn remove_ctx(&self, qpn: Qpn, msn: Msn) {
+        let mut inner = self.0.borrow_mut();
+        if let Some(per_qp_map) = inner.get_mut(&qpn) {
             let _dont_care = per_qp_map.map.remove(&msn);
         } else {
             log::error!("No recv ctx found for qpn={:?},msn={:?}", qpn, msn);
         }
     }
 
-    fn get_mut(&mut self, qpn: Qpn, msn: Msn) -> Option<&mut RecvContext> {
-        self.0
-            .get_mut(&qpn)
-            .and_then(|per_qp_map| per_qp_map.map.get_mut(&msn))
+    fn remove_per_qp_ctx(&self, qpn: Qpn) {
+        let mut inner = self.0.borrow_mut();
+        let _dont_care = inner.remove(&qpn);
     }
 
-    fn get_per_qp_mut(&mut self, qpn: Qpn) -> Option<&mut PerQpContextMap> {
-        self.0.get_mut(&qpn)
+    fn get_ctx_mut(&self, qpn: Qpn, msn: Msn) -> Option<RefMut<RecvContext>> {
+        let should_ret_none = {
+            let inner = self.0.borrow();
+            if inner.contains_key(&qpn) {
+                inner.get(&qpn).unwrap().map.contains_key(&msn)
+            } else {
+                false
+            }
+        };
+        if !should_ret_none {
+            None
+        } else {
+            Some(RefMut::map(self.0.borrow_mut(), |inner| {
+                inner.get_mut(&qpn).unwrap().map.get_mut(&msn).unwrap()
+            }))
+        }
+    }
+
+    fn get_per_qp_ctx_mut(&self, qpn: Qpn) -> Option<RefMut<PerQpContextMap>> {
+        let should_ret_none = {
+            let inner = self.0.borrow();
+            inner.contains_key(&qpn)
+        };
+        if !should_ret_none {
+            None
+        } else {
+            Some(RefMut::map(self.0.borrow_mut(), |inner| {
+                inner.get_mut(&qpn).unwrap()
+            }))
+        }
     }
 }
 
@@ -334,7 +370,7 @@ struct RecvContext {
 }
 
 impl RecvContext {
-    pub(crate) fn new_with_recvmap(event: PacketCheckEvent, pmtu: u32) -> Self {
+    pub(crate) fn new_with_recvmap(event: &ToHostWorkRbDescWriteOrReadResp, pmtu: u32) -> Self {
         let pkt_len = get_pkt_length(event.len, event.addr, pmtu);
         let mut map = Box::new(SlidingWindow::new(event.psn, pkt_len));
         map.insert(event.psn);
@@ -356,8 +392,8 @@ impl RecvContext {
     }
 }
 
-impl From<PacketCheckEvent> for RecvContext {
-    fn from(event: PacketCheckEvent) -> Self {
+impl From<&ToHostWorkRbDescWriteOrReadResp> for RecvContext {
+    fn from(event: &ToHostWorkRbDescWriteOrReadResp) -> Self {
         RecvContext {
             is_read_resp: event.is_read_resp,
             start_addr: event.addr,
@@ -471,10 +507,6 @@ impl SlidingWindow {
         *end == self.num_of_packets - 1 && *start == 0
     }
 
-    fn is_out_of_order(&self) -> bool {
-        !self.is_complete() && self.intervals.len() > 1
-    }
-
     pub(crate) fn try_get_recover_psn(&self) -> Option<Psn> {
         if !self.is_out_of_order() {
             let offset_of_next_expected = self.intervals.get(&0).unwrap() + 1;
@@ -483,81 +515,50 @@ impl SlidingWindow {
             None
         }
     }
+
+    pub(crate) fn last_psn(&self) -> Psn {
+        self.start_psn.wrapping_add(self.num_of_packets - 1)
+    }
+
+    fn is_out_of_order(&self) -> bool {
+        !self.is_complete() && self.intervals.len() > 1
+    }
 }
 
-impl From<ToHostWorkRbDescWriteType> for PacketCheckEventType {
-    fn from(value: ToHostWorkRbDescWriteType) -> Self {
-        match value {
-            ToHostWorkRbDescWriteType::First => Self::First,
-            ToHostWorkRbDescWriteType::Middle => Self::Middle,
-            ToHostWorkRbDescWriteType::Last => Self::Last,
-            ToHostWorkRbDescWriteType::Only => Self::Only,
-        }
-    }
+pub(crate) enum PacketCheckEvent {
+    Write(ToHostWorkRbDescWriteOrReadResp),
+    Ack(ToHostWorkRbDescAck),
+    ReadReq(ToHostWorkRbDescRead),
 }
 
 impl From<ToHostWorkRbDescWriteOrReadResp> for PacketCheckEvent {
     fn from(desc: ToHostWorkRbDescWriteOrReadResp) -> Self {
-        Self {
-            qpn: desc.common.dqpn,
-            msn: desc.common.msn,
-            psn: desc.psn,
-            len: desc.len,
-            addr: desc.addr,
-            type_: PacketCheckEventType::from(desc.write_type),
-            expected_psn: desc.common.expected_psn,
-            is_read_resp: desc.is_read_resp,
-            can_auto_ack: desc.can_auto_ack,
-        }
+        Self::Write(desc)
     }
 }
 
 impl From<ToHostWorkRbDescAck> for PacketCheckEvent {
     fn from(desc: ToHostWorkRbDescAck) -> Self {
-        Self {
-            qpn: desc.common.dqpn,
-            msn: desc.msn,
-            psn: desc.psn,
-            len: 0,
-            addr: 0,
-            type_: PacketCheckEventType::Ack,
-            expected_psn: desc.common.expected_psn,
-            is_read_resp: false,
-            can_auto_ack: false,
-        }
+        Self::Ack(desc)
     }
 }
 
-impl From<ToHostWorkRbDescNack> for PacketCheckEvent {
-    fn from(desc: ToHostWorkRbDescNack) -> Self {
-        Self {
-            qpn: desc.common.dqpn,
-            msn: desc.msn,
-            psn: desc.lost_psn.start,
-            len: 0,
-            addr: 0,
-            type_: PacketCheckEventType::Nack,
-            expected_psn: desc.lost_psn.end,
-            is_read_resp: false,
-            can_auto_ack: false,
-        }
+impl From<ToHostWorkRbDescRead> for PacketCheckEvent {
+    fn from(desc: ToHostWorkRbDescRead) -> Self {
+        Self::ReadReq(desc)
+    }
+}
+
+impl Default for PacketCheckEvent {
+    fn default() -> Self {
+        Self::Write(ToHostWorkRbDescWriteOrReadResp::default())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, thread::sleep, time::Duration};
 
-    use crate::{
-        checker::PacketCheckerContext,
-        op_ctx::OpCtx,
-        types::{Msn, Psn, Qpn},
-    };
-
-    use super::{PacketCheckEvent, PacketCheckEventType, PacketChecker};
-
-    use flume::unbounded;
-    use parking_lot::RwLock;
+    use crate::types::Psn;
 
     #[test]
     fn test_sliding_window() {

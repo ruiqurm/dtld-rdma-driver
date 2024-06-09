@@ -250,7 +250,7 @@ bitflags! {
 
 bitflags! {
     /// Work Request Send Flag
-    #[derive(Debug,Clone,Copy,Default)]
+    #[derive(Debug,Clone,Copy,Default,PartialEq)]
     pub struct WorkReqSendFlag: u8 {
         /// No flags
         const IbvSendNoFlags  = 0; // Not defined in rdma-core

@@ -1,260 +1,163 @@
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{net::Ipv4Addr, sync::Arc, thread::spawn};
+use std::net::Ipv4Addr;
 
-use crate::buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE};
+use crate::buf::{Slot, RDMA_ACK_BUFFER_SLOT_SIZE};
 use crate::device::layout::{Aeth, Bth, Ipv4, Mac, NReth, Udp};
 use crate::qp::QpContext;
 use crate::types::{Imm, Key, Msn, Psn, QpType, Qpn, WorkReqSendFlag};
 use eui48::MacAddress;
-use flume::Receiver;
-use log::{error, info};
 
 use crate::device::{
-    ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode, ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead
+    ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescCommon, ToCardWorkRbDescOpcode, ToHostWorkRbDescAethCode, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead
 };
-use crate::utils::{calculate_packet_cnt, u8_slice_to_u64};
-use crate::{Error, Sge, ThreadSafeHashmap, WorkDescriptorSender};
-use parking_lot::RwLock;
+use crate::utils::calculate_packet_cnt;
+use crate::{Error, Sge, ThreadSafeHashmap};
 
-/// Command about ACK and NACK
-/// Typically, the message is sent by checker thread, which is responsible for checking the packet ordering.
-#[derive(Debug,Default)]
-pub(crate) struct RespAckCommand {
-    pub(crate) dpqn: Qpn,
-    pub(crate) msn: Msn,
-    pub(crate) psn: Psn,
-    pub(crate) last_retry_psn: Option<Psn>,
+/// make an ack packet in the buffer, and return a work descriptor
+/// 
+/// The slot can be allocated by `PacketBuf::recycle_buf`
+pub(crate) fn make_ack(
+    mut ack_buf: Slot<RDMA_ACK_BUFFER_SLOT_SIZE>,
+    qp_table: &ThreadSafeHashmap<Qpn, QpContext>,
+    qpn : Qpn,
+    msn: Msn,
+    psn: Psn,
+) -> Result<Box<ToCardWorkRbDesc>,Error>{
+    make_ack_or_nack(ack_buf, qp_table, qpn, msn, psn, None)
 }
 
-impl RespAckCommand {
-    pub(crate) fn new_ack(dpqn: Qpn, msn: Msn, last_psn: Psn) -> Self {
-        Self {
-            dpqn,
-            msn,
-            psn: last_psn,
-            last_retry_psn: None,
-        }
-    }
+/// make a nack packet in the buffer, and return a work descriptor
+/// 
+/// The slot can be allocated by `PacketBuf::recycle_buf`
+pub(crate) fn make_nack(
+    mut ack_buf:  Slot<RDMA_ACK_BUFFER_SLOT_SIZE>,
+    qp_table: &ThreadSafeHashmap<Qpn, QpContext>,
+    qpn : Qpn,
+    msn: Msn,
+    psn: Psn,
+    expected_psn: Psn,
+) ->Result<Box<ToCardWorkRbDesc>,Error>{
+    make_ack_or_nack(ack_buf, qp_table, qpn, msn, psn, Some(expected_psn))
+}   
 
-    pub(crate) fn new_nack(dpqn: Qpn, msg_seq_num: Msn, psn: Psn, last_retry_psn: Psn) -> Self {
-        Self {
-            dpqn,
-            msn: msg_seq_num,
-            psn,
-            last_retry_psn: Some(last_retry_psn),
-        }
-    }
-}
-
-/// Command about read response
-pub(crate) struct RespReadRespCommand {
-    pub(crate) desc: ToHostWorkRbDescRead,
-}
-
-/// The response command sent by other threads
-///
-/// Currently, it supports two types of response:
-/// * Acknowledge(ack,nack)
-/// * Read Response
-pub(crate) enum RespCommand {
-    Acknowledge(RespAckCommand), // Acknowledge or Negative Acknowledge
-    ReadResponse(RespReadRespCommand),
-}
-
-/// A thread that is responsible for sending the response to the other side
-#[derive(Debug)]
-pub(crate) struct DescResponser {
-    thread: Option<std::thread::JoinHandle<()>>,
-    stop_flag: Arc<AtomicBool>,
-}
-
-impl DescResponser {
-    pub(crate) fn new(
-        device: Arc<dyn WorkDescriptorSender>,
-        recving_queue: Receiver<RespCommand>,
-        ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
-        qp_table: ThreadSafeHashmap<Qpn, QpContext>,
-    ) -> Self {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let thread_stop_flag = Arc::clone(&stop_flag);
-        let thread = spawn(move || {
-            Self::working_thread(
-                device,
-                recving_queue,
-                &ack_buffers,
-                &qp_table,
-                &thread_stop_flag,
-            );
-        });
-        Self {
-            thread: Some(thread),
-            stop_flag,
-        }
-    }
-
-    fn create_ack_common(
-        command: &RespAckCommand,
-        qp: &QpContext,
-        dst_ip: Ipv4Addr,
-    ) -> ToCardWorkRbDescCommon {
-        // `ACKPACKET_SIZE` is a constant, it is safe to cast it to u32
-        #[allow(clippy::cast_possible_truncation)]
-        ToCardWorkRbDescCommon {
-            total_len: ACKPACKET_SIZE as u32,
-            rkey: Key::default(),
-            raddr: 0,
-            dqp_ip: dst_ip,
-            dqpn: command.dpqn,
-            mac_addr: qp.dqp_mac_addr,
-            pmtu: qp.pmtu,
-            flags: WorkReqSendFlag::empty(),
-            qp_type: QpType::RawPacket,
-            psn: Psn::default(),
-            msn: command.msn,
-        }
-    }
-
-    fn create_read_resp_common(
-        qp_table: &RwLock<HashMap<Qpn, QpContext>>,
-        resp: &RespReadRespCommand,
-    ) -> Result<ToCardWorkRbDescCommon, Error> {
-        let dpqn = resp.desc.common.dqpn;
-        if let Some(qp) = qp_table.read().get(&dpqn) {
-            let mut common = ToCardWorkRbDescCommon {
-                total_len: resp.desc.len,
-                rkey: resp.desc.rkey,
-                raddr: resp.desc.raddr,
-                dqp_ip: qp.dqp_ip,
-                dqpn: resp.desc.common.dqpn,
+fn make_ack_or_nack(
+    mut ack_buf: Slot<RDMA_ACK_BUFFER_SLOT_SIZE>,
+    qp_table: &ThreadSafeHashmap<Qpn, QpContext>,
+    qpn : Qpn,
+    msn: Msn,
+    psn: Psn,
+    expected_psn: Option<Psn>,
+) -> Result<Box<ToCardWorkRbDesc>,Error>{
+    #[allow(clippy::unwrap_used)]
+    let (src_mac, src_ip, dst_mac, dst_ip, common) = {
+        let table = qp_table.read();
+        if let Some(qp) = table.get(&qpn) {
+            let dst_ip = qp.dqp_ip;
+            let dst_mac = qp.dqp_mac_addr;
+            let src_mac = qp.local_mac;
+            let src_ip = qp.local_ip;
+            #[allow(clippy::cast_possible_truncation)]
+            let common = ToCardWorkRbDescCommon {
+                total_len: ACKPACKET_SIZE as u32,
+                rkey: Key::default(),
+                raddr: 0,
+                dqp_ip: dst_ip,
+                dqpn: qpn,
                 mac_addr: qp.dqp_mac_addr,
                 pmtu: qp.pmtu,
-                flags: Default::default(),
-                qp_type: qp.qp_type,
+                flags: WorkReqSendFlag::empty(),
+                qp_type: QpType::RawPacket,
                 psn: Psn::default(),
-                msn: resp.desc.common.msn,
+                msn: msn,
             };
-            let packet_cnt = calculate_packet_cnt(qp.pmtu, resp.desc.raddr, resp.desc.len);
-            let first_pkt_psn = {
-                let mut send_psn = qp.sending_psn.lock();
-                let first_pkt_psn = *send_psn;
-                *send_psn = send_psn.wrapping_add(packet_cnt);
-                first_pkt_psn
-            };
-            common.psn = first_pkt_psn;
-            Ok(common)
+            (src_mac, src_ip, dst_mac, dst_ip, common)
         } else {
-            Err(Error::Invalid(format!("QP {dpqn:?}")))
+            return Err(Error::Invalid(format!("QP {qpn:?}")))
         }
-    }
-
-    // may lead to false positive here
-    #[allow(clippy::needless_pass_by_value)]
-    fn working_thread(
-        device: Arc<dyn WorkDescriptorSender>,
-        recving_queue: Receiver<RespCommand>,
-        ack_buffers: &PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
-        qp_table: &RwLock<HashMap<Qpn, QpContext>>,
-        stop_flag: &AtomicBool,
-    ) {
-        // We don't care the time stop_flag is set, so we use `Relaxed` ordering
-        while !stop_flag.load(Ordering::Relaxed) {
-            let desc = match recving_queue.recv() {
-                Ok(RespCommand::Acknowledge(ack)) => {
-                    // send ack to device
-                    let mut ack_buf = ack_buffers.recycle_buf();
-                    // if we can not read qp_table here
-                    #[allow(clippy::unwrap_used)]
-                    let (src_mac,src_ip, dst_mac,dst_ip, common) = {
-                        let table = qp_table.read();
-                        if let Some(qp) = table.get(&ack.dpqn) {
-                            let dst_ip = qp.dqp_ip;
-                            let dst_mac = qp.dqp_mac_addr;
-                            let src_mac = qp.local_mac;
-                            let src_ip = qp.local_ip;
-                            let common = Self::create_ack_common(&ack, qp, dst_ip);
-                            (src_mac,src_ip, dst_mac,dst_ip, common)
-                        } else {
-                            error!("Failed to get QP from QP table: {:?}", ack.dpqn);
-                            continue;
-                        }
-                    };
-                    let last_retry_psn = ack.last_retry_psn;
-                    write_packet(
-                        ack_buf.as_mut_slice(),
-                        (src_mac,src_ip),
-                        (dst_mac,dst_ip),
-                        ack.dpqn,
-                        ack.msn,
-                        ack.psn,
-                        last_retry_psn,
-                    );
-                    #[allow(clippy::cast_possible_truncation)]
-                    let sge = ack_buf.into_sge(ACKPACKET_SIZE as u32);
-                    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::WriteWithImm)
-                        .with_common(common)
-                        .with_sge(sge)
-                        .with_imm(Imm::default())
-                        .build()
-                }
-                Ok(RespCommand::ReadResponse(resp)) => {
-                    // send read response to device
-                    let common = match Self::create_read_resp_common(qp_table, &resp) {
-                        Ok(common) => common,
-                        Err(e) => {
-                            error!("responser failed to send read response: {:?}", e);
-                            continue;
-                        }
-                    };
-
-                    let sge = Sge {
-                        addr: resp.desc.laddr,
-                        len: resp.desc.len,
-                        key: resp.desc.lkey,
-                    };
-                    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::ReadResp)
-                        .with_common(common)
-                        .with_sge(sge)
-                        .build()
-                }
-                Err(_) => {
-                    // The only error is pipe broken, so just exit the thread
-                    return;
-                }
-            };
-            match desc {
-                Ok(desc) => {
-                    if let Err(e) = device.send_work_desc(desc) {
-                        error!("Failed to push ack/nack packet: {:?}", e);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to create descripotr: {:?}", e);
-                }
-            }
-        }
-    }
+    };
+    write_packet(
+        ack_buf.as_mut_slice(),
+        (src_mac, src_ip),
+        (dst_mac, dst_ip),
+        qpn,
+        msn,
+        psn,
+        expected_psn,
+    );
+    #[allow(clippy::cast_possible_truncation)]
+    let sge = ack_buf.into_sge(ACKPACKET_SIZE as u32);
+    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::WriteWithImm)
+        .with_common(common)
+        .with_sge(sge)
+        .with_imm(Imm::default())
+        .build()
 }
 
-impl Drop for DescResponser {
-    fn drop(&mut self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            if let Err(e) = thread.join() {
-                panic!("{}", format!("DescResponser thread join failed: {e:?}"));
-            }
-            info!("DescResponser thread is normally stopped");
-        }
-    }
+/// make a read response work descriptor
+/// 
+/// read_req is a reference to the read request descriptor
+pub(crate)fn make_read_resp(
+    qp_table: &ThreadSafeHashmap<Qpn, QpContext>,
+    read_req: &ToHostWorkRbDescRead
+) -> Result<Box<ToCardWorkRbDesc>,Error>{
+    let dqpn = read_req.common.dqpn;
+    let msn = read_req.common.msn;
+    let raddr = read_req.raddr;
+    let rkey = read_req.rkey;
+    let len = read_req.len;
+    let common = if let Some(qp) = qp_table.read().get(&dqpn) {
+        let mut common = ToCardWorkRbDescCommon {
+            total_len: len,
+            rkey,
+            raddr,
+            dqp_ip: qp.dqp_ip,
+            dqpn,
+            mac_addr: qp.dqp_mac_addr,
+            pmtu: qp.pmtu,
+            flags: Default::default(),
+            qp_type: qp.qp_type,
+            psn: Psn::default(),
+            msn: msn,
+        };
+        let packet_cnt = calculate_packet_cnt(qp.pmtu, raddr, len);
+        let first_pkt_psn = {
+            let mut send_psn = qp.sending_psn.lock();
+            let first_pkt_psn = *send_psn;
+            *send_psn = send_psn.wrapping_add(packet_cnt);
+            first_pkt_psn
+        };
+        common.psn = first_pkt_psn;
+        common
+    } else {
+        return Err(Error::Invalid(format!("QP {dqpn:?}")))
+    };
+
+    let sge = Sge {
+        addr: read_req.laddr,
+        len: read_req.len,
+        key: read_req.lkey,
+    };
+    ToCardWorkRbDescBuilder::new(ToCardWorkRbDescOpcode::ReadResp)
+        .with_common(common)
+        .with_sge(sge)
+        .build()
 }
 
+
+/// Covert the MAC address to a u64 in big endian
+/// 
+/// ```
+/// let mac_addr = MacAddress::new([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+/// let be64 = super::mac_to_be64(mac_addr);
+/// assert_eq!(be64, 0xbc9a78563412);
+/// ```
 fn mac_to_be64(mac: MacAddress) -> u64 {
     let mac = mac.as_bytes();
     u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0])
 }
 
 /// Write the IP header and UDP header
-///
+/// 
+/// If the 
 /// # Panic
 /// We assume the `buf` is large enough to hold the packet, in other words, the length should
 /// at least be `ACKPACKET_SIZE`. If the length is less than `ACKPACKET_SIZE`, it will panic.
@@ -266,7 +169,7 @@ fn write_packet(
     dpqn: Qpn,
     msg_seq_num: Msn,
     psn: Psn,
-    last_retry_psn: Option<Psn>,
+    expected_psn: Option<Psn>,
 ) {
     let buf = &mut buf[..ACKPACKET_SIZE];
     let (src_mac, src_ip) = src;
@@ -325,7 +228,7 @@ fn write_packet(
     bth_header.set_dqpn(dpqn.into_be());
     bth_header.set_psn(psn.into_be());
 
-    let is_nak = last_retry_psn.is_some();
+    let is_nak = expected_psn.is_some();
     let aeth_hdr_buf =
         &mut mac_header.0[MAC_HEADER_SIZE + IPV4_HEADER_SIZE + UDP_HEADER_SIZE + BTH_HEADER_SIZE..];
     let mut aeth_header = Aeth(aeth_hdr_buf);
@@ -347,8 +250,8 @@ fn write_packet(
     if is_nak {
         // we have checked the option before.
         #[allow(clippy::unwrap_used)]
-        let last_retry_psn = last_retry_psn.unwrap().into_be();
-        nreth_header.set_last_retry_psn(last_retry_psn);
+        let expected_psn = expected_psn.unwrap().into_be();
+        nreth_header.set_last_retry_psn(expected_psn);
     } else {
         nreth_header.set_last_retry_psn(0);
     }
@@ -450,22 +353,19 @@ fn calculate_ipv4_checksum(header: &[u8]) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, thread::sleep};
-
     use eui48::MacAddress;
-    use flume::unbounded;
 
     use crate::{
-        buf::PacketBuf,
-        device::{ToCardWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
+        buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
+        device::{ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
         qp::QpContext,
         responser::{calculate_ipv4_checksum, ACKPACKET_SIZE},
-        types::{Key, Pmtu, Psn, Qpn},
+        types::{Key, Msn, Pmtu, Psn, Qpn, WorkReqSendFlag},
     };
 
-    use super::calculate_icrc;
+    use super::{calculate_icrc, make_ack, make_nack, make_read_resp};
 
-    use parking_lot::{Mutex, RwLock};
+    use parking_lot::{lock_api::Mutex, RwLock};
 
     #[test]
     fn test_icrc_computing() {
@@ -521,22 +421,18 @@ mod tests {
         assert_eq!(checksum, expected_checksum);
     }
 
-    const BUFFER_SIZE: usize = 1024 * super::RDMA_ACK_BUFFER_SLOT_SIZE;
+    const BUFFER_SIZE: usize = 1024 * RDMA_ACK_BUFFER_SLOT_SIZE;
+
     #[test]
-    fn test_desc_responser() {
-        let (sender, receiver) = unbounded();
+    fn test_make_ack(){
         let buffer = Box::new([0u8; BUFFER_SIZE]);
         let buffer = Box::leak(buffer);
-        let ack_buffers = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, Key::new(0x1000));
-        struct Dummy(Mutex<Vec<ToCardWorkRbDesc>>);
-        impl super::WorkDescriptorSender for Dummy {
-            fn send_work_desc(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), crate::Error> {
-                self.0.lock().push(*desc);
-                Ok(())
-            }
-        }
-        let dummy = std::sync::Arc::new(Dummy(Mutex::new(Vec::new())));
+        let lkey = Key::new(0x1000);
+        let ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE> = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, lkey);
         let qp_table = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let qpn = Qpn::new(321);
+        let msn = Msn::new(0x123);
+        let psn = Psn::new(0x456);
         qp_table.write().insert(
             Qpn::new(3),
             QpContext {
@@ -545,59 +441,136 @@ mod tests {
                 ..Default::default()
             },
         );
-        let _responser =
-            super::DescResponser::new(Arc::<Dummy>::clone(&dummy), receiver, ack_buffers, qp_table);
-        sender
-            .send(super::RespCommand::Acknowledge(super::RespAckCommand {
-                dpqn: Qpn::new(3),
-               ..Default::default()
-            }))
-            .unwrap();
-        sender
-            .send(super::RespCommand::Acknowledge(super::RespAckCommand {
-                dpqn: Qpn::new(3),
-                last_retry_psn: Some(Psn::new(12)),
-                ..Default::default()
-            }))
-            .unwrap();
-        sender
-            .send(super::RespCommand::ReadResponse(
-                super::RespReadRespCommand {
-                    desc: ToHostWorkRbDescRead {
-                        common: ToHostWorkRbDescCommon {
-                            dqpn: Qpn::new(3),
-                            ..Default::default()
-                        },
-                        len: 10,
-                        laddr: 10,
-                        lkey: Key::new(10),
-                        raddr: 0,
-                        rkey: Key::new(10),
-                    },
-                },
-            ))
-            .unwrap();
-        drop(sender);
-
-        // check
-        sleep(std::time::Duration::from_millis(1000));
-        let mut v = dummy.0.lock();
-        assert_eq!(v.len(), 3);
-        let desc = v.pop().unwrap();
-        match desc {
-            crate::device::ToCardWorkRbDesc::ReadResp(desc) => {
-                assert_eq!(desc.common.dqpn.get(), 3);
-                assert_eq!(desc.common.total_len, 10_u32);
-                assert_eq!(desc.common.rkey.get(), 10);
+        let mut ack_buf = ack_buffers.recycle_buf();
+        let desc = make_ack(ack_buf, &qp_table, qpn, msn, psn).unwrap();
+        // check the desc
+        match *desc {
+            crate::device::ToCardWorkRbDesc::WriteWithImm(desc) => {
+                assert_eq!(desc.common.dqpn.get(), qpn.get());
+                assert_eq!(desc.common.total_len, ACKPACKET_SIZE as u32);
+                assert_eq!(desc.common.rkey.get(), 0);
                 assert_eq!(desc.common.raddr, 0);
                 assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
                 assert_eq!(desc.common.mac_addr, MacAddress::default());
                 assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
                 assert_eq!(desc.common.flags.bits(), 0);
-                assert!(matches!(desc.common.qp_type, crate::types::QpType::Rc));
+                assert!(matches!(
+                    desc.common.qp_type,
+                    crate::types::QpType::RawPacket
+                ));
                 assert_eq!(desc.common.psn.get(), 0);
-                assert_eq!(desc.sge0.len, 10_u32);
-                assert_eq!(desc.sge0.key.get(), 10);
+                assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
+                assert_eq!(desc.sge0.key.get(), lkey.get());
+            }
+            crate::device::ToCardWorkRbDesc::Read(_)
+            | crate::device::ToCardWorkRbDesc::Write(_)
+            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
+                panic!("Unexpected desc type");
+            }
+        }
+
+        // check the content
+        
+    }
+
+    fn test_make_nack(){
+        let buffer = Box::new([0u8; BUFFER_SIZE]);
+        let buffer = Box::leak(buffer);
+        let lkey = Key::new(0x1000);
+        let ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE> = PacketBuf::new(buffer.as_ptr() as usize, BUFFER_SIZE, lkey);
+        let qp_table = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let qpn = Qpn::new(321);
+        let msn = Msn::new(0x123);
+        let psn = Psn::new(0x456);
+        let expeceted_psn = Psn::new(0x789);
+        qp_table.write().insert(
+            qpn,
+            QpContext {
+                pd: crate::Pd { handle: 1 },
+                qpn,
+                ..Default::default()
+            },
+        );
+        let mut ack_buf = ack_buffers.recycle_buf();
+        let desc = make_nack(ack_buf, &qp_table, qpn, msn, psn,expeceted_psn).unwrap();
+        // check the desc
+        match *desc {
+            crate::device::ToCardWorkRbDesc::WriteWithImm(desc) => {
+                assert_eq!(desc.common.dqpn.get(), qpn.get());
+                assert_eq!(desc.common.total_len, ACKPACKET_SIZE as u32);
+                assert_eq!(desc.common.rkey.get(), 0);
+                assert_eq!(desc.common.raddr, 0);
+                assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
+                assert_eq!(desc.common.mac_addr, MacAddress::default());
+                assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
+                assert_eq!(desc.common.flags.bits(), 0);
+                assert!(matches!(
+                    desc.common.qp_type,
+                    crate::types::QpType::RawPacket
+                ));
+                assert_eq!(desc.common.psn.get(), 0);
+                assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
+                assert_eq!(desc.sge0.key.get(), lkey.get());
+            }
+            crate::device::ToCardWorkRbDesc::Read(_)
+            | crate::device::ToCardWorkRbDesc::Write(_)
+            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
+                panic!("Unexpected desc type");
+            }
+        }
+
+        // check the content
+    }
+
+    #[test]
+    fn test_make_read_resp(){
+        let qp_table = std::sync::Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let qpn = Qpn::new(321);
+        let msn = Msn::new(0x123);
+        let psn = Psn::new(0x456);
+        let expeceted_psn = Psn::new(0x789);
+        let start_psn = Psn::new(0x1234);
+        qp_table.write().insert(
+            qpn,
+            QpContext {
+                pd: crate::Pd { handle: 1 },
+                qpn,
+                sending_psn : Mutex::new(start_psn),
+                ..Default::default()
+            },
+        );
+        let len = 4321;
+        let laddr = 0x12345678;
+        let lkey = Key::new(0x1000);
+        let raddr = 0x87654321;
+        let rkey = Key::new(0x2000);
+        let read_req = ToHostWorkRbDescRead {
+            common: ToHostWorkRbDescCommon {
+                dqpn: qpn,
+                msn,
+                ..Default::default()
+            },
+            len,
+            laddr,
+            lkey,
+            raddr,
+            rkey,
+        };
+        let desc = make_read_resp(&qp_table, &read_req).unwrap();
+        match *desc {
+            crate::device::ToCardWorkRbDesc::ReadResp(desc) => {
+                assert_eq!(desc.common.dqpn.get(), qpn.get());
+                assert_eq!(desc.common.total_len, len);
+                assert_eq!(desc.common.rkey, rkey);
+                assert_eq!(desc.common.raddr, raddr);
+                assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
+                assert_eq!(desc.common.mac_addr, MacAddress::default());
+                assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
+                assert_eq!(desc.common.flags, WorkReqSendFlag::empty());
+                assert!(matches!(desc.common.qp_type, crate::types::QpType::Rc));
+                assert_eq!(desc.common.psn, start_psn);
+                assert_eq!(desc.sge0.len, len);
+                assert_eq!(desc.sge0.key, lkey);
             }
             crate::device::ToCardWorkRbDesc::Read(_)
             | crate::device::ToCardWorkRbDesc::Write(_)
@@ -605,65 +578,5 @@ mod tests {
                 panic!("Unexpected desc type");
             }
         }
-        let desc = v.pop().unwrap();
-        // NACK
-        match desc {
-            crate::device::ToCardWorkRbDesc::WriteWithImm(desc) => {
-                assert_eq!(desc.common.dqpn.get(), 3);
-                assert_eq!(desc.common.total_len, ACKPACKET_SIZE as u32);
-                assert_eq!(desc.common.rkey.get(), 0);
-                assert_eq!(desc.common.raddr, 0);
-                assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
-                assert_eq!(desc.common.mac_addr, MacAddress::default());
-                assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
-                assert_eq!(desc.common.flags.bits(), 0);
-                assert!(matches!(
-                    desc.common.qp_type,
-                    crate::types::QpType::RawPacket
-                ));
-                assert_eq!(desc.common.psn.get(), 0);
-                assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
-                assert_eq!(desc.sge0.key.get(), 0x1000);
-            }
-            crate::device::ToCardWorkRbDesc::Read(_)
-            | crate::device::ToCardWorkRbDesc::Write(_)
-            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
-                panic!("Unexpected desc type");
-            }
-        }
-
-        // ACK
-        let desc = v.pop().unwrap();
-        match desc {
-            crate::device::ToCardWorkRbDesc::WriteWithImm(desc) => {
-                assert_eq!(desc.common.dqpn.get(), 3);
-                assert_eq!(desc.common.total_len, ACKPACKET_SIZE as u32);
-                assert_eq!(desc.common.rkey.get(), 0);
-                assert_eq!(desc.common.raddr, 0);
-                assert_eq!(desc.common.dqp_ip, std::net::Ipv4Addr::LOCALHOST);
-                assert_eq!(desc.common.mac_addr, MacAddress::default());
-                assert!(matches!(desc.common.pmtu, Pmtu::Mtu4096));
-                assert_eq!(desc.common.flags.bits(), 0);
-                assert!(matches!(
-                    desc.common.qp_type,
-                    crate::types::QpType::RawPacket
-                ));
-                assert_eq!(desc.common.psn.get(), 0);
-                assert_eq!(desc.sge0.len, ACKPACKET_SIZE as u32);
-                assert_eq!(desc.sge0.key.get(), 0x1000);
-            }
-            crate::device::ToCardWorkRbDesc::Read(_)
-            | crate::device::ToCardWorkRbDesc::Write(_)
-            | crate::device::ToCardWorkRbDesc::ReadResp(_) => {
-                panic!("Unexpected desc type");
-            }
-        }
-    }
-
-    #[test]
-    fn test_mac_to_be64(){
-        let mac_addr = MacAddress::new([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
-        let be64 = super::mac_to_be64(mac_addr);
-        assert_eq!(be64, 0xbc9a78563412);
     }
 }

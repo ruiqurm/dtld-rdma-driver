@@ -10,11 +10,10 @@ use crate::{
     buf::Slot,
     checker::PacketCheckEvent,
     device::{
-        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescRaw, ToHostWorkRbDescRead,
-        ToHostWorkRbDescStatus, ToHostWorkRbDescWriteWithImm,
+        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescRaw, ToHostWorkRbDescStatus,
+        ToHostWorkRbDescWriteWithImm,
     },
     nic::NicRecvNotification,
-    responser::{RespCommand, RespReadRespCommand},
     Error,
 };
 
@@ -27,7 +26,6 @@ pub(crate) struct WorkDescPoller {
 
 pub(crate) struct WorkDescPollerContext {
     pub(crate) work_rb: Arc<dyn ToHostRb<ToHostWorkRbDesc>>,
-    pub(crate) resp_channel: Sender<RespCommand>,
     pub(crate) checker_channel: Sender<PacketCheckEvent>,
     pub(crate) nic_channel: Sender<NicRecvNotification>,
 }
@@ -65,11 +63,10 @@ impl WorkDescPollerContext {
             }
 
             let result = match desc {
-                ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_read(desc),
+                ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_to_checker(desc),
                 ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_to_checker(desc),
                 ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
                 ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_to_checker(desc),
-                ToHostWorkRbDesc::Nack(desc) => ctx.handle_work_desc_to_checker(desc),
                 ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
             };
             if let Err(reason) = result {
@@ -77,15 +74,6 @@ impl WorkDescPollerContext {
                 return;
             }
         }
-    }
-
-    #[inline]
-    fn handle_work_desc_read(&self, desc: ToHostWorkRbDescRead) -> Result<(), Error> {
-        let command = RespCommand::ReadResponse(RespReadRespCommand { desc });
-        self.resp_channel
-            .send(command)
-            .map_err(|_| Error::PipeBroken("work polling thread to responser"))?;
-        Ok(())
     }
 
     #[inline]
@@ -136,12 +124,11 @@ mod tests {
 
     use crate::{
         device::{
-            DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescCommon,
-            ToHostWorkRbDescRaw, ToHostWorkRbDescRead, ToHostWorkRbDescWriteOrReadResp,
-            ToHostWorkRbDescWriteType,
+            DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescAethCode,
+            ToHostWorkRbDescCommon, ToHostWorkRbDescRaw, ToHostWorkRbDescRead,
+            ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
         },
         qp::QpContext,
-        responser::RespCommand,
         types::{Key, Msn, Psn, Qpn},
     };
 
@@ -227,6 +214,7 @@ mod tests {
                 value: 0,
                 msn: Msn::default(),
                 psn: Psn::new(2),
+                code: ToHostWorkRbDescAethCode::Ack,
             }),
             ToHostWorkRbDesc::Raw(ToHostWorkRbDescRaw {
                 common: ToHostWorkRbDescCommon {
@@ -250,35 +238,39 @@ mod tests {
                 ..Default::default()
             },
         );
-        let (resp_channel, resp_recv_queue) = flume::unbounded();
         let (checker_channel, checker_recv_queue) = flume::unbounded();
         let (notification_send_queue, notification_recv_queue) = flume::unbounded();
 
         let work_ctx = super::WorkDescPollerContext {
             work_rb,
-            resp_channel,
             checker_channel,
             nic_channel: notification_send_queue,
         };
         let _poller = WorkDescPoller::new(work_ctx);
-        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 0);
-        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 1);
-        assert_eq!(checker_recv_queue.recv().unwrap().psn.get(), 2);
-        let item = resp_recv_queue.recv().unwrap();
-        match item {
-            RespCommand::ReadResponse(res) => {
-                assert_eq!(res.desc.len, 2048);
-                assert_eq!(res.desc.laddr, 0);
-                assert_eq!(res.desc.lkey, Key::new(0));
-                assert_eq!(res.desc.raddr, 0);
-                assert_eq!(res.desc.rkey, Key::new(0));
-            }
-            _ => panic!("unexpected item"),
+        if let crate::checker::PacketCheckEvent::Write(w) = checker_recv_queue.recv().unwrap() {
+            assert_eq!(w.psn.get(), 0);
+        } else {
+            panic!("not a write event");
         }
-        let item = checker_recv_queue.recv().unwrap();
-        assert_eq!(item.psn.get(), 2);
-        let buf = &mut notification_recv_queue.recv().unwrap().buf;
-        assert_eq!(buf.as_mut_slice().as_mut_ptr() as usize, 0xa00_0000_0000);
-        assert_eq!(buf.as_mut_slice().len(), 4096);
+        if let crate::checker::PacketCheckEvent::Write(w) = checker_recv_queue.recv().unwrap() {
+            assert_eq!(w.psn.get(), 1);
+        } else {
+            panic!("not a write event");
+        }
+        if let crate::checker::PacketCheckEvent::Write(w) = checker_recv_queue.recv().unwrap() {
+            assert_eq!(w.psn.get(), 3);
+        } else {
+            panic!("not a write event");
+        }
+        if let crate::checker::PacketCheckEvent::ReadReq(w) = checker_recv_queue.recv().unwrap() {
+            assert_eq!(w.len, 2048);
+        } else {
+            panic!("not a read event");
+        }
+        if let crate::checker::PacketCheckEvent::Ack(a) = checker_recv_queue.recv().unwrap() {
+            assert_eq!(a.psn.get(), 2);
+        } else {
+            panic!("not a ack event");
+        }
     }
 }

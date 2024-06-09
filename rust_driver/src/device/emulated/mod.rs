@@ -50,7 +50,7 @@ type ToHostWorkRb = Ringbuf<
 
 /// An emulated device implementation of the device.
 #[derive(Debug)]
-pub(crate) struct EmulatedDevice<Strat:SchedulerStrategy> {
+pub(crate) struct EmulatedDevice<Strat: SchedulerStrategy> {
     // FIXME: Temporarily ,we use Mutex to make the Rb imuumtable as well as thread safe
     to_card_ctrl_rb: Mutex<ToCardCtrlRb>,
     to_host_ctrl_rb: Mutex<ToHostCtrlRb>,
@@ -60,7 +60,7 @@ pub(crate) struct EmulatedDevice<Strat:SchedulerStrategy> {
     scheduler: Arc<DescriptorScheduler<Strat>>,
 }
 
-impl<Strat:SchedulerStrategy> EmulatedDevice<Strat> {
+impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
     /// Initializing an emulated device.
     /// This function needs to be synchronized.
     ///
@@ -70,7 +70,7 @@ impl<Strat:SchedulerStrategy> EmulatedDevice<Strat> {
     pub(crate) fn new(
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
-        scheduler: Arc<DescriptorScheduler<Strat>>,
+        strategy: Strat,
     ) -> Result<Arc<Self>, DeviceError> {
         let rpc_cli =
             RpcClient::new(rpc_server_addr).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -105,6 +105,10 @@ impl<Strat:SchedulerStrategy> EmulatedDevice<Strat> {
             to_host_work_rb_buffer,
         );
 
+        let scheduler = Arc::new(DescriptorScheduler::new(
+            strategy,
+            Mutex::new(to_card_work_rb),
+        ));
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),
             to_host_ctrl_rb: Mutex::new(to_host_ctrl_rb),
@@ -154,30 +158,30 @@ impl<Strat:SchedulerStrategy> EmulatedDevice<Strat> {
             (pa_of_to_host_work_rb_addr >> 32) as u32,
         )?;
 
-        let _: std::thread::JoinHandle<_> = spawn(move || {
-            let rb = Mutex::new(to_card_work_rb);
-            loop {
-                match scheduler.pop_batch() {
-                    Ok((result, n)) => {
-                        if n == 0{
-                            continue;
-                        }
-                        if let Err(e) = push_to_card_work_rb_desc(&rb, result) {
-                            error!("push to to_card_work_rb failed: {:?}", e);
-                        }
-                    }
-                    Err(e) => {
-                        error!("scheduler pop failed:{:?}", e);
-                    }
-                }
-            }
-        });
+        // let _: std::thread::JoinHandle<_> = spawn(move || {
+        //     let rb = Mutex::new(to_card_work_rb);
+        //     loop {
+        //         match scheduler.pop_batch() {
+        //             Ok((result, n)) => {
+        //                 if n == 0{
+        //                     continue;
+        //                 }
+        //                 if let Err(e) = push_to_card_work_rb_desc(&rb, result) {
+        //                     error!("push to to_card_work_rb failed: {:?}", e);
+        //                 }
+        //             }
+        //             Err(e) => {
+        //                 error!("scheduler pop failed:{:?}", e);
+        //             }
+        //         }
+        //     }
+        // });
 
         Ok(dev)
     }
 }
 
-impl<Strat:SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
+impl<Strat: SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
         Arc::<EmulatedDevice<Strat>>::clone(self)
     }
@@ -219,10 +223,10 @@ impl<Strat:SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
     }
 }
 
-impl<Strat:SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Strat> {
+impl<Strat: SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Strat> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         let mut guard = self.to_card_ctrl_rb.lock();
-        let mut writer = guard.write()?;
+        let mut writer = guard.write();
 
         let mem = writer.next().ok_or(DeviceError::Overflow)?;
         debug!("{:?}", &desc);
@@ -232,7 +236,7 @@ impl<Strat:SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Stra
     }
 }
 
-impl<Strat:SchedulerStrategy> ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice<Strat> {
+impl<Strat: SchedulerStrategy> ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice<Strat> {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
         let mut guard = self.to_host_ctrl_rb.lock();
         let mut reader = guard.read()?;
@@ -245,29 +249,29 @@ impl<Strat:SchedulerStrategy> ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice<Stra
     }
 }
 
-fn push_to_card_work_rb_desc(
-    rb: &Mutex<ToCardWorkRb>,
-    descs: [Option<SealedDesc>; POP_BATCH_SIZE],
-) -> Result<(), DeviceError> {
-    let mut guard = rb.lock();
-    let mut writer = guard.write()?;
-    for desc in descs.into_iter().flatten() {
-        let desc = desc.into_desc();
-        debug!("driver send to card SQ: {:?}", &desc);
+// fn push_to_card_work_rb_desc(
+//     rb: &Mutex<ToCardWorkRb>,
+//     descs: [Option<SealedDesc>; POP_BATCH_SIZE],
+// ) -> Result<(), DeviceError> {
+//     let mut guard = rb.lock();
+//     let mut writer = guard.write();
+//     for desc in descs.into_iter().flatten() {
+//         let desc = desc.into_desc();
+//         debug!("driver send to card SQ: {:?}", &desc);
 
-        let desc_cnt = desc.serialized_desc_cnt();
-        desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
-        desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
-        desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
+//         let desc_cnt = desc.serialized_desc_cnt();
+//         desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
+//         desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
+//         desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
 
-        if desc_cnt == 4 {
-            desc.write_3(writer.next().ok_or(DeviceError::Overflow)?);
-        }
-    }
-    Ok(())
-}
+//         if desc_cnt == 4 {
+//             desc.write_3(writer.next().ok_or(DeviceError::Overflow)?);
+//         }
+//     }
+//     Ok(())
+// }
 
-impl<Strat:SchedulerStrategy> ToHostRb<ToHostWorkRbDesc> for EmulatedDevice<Strat> {
+impl<Strat: SchedulerStrategy> ToHostRb<ToHostWorkRbDesc> for EmulatedDevice<Strat> {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
         let mut guard = self.to_host_work_rb.lock();
         let mut reader = guard.read()?;

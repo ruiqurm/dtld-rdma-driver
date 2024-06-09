@@ -1,7 +1,6 @@
-use log::{debug, error};
-use parking_lot::Mutex;
-
 use crate::{utils::Buffer, SchedulerStrategy};
+use log::debug;
+use parking_lot::Mutex;
 
 use self::{
     csr_cli::{
@@ -18,7 +17,7 @@ use super::{
     DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
     ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
-use std::{path::Path, sync::Arc, thread::spawn};
+use std::{path::Path, sync::Arc};
 
 mod csr_cli;
 mod phys_addr_resolver;
@@ -52,11 +51,11 @@ type ToHostWorkRb = Ringbuf<
 >;
 
 #[derive(Debug, Clone)]
-pub(crate) struct HardwareDevice<Strat:SchedulerStrategy>(Arc<HardwareDeviceInner<Strat>>);
+pub(crate) struct HardwareDevice<Strat: SchedulerStrategy>(Arc<HardwareDeviceInner<Strat>>);
 
 #[allow(clippy::struct_field_names)]
 #[derive(Debug)]
-pub(crate) struct HardwareDeviceInner<Strat:SchedulerStrategy> {
+pub(crate) struct HardwareDeviceInner<Strat: SchedulerStrategy> {
     to_card_ctrl_rb: Arc<Mutex<ToCardCtrlRb>>,
     to_host_ctrl_rb: Arc<Mutex<ToHostCtrlRb>>,
     to_host_work_rb: Arc<Mutex<ToHostWorkRb>>,
@@ -65,11 +64,11 @@ pub(crate) struct HardwareDeviceInner<Strat:SchedulerStrategy> {
     phys_addr_resolver: PhysAddrResolver,
 }
 
-impl<Strat:SchedulerStrategy> HardwareDevice<Strat> {
+impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn new<P: AsRef<Path>>(
         device_path: P,
-        scheduler: Arc<DescriptorScheduler<Strat>>,
+        strategy: Strat,
     ) -> Result<Self, DeviceError> {
         let csr_cli =
             CsrClient::new(device_path).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -106,6 +105,10 @@ impl<Strat:SchedulerStrategy> HardwareDevice<Strat> {
 
         let phys_addr_resolver =
             PhysAddrResolver::new().map_err(|e| DeviceError::Device(e.to_string()))?;
+        let scheduler = Arc::new(DescriptorScheduler::new(
+            strategy,
+            Mutex::new(to_card_work_rb),
+        ));
         let dev = Self(Arc::new(HardwareDeviceInner {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb).into(),
             to_host_ctrl_rb: Mutex::new(to_host_ctrl_rb).into(),
@@ -154,28 +157,11 @@ impl<Strat:SchedulerStrategy> HardwareDevice<Strat> {
             constants::CSR_ADDR_META_REPORT_QUEUE_ADDR_HIGH,
             (pa_of_to_host_work_rb_addr >> 32) as u32,
         )?;
-
-        let _: std::thread::JoinHandle<_> = spawn(move || {
-            let rb = Mutex::new(to_card_work_rb);
-            loop {
-                match scheduler.pop_batch() {
-                    Ok((result, _n)) => {
-                        if let Err(e) = push_to_card_work_rb_desc(&rb, result) {
-                            error!("push to to_card_work_rb failed: {:?}", e);
-                        }
-                    }
-                    Err(e) => {
-                        error!("scheduler pop failed:{:?}", e);
-                    }
-                }
-            }
-        });
-
         Ok(dev)
     }
 }
 
-impl<Strat:SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
+impl<Strat: SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>> {
         Arc::<Mutex<ToCardCtrlRb>>::clone(&self.0.to_card_ctrl_rb)
     }
@@ -215,7 +201,7 @@ impl<Strat:SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
 impl ToCardRb<ToCardCtrlRbDesc> for Mutex<ToCardCtrlRb> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         let mut guard = self.lock();
-        let mut writer = guard.write()?;
+        let mut writer = guard.write();
 
         let mem = writer.next().ok_or(DeviceError::Overflow)?;
         debug!("{:?}", &desc);
@@ -243,7 +229,7 @@ fn push_to_card_work_rb_desc(
     descs: [Option<SealedDesc>; POP_BATCH_SIZE],
 ) -> Result<(), DeviceError> {
     let mut guard = rb.lock();
-    let mut writer = guard.write()?;
+    let mut writer = guard.write();
     for desc in descs.into_iter().flatten() {
         let desc = desc.into_desc();
         debug!("driver send to card SQ: {:?}", &desc);

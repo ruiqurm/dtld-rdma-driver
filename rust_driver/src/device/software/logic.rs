@@ -3,11 +3,7 @@ use thiserror::Error;
 
 use crate::{
     device::{
-        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostCtrlRbDescCommon,
-        ToHostWorkRbDesc, ToHostWorkRbDescAck,
-        ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode,
-        ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType,
-        ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm,
+        CtrlRbDescOpcode, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostCtrlRbDescCommon, ToHostWorkRbDesc, ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescOpcode, ToHostWorkRbDescRead, ToHostWorkRbDescStatus, ToHostWorkRbDescTransType, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType, ToHostWorkRbDescWriteWithImm
     },
     types::{MemAccessTypeFlag, Msn, Pmtu, Psn, QpType},
     utils::get_first_packet_max_length,
@@ -289,6 +285,7 @@ impl BlueRDMALogic {
 
     #[allow(clippy::unwrap_in_result)]
     pub(crate) fn update(&self, desc: ToCardCtrlRbDesc) -> Result<(), BlueRdmaLogicError> {
+        let opcode = to_host_ctrl_opcode(&desc);
         let (op_id,is_succ) = match desc {
             ToCardCtrlRbDesc::QpManagement(desc) => {
                 let mut qp_table = self.qp_table.write()?;
@@ -353,7 +350,7 @@ impl BlueRDMALogic {
             ToCardCtrlRbDesc::SetRawPacketReceiveMeta(desc) => {
                 (desc.common.op_id,true)
             }
-            ToCardCtrlRbDesc::SetQpNormal(desc) => {
+            ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) => {
                 (desc.common.op_id,true)
             }
         };
@@ -361,6 +358,7 @@ impl BlueRDMALogic {
             common: ToHostCtrlRbDescCommon{
                 op_id,
                 is_success: is_succ,
+                opcode
             },
         };  
         #[allow(clippy::unwrap_used)] // if the pipe in software is broken, we should panic.
@@ -518,6 +516,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         msn: crate::types::Msn::new(header.msn as u16), // msn is u16 currently. So we can just truncate it.
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
+                        code: ToHostWorkRbDescAethCode::Ack,
                     }),
                     ToHostWorkRbDescAethCode::Rnr
                     | ToHostWorkRbDescAethCode::Rsvd
@@ -534,6 +533,17 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
         {
             self.to_host_data_descriptor_queue.send(descriptor).unwrap();
         }
+    }
+}
+
+fn to_host_ctrl_opcode(desc : &ToCardCtrlRbDesc) -> CtrlRbDescOpcode {
+    match desc {
+        ToCardCtrlRbDesc::UpdateMrTable(_) => CtrlRbDescOpcode::UpdateMrTable,
+        ToCardCtrlRbDesc::UpdatePageTable(_) => CtrlRbDescOpcode::UpdatePageTable,
+        ToCardCtrlRbDesc::QpManagement(_) => CtrlRbDescOpcode::QpManagement,
+        ToCardCtrlRbDesc::SetNetworkParam(_) => CtrlRbDescOpcode::SetNetworkParam,
+        ToCardCtrlRbDesc::SetRawPacketReceiveMeta(_) => CtrlRbDescOpcode::SetRawPacketReceiveMeta,
+        ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(_) => CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint,
     }
 }
 

@@ -7,7 +7,7 @@ use log::{error,info};
 
 use crate::{
     device::{
-        ToHostCtrlRbDesc, ToHostRb
+        CtrlRbDescOpcode, ToHostCtrlRbDesc, ToHostRb
     },
     op_ctx::CtrlOpCtx, ThreadSafeHashmap,
 };
@@ -49,7 +49,11 @@ impl ControlPollerContext {
                     return;
                 }
             };
-            ctx.handle_ctrl_desc_resp(&desc);
+            if matches!(desc.common.opcode,CtrlRbDescOpcode::UpdateErrorPsnRecoverPoint){
+                
+            }else{
+                ctx.handle_ctrl_desc_resp(&desc);
+            }
         }
     }
 

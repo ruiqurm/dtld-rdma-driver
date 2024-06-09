@@ -112,8 +112,8 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     /// Get space for writing `desc_cnt` descriptors to the ring buffer.
     pub(super) fn write(
         &mut self,
-    ) -> Result<RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>, DeviceError> {
-        Ok(RingbufWriter {
+    ) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
+        RingbufWriter {
             buf: self
                 .buf
                 .lock(),
@@ -121,7 +121,7 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
             tail: &mut self.tail,
             written_cnt: 0,
             proxy: &self.proxy,
-        })
+        }
     }
 }
 
@@ -337,7 +337,7 @@ mod test {
         });
         let buffer = Buffer::new(4096, false).unwrap();
         let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
-        let mut writer = ringbuf.write().unwrap();
+        let mut writer = ringbuf.write();
 
         for i in 0..128 {
             let desc = writer.next().unwrap();
@@ -351,7 +351,7 @@ mod test {
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 128);
         // test if blocking?
 
-        let mut writer = ringbuf.write().unwrap();
+        let mut writer = ringbuf.write();
         for i in 0..=256 {
             let desc = writer.next().unwrap();
             desc.fill(i as u8);

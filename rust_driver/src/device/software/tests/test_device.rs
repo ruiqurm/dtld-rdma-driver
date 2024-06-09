@@ -118,7 +118,6 @@ fn test_loopback_software_device_write_and_read() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q2 = work_receiver.recv().unwrap();
@@ -131,7 +130,6 @@ fn test_loopback_software_device_write_and_read() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         // assert!(work_receiver.receiver_count() == 0);
@@ -180,7 +178,6 @@ fn test_loopback_software_device_write_and_read() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q2 = work_receiver.recv().unwrap();
@@ -193,7 +190,6 @@ fn test_loopback_software_device_write_and_read() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q3 = work_receiver.recv().unwrap();
@@ -206,7 +202,6 @@ fn test_loopback_software_device_write_and_read() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         // assert!(work_receiver.receiver_count() == 0);
@@ -226,8 +221,7 @@ fn test_loopback_software_device_write_and_read() {
 #[test]
 #[serial]
 fn test_loopback_software_device_with_scheudler() {
-    let scheduler = DescriptorScheduler::new(RoundRobinStrategy::new()).into();
-    let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,scheduler).unwrap();
+    let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,RoundRobinStrategy::new()).unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;
@@ -311,7 +305,6 @@ fn test_loopback_software_device_with_scheudler() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q2 = to_host_work_rb.pop().unwrap();
@@ -324,7 +317,6 @@ fn test_loopback_software_device_with_scheudler() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         // assert!(device.get_to_host_descriptor_queue().is_empty());
@@ -374,7 +366,6 @@ fn test_loopback_software_device_with_scheudler() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q2 = to_host_work_rb.pop().unwrap();
@@ -387,7 +378,6 @@ fn test_loopback_software_device_with_scheudler() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         let q3 = to_host_work_rb.pop().unwrap();
@@ -400,7 +390,6 @@ fn test_loopback_software_device_with_scheudler() {
             ToHostWorkRbDesc::Read(_)
             | ToHostWorkRbDesc::WriteWithImm(_)
             | ToHostWorkRbDesc::Ack(_)
-            | ToHostWorkRbDesc::Nack(_)
             | ToHostWorkRbDesc::Raw(_) => panic!("unexpected descriptor"),
         }
         // assert!(device.get_to_host_descriptor_queue().is_empty());
