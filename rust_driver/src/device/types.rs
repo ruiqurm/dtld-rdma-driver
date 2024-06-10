@@ -193,7 +193,7 @@ pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) sge3: Option<DescSge>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug,Default)]
 pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,

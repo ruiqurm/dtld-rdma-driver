@@ -1,4 +1,4 @@
-use log::{debug, error};
+use log::debug;
 use parking_lot::Mutex;
 
 use crate::{utils::Buffer, SchedulerStrategy};
@@ -10,11 +10,10 @@ use self::rpc_cli::{
 use super::{
     constants,
     ringbuf::Ringbuf,
-    scheduler::{SealedDesc, POP_BATCH_SIZE},
     DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
     ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
-use std::{fmt::Debug, net::SocketAddr, sync::Arc, thread::spawn};
+use std::{fmt::Debug, net::SocketAddr, sync::Arc};
 
 use super::scheduler::DescriptorScheduler;
 

@@ -14,7 +14,9 @@ use log::{debug, error};
 use parking_lot::Mutex;
 
 use super::{
-    ringbuf::{CsrWriterProxy, Ringbuf}, software::BlueRDMALogic, DescSge, DeviceError, SoftwareDevice, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon
+    ringbuf::{CsrWriterProxy, Ringbuf},
+    software::BlueRDMALogic,
+    DescSge, DeviceError, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
 };
 
 use crate::{
@@ -175,10 +177,13 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                 }
 
                 if let Ok((descs, len)) = strategy.pop_batch() {
+                    if len == 0 {
+                        continue;
+                    }
                     for desc in descs.into_iter().flatten() {
                         let desc = desc.into_desc();
                         debug!("driver send to card SQ: {:?}", &desc);
-                        if let Err(e) = device.send(desc){
+                        if let Err(e) = device.send(desc) {
                             error!("failed to send descriptor: {:?}", e);
                         }
                     }
@@ -192,14 +197,6 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
             receiver,
             stop_flag,
         }
-    }
-
-    pub(crate) fn pop_batch(
-        &self,
-    ) -> Result<([Option<SealedDesc>; POP_BATCH_SIZE], u32), DeviceError> {
-        self.strategy
-            .pop_batch()
-            .map_err(|e| DeviceError::Scheduler(e.to_string()))
     }
 }
 
@@ -439,17 +436,23 @@ fn recalculate_psn(raddr: u64, pmtu: Pmtu, total_len: u32, base_psn: Psn) -> Psn
 #[cfg(test)]
 mod test {
     use std::net::Ipv4Addr;
+    use std::slice::from_raw_parts;
+    use std::sync::atomic::{AtomicU32, Ordering};
     use std::thread::sleep;
     use std::{collections::LinkedList, sync::Arc};
 
     use eui48::MacAddress;
+    use parking_lot::lock_api::Mutex;
 
+    use crate::device::ringbuf::{CsrWriterProxy, Ringbuf};
     use crate::device::scheduler::SCHEDULER_SIZE;
     use crate::device::{
-        DescSge, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
+        DescSge, DeviceError, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
+        ToCardWorkRbDescWrite, ToCardWorkRbDescWriteWithImm,
     };
 
     use crate::types::{Key, Msn, Psn, Qpn, WorkReqSendFlag};
+    use crate::utils::Buffer;
 
     use super::{SGList, MAX_SGL_LENGTH};
 
@@ -516,75 +519,68 @@ mod test {
         vec
     }
 
-    // #[test]
-    // fn test_scheduler() {
-    //     let va = 29 * 1024;
-    //     let length = 1024 * 36; // should cut into 3 segments: 29k - 32k, 32k - 64k, 64k-65k
-    //     let strategy = super::round_robin::RoundRobinStrategy::new();
-    //     let scheduler = Arc::new(super::DescriptorScheduler::new(strategy));
-    //     let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
-    //         common: ToCardWorkRbDescCommon {
-    //             total_len: length,
-    //             raddr: va,
-    //             rkey: Key::default(),
-    //             dqp_ip: Ipv4Addr::LOCALHOST,
-    //             dqpn: Qpn::new(2),
-    //             mac_addr: MacAddress::default(),
-    //             pmtu: crate::types::Pmtu::Mtu4096,
-    //             flags: WorkReqSendFlag::empty(),
-    //             qp_type: crate::types::QpType::Rc,
-    //             psn: Psn::new(0),
-    //             msn: Msn::new(0x27),
-    //         },
-    //         is_last: true,
-    //         is_first: true,
-    //         sge0: DescSge {
-    //             addr: 0,
-    //             len: length,
-    //             key: Key::new(3),
-    //         },
-    //         sge1: None,
-    //         sge2: None,
-    //         sge3: None,
-    //     })
-    //     .into();
-    //     scheduler.push(desc).unwrap();
-    //     // schedule the thread;
-    //     sleep(std::time::Duration::from_millis(1));
-    //     let (descs, _n) = scheduler.pop_batch().unwrap();
-    //     let (desc1, desc2, desc3) = (descs[0].clone(), descs[1].clone(), descs[2].clone());
-    //     assert!(desc1.is_some());
-    //     let desc1 = match *desc1.unwrap().0 {
-    //         ToCardWorkRbDesc::Write(req) => req,
-    //         ToCardWorkRbDesc::Read(_)
-    //         | ToCardWorkRbDesc::WriteWithImm(_)
-    //         | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
-    //     };
-    //     assert_eq!(desc1.common.total_len, length);
-    //     assert!(desc1.is_first);
-    //     assert!(!desc1.is_last);
+    #[derive(Default, Debug, Clone)]
+    struct Proxy(Arc<ProxyInner>);
 
-    //     let desc2 = match *desc2.unwrap().0 {
-    //         ToCardWorkRbDesc::Write(req) => req,
-    //         ToCardWorkRbDesc::Read(_)
-    //         | ToCardWorkRbDesc::WriteWithImm(_)
-    //         | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
-    //     };
-    //     assert_eq!(desc2.common.total_len as usize, SCHEDULER_SIZE);
-    //     assert!(!desc2.is_first);
-    //     assert!(!desc2.is_last);
+    #[derive(Default, Debug)]
+    struct ProxyInner {
+        head: AtomicU32,
+        tail: AtomicU32,
+    }
+    impl CsrWriterProxy for Proxy {
+        fn write_head(&self, data: u32) -> Result<(), DeviceError> {
+            self.0.head.store(data, Ordering::Release);
+            Ok(())
+        }
+        fn read_tail(&self) -> Result<u32, DeviceError> {
+            Ok(self.0.tail.load(Ordering::Acquire))
+        }
+    }
+    #[test]
+    fn test_scheduler() {
+        let va = 29 * 1024;
+        let length = 1024 * 36; // should cut into 3 segments: 29k - 32k, 32k - 64k, 64k-65k
+        let strategy = super::round_robin::RoundRobinStrategy::new();
+        let buffer = Buffer::new(4096, false).unwrap();
+        let proxy = Proxy::default();
+        let ringbuf = Mutex::new(Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy,ringbuf));
+        let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+            common: ToCardWorkRbDescCommon {
+                total_len: length,
+                raddr: va,
+                dqpn: Qpn::new(2),
+                pmtu: crate::types::Pmtu::Mtu4096,
+                flags: WorkReqSendFlag::empty(),
+                msn: Msn::new(0x27),
+                ..Default::default()
+            },
+            sge0: DescSge {
+                addr: 0,
+                len: length,
+                key: Key::new(3),
+            },
+            ..Default::default()
+        }).into();
+        scheduler.push(desc).unwrap();
 
-    //     let desc3 = match *desc3.unwrap().0 {
-    //         ToCardWorkRbDesc::Write(req) => req,
-    //         ToCardWorkRbDesc::Read(_)
-    //         | ToCardWorkRbDesc::WriteWithImm(_)
-    //         | ToCardWorkRbDesc::ReadResp(_) => unreachable!(),
-    //     };
-    //     assert_eq!(
-    //         desc3.common.total_len as usize,
-    //         (length as usize) - (SCHEDULER_SIZE - va as usize) - SCHEDULER_SIZE
-    //     );
-    //     assert!(!desc3.is_first);
-    //     assert!(desc3.is_last);
-    // }
+        sleep(std::time::Duration::from_millis(10));
+        let head = proxy.0.head.load(Ordering::Acquire);
+        assert_eq!(head, 9); // 3 descriptors, each has 3 segments
+        // we do not check it accuracy here
+
+        // test a raw packet
+        let desc = ToCardWorkRbDesc::WriteWithImm(ToCardWorkRbDescWriteWithImm{
+            common: ToCardWorkRbDescCommon{
+                total_len: 66,
+                qp_type: crate::types::QpType::RawPacket,
+                ..Default::default()
+            },
+            ..Default::default()
+        }).into();
+        scheduler.push(desc).unwrap();
+        sleep(std::time::Duration::from_millis(10));
+        let head = proxy.0.head.load(Ordering::Acquire);
+        assert_eq!(head, 9 + 3); // 1 descriptor, which has 3 segments
+    }
 }

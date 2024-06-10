@@ -150,12 +150,12 @@ use crate::{
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use derive_builder::Builder;
 use device::{
-    scheduler::DescriptorScheduler, ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
+    ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
 use eui48::MacAddress;
 use flume::unbounded;
 use nic::NicInterface;
-use op_ctx::{CtrlOpCtx, OpCtx, ReadOpCtx, WriteOpCtx};
+use op_ctx::{CtrlOpCtx, OpCtx};
 use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
@@ -197,6 +197,10 @@ mod nic;
 mod retry;
 /// utility functions
 mod utils;
+
+/// unit test
+#[cfg(test)]
+mod tests;
 
 pub use crate::{mr::Mr, pd::Pd};
 pub use device::scheduler::{SchedulerStrategy,SealedDesc,POP_BATCH_SIZE,BatchDescs};
@@ -362,7 +366,7 @@ impl Device {
         rkey: Key,
         flags: WorkReqSendFlag,
         sge0: Sge,
-        is_read:bool)-> Result<WriteOpCtx, Error>{
+        is_read:bool)-> Result<OpCtx<()>, Error>{
             let (common,key) = {
                 let total_len = sge0.len;
                 let qp_guard = self.0.qp_table.read();
@@ -407,7 +411,7 @@ impl Device {
                 .build()?;
             self.send_work_desc(desc)?;
     
-            let ctx = WriteOpCtx::new_running();
+            let ctx = OpCtx::new_running();
     
             self.0
                 .user_op_ctx_map
@@ -432,7 +436,7 @@ impl Device {
         rkey: Key,
         flags: WorkReqSendFlag,
         sge0: Sge
-    ) -> Result<WriteOpCtx, Error> {
+    ) -> Result<OpCtx<()>, Error> {
         self.write_or_read(dqpn,raddr,rkey,flags,sge0,false)
     }
 
@@ -452,7 +456,7 @@ impl Device {
         rkey: Key,
         flags: WorkReqSendFlag,
         sge: Sge,
-    ) -> Result<ReadOpCtx, Error> {
+    ) -> Result<OpCtx<()>, Error> {
         self.write_or_read(dqpn,raddr,rkey,flags,sge,true)
     }
 
@@ -606,7 +610,7 @@ impl Device {
             ipaddr: network.ipaddr,
             macaddr: network.macaddr,
         });
-        let ctx = self.do_ctrl_op(op_id, desc)?;
+        let ctx = self.send_ctrl_desc(desc)?;
         let is_success = ctx.wait_result()?.ok_or_else(||Error::SetCtxResultFailed)?;
         if !is_success {
             return Err(Error::DeviceReturnFailed("Network param"));
@@ -621,7 +625,7 @@ pub(crate) trait WorkDescriptorSender: Send + Sync {
 }
 
 pub(crate) trait CtrlDescriptorSender: Send + Sync {
-    fn send_ctrl_desc(&self, desc_builder: ToCardCtrlRbDesc) -> Result<u32, Error>;
+    fn send_ctrl_desc(&self, desc_builder: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error>;
 }
 
 impl WorkDescriptorSender for Device {
@@ -636,7 +640,7 @@ impl WorkDescriptorSender for Device {
 }
 
 impl CtrlDescriptorSender for Device {
-    fn send_ctrl_desc(&self, mut desc: ToCardCtrlRbDesc) -> Result<u32, Error> {
+    fn send_ctrl_desc(&self, mut desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, Error> {
         let id = self.get_ctrl_op_id();
         desc.set_id(id);
         self.0
@@ -644,7 +648,13 @@ impl CtrlDescriptorSender for Device {
             .to_card_ctrl_rb()
             .push(desc)
             .map_err(|_| Error::DeviceBusy)?;
-        Ok(id)
+        let mut ctx = self.0.ctrl_op_ctx_map.write();
+        let ctrl_ctx = CtrlOpCtx::new_running();
+
+        if ctx.insert(id, ctrl_ctx.clone()).is_some() {
+            return Err(Error::CreateOpCtxFailed);
+        }
+        Ok(ctrl_ctx)
     }
 }
 
