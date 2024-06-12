@@ -193,7 +193,7 @@ pub(crate) struct ToCardWorkRbDescWrite {
     pub(crate) sge3: Option<DescSge>,
 }
 
-#[derive(Clone, Debug,Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) common: ToCardWorkRbDescCommon,
     pub(crate) is_last: bool,
@@ -205,7 +205,7 @@ pub(crate) struct ToCardWorkRbDescWriteWithImm {
     pub(crate) sge3: Option<DescSge>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) status: ToHostWorkRbDescStatus,
     pub(crate) trans: ToHostWorkRbDescTransType,
@@ -214,7 +214,7 @@ pub(crate) struct ToHostWorkRbDescCommon {
     pub(crate) expected_psn: Psn,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ToHostWorkRbDescRead {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) len: u32,
@@ -224,7 +224,7 @@ pub(crate) struct ToHostWorkRbDescRead {
     pub(crate) rkey: Key,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ToHostWorkRbDescWriteOrReadResp {
     pub(crate) common: ToHostWorkRbDescCommon,
     pub(crate) is_read_resp: bool,
@@ -261,10 +261,12 @@ pub(crate) struct ToHostWorkRbDescWriteWithImm {
     pub(crate) key: Key,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
+    #[allow(unused)]
     pub(crate) msn: Msn,
+    #[allow(unused)]
     pub(crate) psn: Psn,
     pub(crate) code: ToHostWorkRbDescAethCode,
     #[allow(unused)] // used in nack checking
@@ -296,7 +298,7 @@ impl From<Sge> for DescSge {
     }
 }
 
-#[derive(TryFromPrimitive, Debug)]
+#[derive(TryFromPrimitive, Debug, Clone)]
 #[repr(u8)]
 pub(crate) enum ToHostWorkRbDescStatus {
     Normal = 1,
@@ -337,7 +339,7 @@ impl Default for ToHostWorkRbDescTransType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ToHostWorkRbDescWriteType {
     First,
     Middle,
@@ -497,6 +499,12 @@ pub(crate) enum ToHostWorkRbDescAethCode {
     Rnr = 0b01,
     Rsvd = 0b10,
     Nak = 0b11,
+}
+
+impl Default for ToHostWorkRbDescAethCode {
+    fn default() -> Self {
+        Self::Rsvd
+    }
 }
 
 impl ToCardCtrlRbDesc {
@@ -1106,7 +1114,7 @@ impl ToHostWorkRbDesc {
                 ))
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (last_psn, msn_in_ack, value, code) =
+                let (_last_psn, msn_in_ack, value, code) =
                     Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
                 Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                     common,

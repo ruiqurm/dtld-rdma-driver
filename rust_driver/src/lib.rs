@@ -506,7 +506,6 @@ impl Device {
         let ctrl_desc_poller = ControlPoller::new(ctrl_thread_ctx);
         self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
 
-        // enable responser module
         let use_hugepage = self.0.adaptor.use_hugepage();
         let mut buf = Buffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
         let ack_buf = self.init_buf(&mut buf,ACKNOWLEDGE_BUFFER_SIZE)?;

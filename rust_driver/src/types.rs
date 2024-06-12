@@ -136,6 +136,7 @@ impl ThreeBytesStruct {
     const WIDTH: usize = 24;
     const MASK: u32 = u32::MAX >> (32 - Self::WIDTH);
     const BORDER: u32 = Self::MASK + 1;
+    #[cfg(test)]
     pub(crate) const MAX_VALUE : u32 = Self::MASK;
 
     /// Create a new `ThreeBytesStruct` with the given value.

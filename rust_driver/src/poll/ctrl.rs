@@ -61,6 +61,9 @@ impl ControlPollerContext {
         let ctx_map = self.ctrl_op_ctx_map.read();
 
         if let Some(ctx) = ctx_map.get(&desc.common.op_id) {
+            if let Some(handler) = ctx.take_handler(){
+                handler(desc.common.is_success);
+            }
             if let Err(e) = ctx.set_result(desc.common.is_success) {
                 error!("Set result failed {:?}", e);
             }

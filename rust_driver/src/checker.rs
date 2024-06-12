@@ -19,12 +19,16 @@ use crate::{
     qp::QpContext,
     responser::{make_ack, make_read_resp},
     types::{Msn, Pmtu, Psn, Qpn},
+    utils::calculate_packet_cnt,
     CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
 use flume::{Receiver, TryRecvError};
 
 use log::{error, info};
+use parking_lot::RwLock;
+
+const MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
 
 #[derive(Debug)]
 pub(crate) struct PacketChecker {
@@ -85,20 +89,23 @@ fn working_thread(ctx: &mut PacketCheckerContext, stop_flag: &AtomicBool) {
 }
 
 impl PacketCheckerContext {
-    fn handle_check_event(&mut self, event: PacketCheckEvent) {
+    pub(crate) fn handle_check_event(&self, event: PacketCheckEvent) {
         match event {
             PacketCheckEvent::Write(event) => {
                 let qpn = event.common.dqpn;
                 let expected_psn = event.common.expected_psn;
                 let psn = event.psn;
-                if expected_psn != psn {
-                    self.enter_qp_error_status(qpn, expected_psn, psn);
-                }
-                let (is_normal, pmtu) = if let Some(qp) = self.qp_table.read().get(&qpn) {
+                let enter_error = expected_psn != psn;
+                let (mut is_normal, pmtu) = if let Some(qp) = self.qp_table.read().get(&qpn) {
                     (qp.status.load(Ordering::Acquire).is_normal(), qp.pmtu)
                 } else {
                     return;
                 };
+                if is_normal && enter_error {
+                    // ensure only enter error status once
+                    self.enter_qp_error_status(qpn, pmtu, expected_psn, psn);
+                    is_normal = false;
+                }
                 if is_normal {
                     self.handle_qp_normal(&event, pmtu);
                 } else {
@@ -107,7 +114,7 @@ impl PacketCheckerContext {
             }
             PacketCheckEvent::ReadReq(event) => {
                 // convert read req directly
-                if let Ok(desc) = make_read_resp(&self.qp_table, &event){
+                if let Ok(desc) = make_read_resp(&self.qp_table, &event) {
                     if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
                         error!("Send read resp failed {:?}", e);
                     }
@@ -118,25 +125,13 @@ impl PacketCheckerContext {
                 let qpn = event.common.dqpn;
                 let msn = event.common.msn;
                 if matches!(code, ToHostWorkRbDescAethCode::Ack) {
-                    self.wakeup_user_op_ctx(qpn, msn);
+                    wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 }
             }
         }
     }
 
-    #[inline]
-    fn wakeup_user_op_ctx(&self, qpn: Qpn, msn: Msn) {
-        if let Some(ctx) = self.user_op_ctx_map.read().get(&(qpn, msn)) {
-            if let Err(e) = ctx.set_result(()) {
-                error!("Set result failed {:?}", e);
-            }
-        } else {
-            error!("No op ctx found for {:?}", (qpn, msn));
-        }
-    }
-
-    #[allow(unused_results)]
-    fn handle_qp_normal(&mut self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
+    fn handle_qp_normal(&self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
         let qpn = event.common.dqpn;
         let msn = event.common.msn;
 
@@ -148,14 +143,16 @@ impl PacketCheckerContext {
             ToHostWorkRbDescWriteType::Last => {
                 self.recv_ctx_map.remove_ctx(qpn, msn);
                 if event.is_read_resp {
-                    self.wakeup_user_op_ctx(qpn, msn);
+                    wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 } else if !event.can_auto_ack {
                     self.send_ack(qpn, msn, event.psn);
                 }
             }
             ToHostWorkRbDescWriteType::Only => {
                 if event.is_read_resp {
-                    self.wakeup_user_op_ctx(qpn, msn);
+                    wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
+                } else if !event.can_auto_ack {
+                    self.send_ack(qpn, msn, event.psn);
                 }
             }
             ToHostWorkRbDescWriteType::Middle => {}
@@ -174,25 +171,47 @@ impl PacketCheckerContext {
     }
 
     // handle qp that out-of-order
-    fn handle_qp_ooo(&mut self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
+    fn handle_qp_ooo(&self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
         let qpn = event.common.dqpn;
         let msn = event.common.msn;
         let mut need_check_completed_or_try_recover = false;
         match event.write_type {
             ToHostWorkRbDescWriteType::First => {
-                let ctx = RecvContext::new_with_recvmap(event, u32::from(&pmtu));
+                let ctx = RecvContext::new_with_recvmap(event, pmtu);
                 self.recv_ctx_map.insert_ctx(qpn, msn, ctx, pmtu);
             }
             ToHostWorkRbDescWriteType::Middle | ToHostWorkRbDescWriteType::Last => {
+                // the qp contect must exist, for previously we have created inside enter_qp_error_status
+                let largest_psn_recved = self
+                    .recv_ctx_map
+                    .get_per_qp_ctx_mut(qpn)
+                    .unwrap()
+                    .largest_psn_recved
+                    .clone();
+                let recved_psn = event.psn;
+
                 if let Some(mut ctx) = self.recv_ctx_map.get_ctx_mut(qpn, msn) {
-                    ctx.recv_map.as_mut().unwrap().insert(event.psn);
+                    let expected_psn = event.common.expected_psn;
+                    let range = get_continous_range(largest_psn_recved, expected_psn);
+                    let recv_map = ctx.recv_map.as_mut().unwrap();
+                    if let Some(continous_range) = range {
+                        recv_map.insert(continous_range);
+                    }
+                    recv_map.insert((recved_psn, recved_psn));
                     need_check_completed_or_try_recover = true;
                 }
-                // otherwise, we ignore this packet
+                // otherwise, we ignore this packet,but we should record its psn
+                // the qp contect must exist, for previously we have created inside enter_qp_error_status
+                self.recv_ctx_map
+                    .get_per_qp_ctx_mut(qpn)
+                    .unwrap()
+                    .update_largest_psn_recved(recved_psn);
             }
             ToHostWorkRbDescWriteType::Only => {
                 if event.is_read_resp {
-                    self.wakeup_user_op_ctx(qpn, msn);
+                    wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
+                } else if !event.can_auto_ack {
+                    self.send_ack(qpn, msn, event.psn);
                 }
             }
         };
@@ -204,17 +223,18 @@ impl PacketCheckerContext {
     /// Check if corresponding msn is completed and try to recover the qp status
     fn check_completed_and_try_recover(&self, qpn: Qpn, msn: Msn) {
         let mut perqp_map = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap();
-        let (is_read_resp, is_completed, last_psn) = if let Some(ctx) = perqp_map.map.get_mut(&msn)
-        {
-            let recv_map = ctx.recv_map.as_ref().unwrap();
-            (
-                ctx.is_read_resp,
-                recv_map.is_complete(),
-                recv_map.last_psn(),
-            )
-        } else {
-            (false, false, Psn::default())
-        };
+        let (is_read_resp, is_completed, last_psn, recover_psn) =
+            if let Some(ctx) = perqp_map.map.get_mut(&msn) {
+                let recv_map = ctx.recv_map.as_ref().unwrap();
+                (
+                    ctx.is_read_resp,
+                    recv_map.is_complete(),
+                    recv_map.last_psn(),
+                    recv_map.try_get_recover_psn(),
+                )
+            } else {
+                (false, false, Psn::default(), None)
+            };
 
         // decrease borrow
         drop(perqp_map);
@@ -222,31 +242,28 @@ impl PacketCheckerContext {
         if is_completed {
             self.recv_ctx_map.remove_ctx(qpn, msn);
             if is_read_resp {
-                self.wakeup_user_op_ctx(qpn, msn);
+                wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
             } else {
                 // we should manually send ack the packet
                 self.send_ack(qpn, msn, last_psn);
             }
-        }
-
-        let perqp_map = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap();
-        // if there is only one recv context and it's in-order,
-        // we can try to recover the qp status
-        if perqp_map.map.len() <= 1 {
-            let (_, ctx) = perqp_map.map.iter().next().unwrap();
-            let recv_map = ctx.recv_map.as_ref().unwrap();
-            if let Some(recover_psn) = recv_map.try_get_recover_psn() {
-                let qp_table_ref = self.qp_table.clone();
-                try_recover(&self.ctrl_desc_sender, qp_table_ref, qpn, recover_psn);
-            }
-            if perqp_map.map.is_empty() {
-                self.recv_ctx_map.remove_per_qp_ctx(qpn);
+            let perqp_map_len = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap().map.len();
+            // if there is only one recv context and it's in-order,
+            // we can try to recover the qp status
+            if perqp_map_len <= 1 {
+                if let Some(recover_psn) = recover_psn {
+                    let qp_table_ref = self.qp_table.clone();
+                    try_recover(&self.ctrl_desc_sender, qp_table_ref, qpn, recover_psn);
+                }
+                if perqp_map_len == 0 {
+                    self.recv_ctx_map.remove_per_qp_ctx(qpn);
+                }
             }
         }
     }
 
     // store the error status in qp
-    fn enter_qp_error_status(&self, qpn: Qpn, expected_psn: Psn, recved_psn: Psn) {
+    fn enter_qp_error_status(&self, qpn: Qpn, pmtu: Pmtu, expected_psn: Psn, recved_psn: Psn) {
         if let Some(qp) = self.qp_table.read().get(&qpn) {
             // set flag
             qp.status
@@ -254,19 +271,33 @@ impl PacketCheckerContext {
         };
 
         // create context for all msn
-        if let Some(mut per_qp_map) = self.recv_ctx_map.get_per_qp_ctx_mut(qpn) {
-            let pmtu = u32::from(&per_qp_map.pmtu);
 
-            // we know that if we are previous in the normal status,
-            // we should have only one recv context
-            assert_eq!(per_qp_map.map.len(), 1);
+        let mut per_qp_map = self
+            .recv_ctx_map
+            .get_or_create_per_qp_ctx_mut(qpn, recved_psn, pmtu);
+        // we know that if we are previous in the normal status,
+        // we should have only one recv context
+        assert_eq!(per_qp_map.map.len(), 1);
 
-            // the expected_psn is the psn that we should receive **next**
-            let start_psn = expected_psn.wrapping_sub(1);
-            for (_, ctx) in per_qp_map.map.iter_mut() {
-                ctx.create_map_on_psn(start_psn, recved_psn, pmtu);
-            }
-        };
+        // the expected_psn is the psn that we should receive **next**
+        let start_psn = expected_psn.wrapping_sub(1);
+        for (_, ctx) in per_qp_map.map.iter_mut() {
+            ctx.create_map_on_psn(start_psn, recved_psn, pmtu);
+        }
+    }
+}
+
+fn wakeup_user_op_ctx(
+    user_op_ctx_map: &RwLock<HashMap<(Qpn, Msn), OpCtx<()>>>,
+    qpn: Qpn,
+    msn: Msn,
+) {
+    if let Some(ctx) = user_op_ctx_map.read().get(&(qpn, msn)) {
+        if let Err(e) = ctx.set_result(()) {
+            error!("Set result failed {:?}", e);
+        }
+    } else {
+        error!("No op ctx found for {:?}", (qpn, msn));
     }
 }
 
@@ -296,20 +327,31 @@ fn try_recover(
 }
 
 /// The RecvContextMap is a map from (Qpn, Msn) to RecvContext
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct RecvContextMap(RefCell<HashMap<Qpn, PerQpContextMap>>);
 
-struct PerQpContextMap {
+#[derive(Debug)]
+pub(crate) struct PerQpContextMap {
     pmtu: Pmtu,
     map: BTreeMap<Msn, RecvContext>,
+    largest_psn_recved: Psn,
 }
 
 impl PerQpContextMap {
-    fn new(pmtu: Pmtu) -> Self {
+    fn new(pmtu: Pmtu, largest_psn_recved: Psn) -> Self {
         Self {
             pmtu,
             map: BTreeMap::new(),
+            largest_psn_recved,
         }
+    }
+
+    pub(crate) fn update_largest_psn_recved(&mut self, psn: Psn) {
+        let diff = psn.wrapping_sub(self.largest_psn_recved.get()).get();
+        if diff >= MAX_WINDOW_SIZE {
+            return;
+        }
+        self.largest_psn_recved = psn;
     }
 }
 
@@ -321,7 +363,9 @@ impl RecvContextMap {
     fn insert_ctx(&self, qpn: Qpn, msn: Msn, ctx: RecvContext, qp_pmtu: Pmtu) {
         // the `per qp context` might leak here?
         let mut inner = self.0.borrow_mut();
-        let per_qp_map = inner.entry(qpn).or_insert(PerQpContextMap::new(qp_pmtu));
+        let per_qp_map = inner
+            .entry(qpn)
+            .or_insert(PerQpContextMap::new(qp_pmtu, Psn::default()));
         if per_qp_map.map.insert(msn, ctx).is_some() {
             log::error!("create duplicate msn({:?}) record for qpn={:?}", msn, qpn);
         }
@@ -341,7 +385,7 @@ impl RecvContextMap {
         let _dont_care = inner.remove(&qpn);
     }
 
-    fn get_ctx_mut(&self, qpn: Qpn, msn: Msn) -> Option<RefMut<RecvContext>> {
+    pub(crate) fn get_ctx_mut(&self, qpn: Qpn, msn: Msn) -> Option<RefMut<RecvContext>> {
         let should_ret_none = {
             let inner = self.0.borrow();
             if inner.contains_key(&qpn) {
@@ -358,8 +402,19 @@ impl RecvContextMap {
             }))
         }
     }
+    pub(crate) fn get_or_create_per_qp_ctx_mut(
+        &self,
+        qpn: Qpn,
+        psn: Psn,
+        pmtu: Pmtu,
+    ) -> RefMut<PerQpContextMap> {
+        let mut inner = self.0.borrow_mut();
+        let per_qp_map = inner.entry(qpn).or_insert(PerQpContextMap::new(pmtu, psn));
+        drop(inner);
+        RefMut::map(self.0.borrow_mut(), |inner| inner.get_mut(&qpn).unwrap())
+    }
 
-    fn get_per_qp_ctx_mut(&self, qpn: Qpn) -> Option<RefMut<PerQpContextMap>> {
+    pub(crate) fn get_per_qp_ctx_mut(&self, qpn: Qpn) -> Option<RefMut<PerQpContextMap>> {
         let should_ret_none = {
             let inner = self.0.borrow();
             inner.contains_key(&qpn)
@@ -374,13 +429,8 @@ impl RecvContextMap {
     }
 }
 
-#[inline]
-fn get_pkt_length(real_payload_len: u32, addr: u64, pmtu: u32) -> u32 {
-    let first_pkt_len = u64::from(pmtu) - (addr & (u64::from(pmtu) - 1));
-    (1 + (u64::from(real_payload_len) - first_pkt_len).div_ceil(u64::from(pmtu))) as u32
-}
-
-struct RecvContext {
+#[derive(Debug, Default)]
+pub(crate) struct RecvContext {
     is_read_resp: bool,
     start_addr: u64,
     len_in_bytes: u32,
@@ -389,10 +439,10 @@ struct RecvContext {
 }
 
 impl RecvContext {
-    pub(crate) fn new_with_recvmap(event: &ToHostWorkRbDescWriteOrReadResp, pmtu: u32) -> Self {
-        let pkt_len = get_pkt_length(event.len, event.addr, pmtu);
+    pub(crate) fn new_with_recvmap(event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) -> Self {
+        let pkt_len = calculate_packet_cnt(pmtu, event.addr, event.len);
         let mut map = Box::new(SlidingWindow::new(event.psn, pkt_len));
-        map.insert(event.psn);
+        map.insert((event.psn, event.psn));
         Self {
             is_read_resp: event.is_read_resp,
             start_addr: event.addr,
@@ -401,13 +451,23 @@ impl RecvContext {
             recv_map: Some(map),
         }
     }
-    pub(crate) fn create_map_on_psn(&mut self, last_psn: Psn, recved_psn: Psn, pmtu: u32) {
-        let pkt_len = get_pkt_length(self.len_in_bytes, self.start_addr, pmtu);
-        let packet_remain = pkt_len - last_psn.wrapping_abs(self.start_psn) + 1;
-        let mut map = Box::new(SlidingWindow::new(last_psn, packet_remain));
-        map.insert(last_psn);
-        map.insert(recved_psn);
+
+    pub(crate) fn create_map_on_psn(
+        &mut self,
+        last_continous_psn: Psn,
+        recved_psn: Psn,
+        pmtu: Pmtu,
+    ) {
+        let pkt_len = calculate_packet_cnt(pmtu, self.start_addr, self.len_in_bytes);
+        let mut map = Box::new(SlidingWindow::new(self.start_psn, pkt_len));
+        map.insert((self.start_psn, last_continous_psn));
+        map.insert((recved_psn, recved_psn));
         self.recv_map = Some(map);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> Option<&SlidingWindow> {
+        self.recv_map.as_ref().map(|x| &**x)
     }
 }
 
@@ -424,41 +484,40 @@ impl From<&ToHostWorkRbDescWriteOrReadResp> for RecvContext {
 }
 
 #[derive(Debug)]
-struct SlidingWindow {
+pub(crate) struct SlidingWindow {
     intervals: BTreeMap<u32, u32>,
     start_psn: Psn,
-    recent_abs_psn: u32,
-    recent_rel_psn: Psn,
     num_of_packets: u32,
 }
 
 impl SlidingWindow {
-    const MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
-
     pub(crate) fn new(start: Psn, num_of_packets: u32) -> Self {
         Self {
             intervals: BTreeMap::new(),
             start_psn: start,
-            recent_rel_psn: start,
-            recent_abs_psn: 0,
             num_of_packets,
         }
     }
 
     #[allow(clippy::arithmetic_side_effects, clippy::unwrap_used)]
-    pub(crate) fn insert(&mut self, psn: Psn) {
+    pub(crate) fn insert(&mut self, (from, to): (Psn, Psn)) {
         if self.is_complete() {
             return;
         }
 
-        let diff = psn.wrapping_sub(self.recent_rel_psn.get()).get();
-        if diff >= Self::MAX_WINDOW_SIZE {
+        let diff = from.wrapping_sub(self.start_psn.get()).get();
+        if diff >= MAX_WINDOW_SIZE {
             return;
         }
-        let abs_psn = self.recent_abs_psn.wrapping_add(diff);
+        let abs_left = diff;
+        let diff = to.wrapping_sub(self.start_psn.get()).get();
+        if diff >= MAX_WINDOW_SIZE {
+            return;
+        }
+        let abs_right = diff;
 
         if self.intervals.is_empty() {
-            let _: Option<u32> = self.intervals.insert(abs_psn, abs_psn);
+            let _: Option<u32> = self.intervals.insert(abs_left, abs_right);
             return;
         }
         let mut merge_left = None;
@@ -466,28 +525,28 @@ impl SlidingWindow {
 
         if let Some((left_start, left_end)) = self
             .intervals
-            .range((Bound::Unbounded, Bound::Included(abs_psn)))
+            .range((Bound::Unbounded, Bound::Included(abs_left)))
             .next_back()
         {
-            if abs_psn >= *left_start && abs_psn <= *left_end {
+            if abs_left >= *left_start && abs_right <= *left_end {
                 return; // exist
             }
 
-            if left_end + 1 == abs_psn {
+            if abs_left <= left_end + 1 {
                 merge_left = Some((*left_start, *left_end));
             }
         }
 
         if let Some((right_start, right_end)) = self
             .intervals
-            .range((Bound::Included(abs_psn), Bound::Unbounded))
+            .range((Bound::Excluded(abs_left), Bound::Unbounded))
             .next()
         {
-            if abs_psn >= *right_start && abs_psn <= *right_end {
+            if abs_left >= *right_start && abs_right <= *right_end {
                 return; // exist
             }
 
-            if right_start - 1 == abs_psn {
+            if abs_right >= right_start - 1 {
                 merge_right = Some((*right_start, *right_end));
             }
         }
@@ -500,20 +559,15 @@ impl SlidingWindow {
             }
             (Some((left_start, _)), None) => {
                 let _: Option<u32> = self.intervals.remove(&left_start);
-                let _: Option<u32> = self.intervals.insert(left_start, abs_psn);
+                let _: Option<u32> = self.intervals.insert(left_start, abs_right);
             }
             (None, Some((right_start, right_end))) => {
                 let _: Option<u32> = self.intervals.remove(&right_start);
-                let _: Option<u32> = self.intervals.insert(abs_psn, right_end);
+                let _: Option<u32> = self.intervals.insert(abs_left, right_end);
             }
             (None, None) => {
-                let _: Option<u32> = self.intervals.insert(abs_psn, abs_psn);
+                let _: Option<u32> = self.intervals.insert(abs_left, abs_right);
             }
-        }
-        let (_start, end) = self.intervals.first_key_value().unwrap(); // safe to unwrap
-        if *end > self.recent_abs_psn {
-            self.recent_abs_psn = abs_psn;
-            self.recent_rel_psn = psn;
         }
     }
 
@@ -539,11 +593,17 @@ impl SlidingWindow {
         self.start_psn.wrapping_add(self.num_of_packets - 1)
     }
 
-    fn is_out_of_order(&self) -> bool {
+    pub(crate) fn is_out_of_order(&self) -> bool {
         !self.is_complete() && self.intervals.len() > 1
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_intervals_len(&self) -> usize {
+        self.intervals.len()
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) enum PacketCheckEvent {
     Write(ToHostWorkRbDescWriteOrReadResp),
     Ack(ToHostWorkRbDescAck),
@@ -574,10 +634,40 @@ impl Default for PacketCheckEvent {
     }
 }
 
+fn get_continous_range(largest_psn_recved: Psn, expected_psn: Psn) -> Option<(Psn, Psn)> {
+    let left = largest_psn_recved.wrapping_add(1);
+    let right = expected_psn.wrapping_sub(1);
+    if right.wrapping_sub(left.get()).get() <= MAX_WINDOW_SIZE {
+        Some((left, right))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
-    use crate::types::Psn;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread::{sleep, spawn},
+        time::Duration,
+    };
+
+    use parking_lot::{lock_api::RwLock, Mutex};
+
+    use crate::{
+        checker::get_continous_range,
+        device::ToCardCtrlRbDesc,
+        op_ctx::{CtrlOpCtx, OpCtx},
+        types::{Msn, Pmtu, Psn, Qpn},
+        CtrlDescriptorSender,
+    };
+
+    use super::{wakeup_user_op_ctx, RecvContext};
 
     #[test]
     fn test_sliding_window() {
@@ -589,12 +679,12 @@ mod tests {
             let mut window = super::SlidingWindow::new(Psn::new(start), n);
             for i in 0..n {
                 if i != miss {
-                    window.insert(Psn::new(i));
+                    window.insert((Psn::new(i), Psn::new(i)));
                 }
             }
             assert!(!window.is_complete());
             assert!(window.is_out_of_order());
-            window.insert(Psn::new(miss));
+            window.insert((Psn::new(miss), Psn::new(miss)));
             assert!(window.is_complete(), "miss={}", miss);
             assert!(!window.is_out_of_order());
         }
@@ -602,87 +692,168 @@ mod tests {
         {
             let mut window = super::SlidingWindow::new(Psn::new(start), n);
             for _ in 0..n {
-                window.insert(Psn::new(0));
+                window.insert((Psn::new(0), Psn::new(0)));
             }
             assert!(!window.is_complete());
         }
 
-        // test miss multiple,except one
-        for mod_num in [2u32, 3, 4] {
-            let mut window = super::SlidingWindow::new(Psn::new(start), n);
-            window.insert(Psn::new(0));
-            for i in 1..n {
-                if i % mod_num != 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
+        // insert range
+        {
+            let mut window = super::SlidingWindow::new(Psn::new(50), 20);
+            window.insert((Psn::new(50), Psn::new(68)));
             assert!(!window.is_complete());
-            assert!(window.is_out_of_order());
-            for i in 1..n {
-                if i % mod_num == 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
+            assert!(!window.is_out_of_order());
+            window.insert((Psn::new(66), Psn::new(69)));
             assert!(window.is_complete());
         }
 
-        // test miss multiple,except one
-        for mod_num in [2u32, 3, 4] {
-            let mut window = super::SlidingWindow::new(Psn::new(start), n);
-            window.insert(Psn::new(0));
-            for i in 1..n {
-                if i % mod_num != 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
+        // insert out of order range
+        {
+            let mut window = super::SlidingWindow::new(Psn::new(50), 20);
+            window.insert((Psn::new(50), Psn::new(59)));
+            assert!(!window.is_complete());
+            assert!(!window.is_out_of_order());
+            window.insert((Psn::new(59), Psn::new(62)));
+            assert!(!window.is_complete());
+            assert!(!window.is_out_of_order());
+            window.insert((Psn::new(65), Psn::new(68)));
             assert!(!window.is_complete());
             assert!(window.is_out_of_order());
-            for i in 1..n {
-                if i % mod_num == 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
-            assert!(window.is_complete());
-        }
-        // test reverse miss multiple,except one
-        for mod_num in [2u32, 3, 4] {
-            let mut window = super::SlidingWindow::new(Psn::new(start), n);
-            window.insert(Psn::new(0));
-            for i in 1..n {
-                if i % mod_num != 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
+            window.insert((Psn::new(50), Psn::new(64)));
             assert!(!window.is_complete());
-            assert!(window.is_out_of_order());
-            for i in (0..n).rev() {
-                if i % mod_num == 0 {
-                    window.insert(Psn::new(i));
-                }
-            }
+            assert!(!window.is_out_of_order());
+            window.insert((Psn::new(62), Psn::new(69)));
             assert!(window.is_complete());
         }
+
         // test cross border
-        let n = 20;
         {
             let base = Psn::new(Psn::MAX_VALUE - 10);
-            let mut window = super::SlidingWindow::new(base, n);
-            for i in 0..n - 1 {
-                let next = base.wrapping_add(i);
-                window.insert(next);
-                assert!(!window.is_complete());
-            }
-            window.insert(base.wrapping_add(n - 1));
+            let mut window = super::SlidingWindow::new(base, 20);
+            window.insert((base, base.wrapping_add(9))); //[0,9]
+            assert!(!window.is_complete());
+            assert!(!window.is_out_of_order());
+            window.insert((base.wrapping_add(9), base.wrapping_add(12))); // [9,12]
+            assert!(!window.is_complete());
+            assert!(!window.is_out_of_order());
+            window.insert((base.wrapping_add(15), base.wrapping_add(18))); // [15,18]
+            assert!(!window.is_complete());
+            assert!(window.is_out_of_order());
+            window.insert((base, base.wrapping_add(14))); // [0,14]
+            assert!(!window.is_complete());
+            assert!(!window.is_out_of_order());
+            window.insert((base.wrapping_add(12), base.wrapping_add(19))); // [12,19]
             assert!(window.is_complete());
         }
-
         // test outside range
         {
             let mut window = super::SlidingWindow::new(Psn::new(start), n);
-            window.insert(Psn::new(start));
+            window.insert((Psn::new(start), Psn::new(start)));
             assert_eq!(window.intervals.len(), 1);
-            window.insert(Psn::new(Psn::MAX_VALUE)); // not in range
+            window.insert((Psn::new(start), Psn::new(Psn::MAX_VALUE))); // not in range
+            assert_eq!(window.intervals.len(), 1);
+            window.insert((Psn::new(Psn::MAX_VALUE), Psn::new(start))); // not in range
             assert_eq!(window.intervals.len(), 1);
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct MockCtrlDescSender(Mutex<Vec<(ToCardCtrlRbDesc, CtrlOpCtx)>>);
+    impl CtrlDescriptorSender for MockCtrlDescSender {
+        fn send_ctrl_desc(&self, desc: ToCardCtrlRbDesc) -> Result<CtrlOpCtx, crate::Error> {
+            let ctx = CtrlOpCtx::new_running();
+            self.0.lock().push((desc, ctx.clone()));
+            Ok(ctx)
+        }
+    }
+
+    #[test]
+    fn test_try_recover() {
+        use std::collections::HashMap;
+
+        use crate::{
+            qp::{QpContext, QpStatus},
+            types::Qpn,
+        };
+        use parking_lot::lock_api::RwLock;
+
+        use super::try_recover;
+
+        let sender = Arc::new(MockCtrlDescSender::default());
+        let qpn = Qpn::new(123);
+        let qp_table = Arc::new(RwLock::new(HashMap::new()));
+        qp_table.write().insert(
+            qpn,
+            QpContext {
+                pd: crate::Pd { handle: 1 },
+                qpn,
+                status: QpStatus::OutOfOrder.into(),
+                ..Default::default()
+            },
+        );
+
+        let sender_clone: Arc<dyn CtrlDescriptorSender> = sender.clone();
+
+        try_recover(&sender_clone, qp_table.clone(), qpn, Psn::default());
+
+        assert_eq!(sender.0.lock().len(), 1);
+        let (desc, ctx) = sender.0.lock().pop().unwrap();
+        if let ToCardCtrlRbDesc::UpdateErrorPsnRecoverPoint(desc) = desc {
+            assert_eq!(desc.qpn, qpn);
+            assert_eq!(desc.recover_psn, Psn::default());
+        } else {
+            panic!("unexpected desc type");
+        }
+
+        let handler = ctx.take_handler().unwrap();
+        handler(true);
+        let guard = qp_table.read();
+        let status = guard
+            .get(&qpn)
+            .unwrap()
+            .status
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(matches!(status, QpStatus::Normal));
+    }
+
+    #[test]
+    fn test_wakeup_user_op_ctx() {
+        let user_op_ctx_map = RwLock::new(HashMap::new());
+        let qpn = Qpn::new(123);
+        let msn = Msn::new(0x123);
+        let ctx = OpCtx::new_running();
+        user_op_ctx_map.write().insert((qpn, msn), ctx.clone());
+        let flag = Arc::new(AtomicBool::new(false));
+        let clone_flag = flag.clone();
+        spawn(move || {
+            let _u = ctx.wait();
+            clone_flag.store(true, Ordering::Release);
+        });
+        wakeup_user_op_ctx(&user_op_ctx_map, qpn, msn);
+        sleep(Duration::from_millis(10));
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_recv_ctx() {
+        let mut per_qp_map = super::PerQpContextMap::new(Pmtu::default(), Psn::new(10));
+        per_qp_map.largest_psn_recved = Psn::new(10);
+        per_qp_map.update_largest_psn_recved(Psn::new(20));
+        assert_eq!(per_qp_map.largest_psn_recved, Psn::new(20));
+        per_qp_map.update_largest_psn_recved(Psn::new(0));
+        assert_eq!(per_qp_map.largest_psn_recved, Psn::new(20));
+        per_qp_map.update_largest_psn_recved(Psn::new(0));
+        assert_eq!(per_qp_map.largest_psn_recved, Psn::new(20));
+
+
+        let recv_ctx = RecvContext::default();        
+        let r = get_continous_range(Psn::new(10), Psn::new(20));
+        assert_eq!(r, Some((Psn::new(11), Psn::new(19))));
+        let r = get_continous_range(Psn::new(10), Psn::new(11));
+        assert_eq!(r, None);
+        let r = get_continous_range(Psn::new(10), Psn::new(10));
+        assert_eq!(r, None);
+        let r = get_continous_range(Psn::new(10), Psn::new(9));
+        assert_eq!(r, None);
     }
 }
