@@ -2,10 +2,9 @@ use std::{
     error::Error,
     net::Ipv4Addr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::AtomicBool,
         Arc,
     },
-    thread::{spawn, JoinHandle},
 };
 
 use flume::{unbounded, Receiver};

@@ -13,7 +13,7 @@ use self::{
 use super::{
     constants,
     ringbuf::Ringbuf,
-    scheduler::{DescriptorScheduler, SealedDesc, POP_BATCH_SIZE},
+    scheduler::DescriptorScheduler,
     DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
     ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
@@ -198,12 +198,13 @@ impl<Strat: SchedulerStrategy> DeviceAdaptor for HardwareDevice<Strat> {
     }
 }
 
+#[allow(clippy::unwrap_used,clippy::unwrap_in_result)]
 impl ToCardRb<ToCardCtrlRbDesc> for Mutex<ToCardCtrlRb> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         let mut guard = self.lock();
         let mut writer = guard.write();
 
-        let mem = writer.next().ok_or(DeviceError::Overflow)?;
+        let mem = writer.next().unwrap(); // If blockly write desc fail, it should panic
         debug!("{:?}", &desc);
         desc.write(mem);
 
@@ -224,27 +225,6 @@ impl ToHostRb<ToHostCtrlRbDesc> for Mutex<ToHostCtrlRb> {
     }
 }
 
-fn push_to_card_work_rb_desc(
-    rb: &Mutex<ToCardWorkRb>,
-    descs: [Option<SealedDesc>; POP_BATCH_SIZE],
-) -> Result<(), DeviceError> {
-    let mut guard = rb.lock();
-    let mut writer = guard.write();
-    for desc in descs.into_iter().flatten() {
-        let desc = desc.into_desc();
-        debug!("driver send to card SQ: {:?}", &desc);
-
-        let desc_cnt = desc.serialized_desc_cnt();
-        desc.write_0(writer.next().ok_or(DeviceError::Overflow)?);
-        desc.write_1(writer.next().ok_or(DeviceError::Overflow)?);
-        desc.write_2(writer.next().ok_or(DeviceError::Overflow)?);
-
-        if desc_cnt == 4 {
-            desc.write_3(writer.next().ok_or(DeviceError::Overflow)?);
-        }
-    }
-    Ok(())
-}
 
 impl ToHostRb<ToHostWorkRbDesc> for Mutex<ToHostWorkRb> {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {

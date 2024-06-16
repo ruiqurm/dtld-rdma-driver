@@ -190,7 +190,7 @@ impl ToCardWorkRbDescBuilder {
                     common,
                     is_first: self.is_first.unwrap(),
                     is_last: self.is_last.unwrap(),
-                    imm: imm,
+                    imm,
                     sge0,
                     sge1,
                     sge2,

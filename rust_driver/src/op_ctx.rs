@@ -32,6 +32,7 @@ pub enum CtxStatus {
 #[derive(Debug, Clone)]
 pub struct OpCtx<Payload>(Arc<OpCtxWrapper<Payload>>);
 
+#[allow(clippy::type_complexity)] //FIXME: refactor later
 struct OpCtxWrapper<Payload> {
     inner: Mutex<OpCtxInner>,
     payload: OnceLock<Payload>,

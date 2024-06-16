@@ -222,12 +222,13 @@ impl<Strat: SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
     }
 }
 
+#[allow(clippy::unwrap_used,clippy::unwrap_in_result)]
 impl<Strat: SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Strat> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         let mut guard = self.to_card_ctrl_rb.lock();
         let mut writer = guard.write();
 
-        let mem = writer.next().ok_or(DeviceError::Overflow)?;
+        let mem = writer.next().unwrap(); // If block write fail, it should panic
         debug!("{:?}", &desc);
         desc.write(mem);
 

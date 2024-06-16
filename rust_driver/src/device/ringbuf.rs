@@ -1,3 +1,4 @@
+use std::time::Duration;
 
 use parking_lot::{Mutex, MutexGuard};
 
@@ -60,9 +61,9 @@ const fn _is_power_of_2(v: usize) -> bool {
 
 impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{   
+{
     // We use the highest bit as the guard bit. See the method `is_full` for detail
-    const PTR_IDX_MASK: usize = DEPTH*2 - 1;
+    const PTR_IDX_MASK: usize = DEPTH * 2 - 1;
     const PTR_IDX_GUARD_MASK: usize = DEPTH;
     const PTR_IDX_VALID_MASK: usize = DEPTH - 1;
 
@@ -73,11 +74,18 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
 
     /// Return (ringbuf, ringbuf virtual memory address)
     ///
-    #[allow(clippy::indexing_slicing,clippy::arithmetic_side_effects,clippy::unwrap_used)] // we have allocate additional space in advance to avoid overflow
-    pub(super) fn new(proxy: T, buffer : Buffer) -> Self {
-        assert!(buffer.as_ptr() as usize % PAGE_SIZE == 0,"buffer should be aligned to PAGE_SIZE");
+    #[allow(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::unwrap_used
+    )] // we have allocate additional space in advance to avoid overflow
+    pub(super) fn new(proxy: T, buffer: Buffer) -> Self {
+        assert!(
+            buffer.as_ptr() as usize % PAGE_SIZE == 0,
+            "buffer should be aligned to PAGE_SIZE"
+        );
         Self {
-            buf : Mutex::new(buffer),
+            buf: Mutex::new(buffer),
             head: 0,
             tail: 0,
             proxy,
@@ -86,8 +94,8 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
 
     #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn is_full(head: usize, tail: usize) -> bool {
-        // Since the highest bit stands for two times of the DEPTH in bineary, if the head and tail have different highest bit and the rest bits are the same, 
-        // it means the ringbuf is full. 
+        // Since the highest bit stands for two times of the DEPTH in bineary, if the head and tail have different highest bit and the rest bits are the same,
+        // it means the ringbuf is full.
         // In hardware we use like `(head.idx == tail.idx) && (head.guard != tail.guard)`
         let head_guard = head & Self::PTR_IDX_GUARD_MASK;
         let tail_guard = tail & Self::PTR_IDX_GUARD_MASK;
@@ -110,13 +118,9 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     /// Get space for writing `desc_cnt` descriptors to the ring buffer.
-    pub(super) fn write(
-        &mut self,
-    ) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
+    pub(super) fn write(&mut self) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
         RingbufWriter {
-            buf: self
-                .buf
-                .lock(),
+            buf: self.buf.lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             written_cnt: 0,
@@ -133,9 +137,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
         &mut self,
     ) -> Result<RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>, DeviceError> {
         Ok(RingbufReader {
-            buf: self
-                .buf
-                .lock(),
+            buf: self.buf.lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             read_cnt: 0,
@@ -144,8 +146,8 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     }
 }
 
-impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
-    RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
+impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
+    RingbufWriter<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn advance(&mut self) -> Result<(), DeviceError> {
         let head = *self.head;
@@ -158,16 +160,17 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
         self.written_cnt = 0;
         Ok(())
     }
-}
 
-impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
-    Iterator for RingbufWriter<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
-    type Item = &'a mut [u8];
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn next(&mut self) -> Result<&'a mut [u8], DeviceError> {
+        self.next_timeout(None)
+    }
 
-    #[allow(clippy::arithmetic_side_effects)] // We add comments on every arithmetic operation
-    fn next(&mut self) -> Option<Self::Item> {
-        let idx = (*self.head + self.written_cnt) 
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn next_timeout(&mut self,timeout: Option<Duration>) -> Result<&'a mut [u8], DeviceError> {
+        let timeout_in_millis = timeout.map(|d|d.as_millis()).unwrap_or(0);
+        let start = std::time::Instant::now();
+        let idx = (*self.head + self.written_cnt)
             & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
 
         // currently, we not allow the writer to overflow
@@ -176,21 +179,13 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
             // write back first
             let _: Result<(), DeviceError> = self.advance();
             loop {
-                let new_tail = self.proxy.read_tail();
-                match new_tail {
-                    Ok(new_tail) => {
-                        if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(
-                            idx,
-                            new_tail as usize,
-                        ) {
-                            *self.tail = new_tail as usize;
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("failed to read tail pointer: {:?}", e);
-                        return None;
-                    }
+                let new_tail = self.proxy.read_tail()?;
+                if !Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_full(idx, new_tail as usize) {
+                    *self.tail = new_tail as usize;
+                    break;
+                }
+                if timeout_in_millis > 0 && start.elapsed().as_millis() > timeout_in_millis {
+                    return Err(DeviceError::Timeout);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -200,7 +195,7 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
 
         self.written_cnt += 1; // written_cnt < DEPTH
 
-        Some(unsafe { std::slice::from_raw_parts_mut(ptr, ELEM_SIZE) })
+        Ok(unsafe { std::slice::from_raw_parts_mut(ptr, ELEM_SIZE) })
     }
 }
 
@@ -220,8 +215,8 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
 
     #[allow(clippy::arithmetic_side_effects)]
     fn next(&mut self) -> Option<Self::Item> {
-        let idx =
-            (*self.tail + self.read_cnt) & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK;
+        let idx = (*self.tail + self.read_cnt)
+            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK;
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(*self.head, idx) {
             loop {
                 let new_head = self.proxy.read_head();
@@ -256,7 +251,8 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     for RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     fn drop(&mut self) {
-        *self.tail = Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(*self.tail, self.read_cnt);
+        *self.tail =
+            Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::wrapping_add(*self.tail, self.read_cnt);
         let tail = u32::try_from(*self.tail).unwrap_or_else(|_| {
             log::error!("In read ringbuf, failed to convert from usize to u32");
             0
@@ -300,8 +296,9 @@ mod test {
             // move the head to the tail
             let head = self.0.head.load(Ordering::Acquire);
             let tail = self.0.tail.load(Ordering::Acquire);
-            if head == tail { // push when empty
-                let new_head = (head + cnt as u32) % (DEPTH*2) as u32;
+            if head == tail {
+                // push when empty
+                let new_head = (head + cnt as u32) % (DEPTH * 2) as u32;
                 self.0.head.store(new_head, Ordering::Release);
             }
         }
@@ -336,7 +333,7 @@ mod test {
             thread_proxy.consume();
         });
         let buffer = Buffer::new(4096, false).unwrap();
-        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
+        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer);
         let mut writer = ringbuf.write();
 
         for i in 0..128 {
@@ -371,7 +368,7 @@ mod test {
             sleep(std::time::Duration::from_millis(10));
         });
         let buffer = Buffer::new(4096, false).unwrap();
-        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(),buffer);
+        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer);
         let mut reader = ringbuf.read().unwrap();
         sleep(std::time::Duration::from_millis(100));
         for _i in 0..128 {

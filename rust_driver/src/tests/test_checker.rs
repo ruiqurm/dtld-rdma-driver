@@ -76,6 +76,12 @@ macro_rules! make_ref_packet_event {
     };
 }
 
+macro_rules! reset_packet_psn {
+    ($packets : ident, psn = $psn:expr,expected = $expected: expr) => {
+        set_expected_psn(&mut $packets[$psn], Psn::new($expected));
+    };
+}
+
 #[test]
 fn test_checker_on_recv_read_request() {
     construct_context!(context, device, qpn = 0x1234);
@@ -164,15 +170,19 @@ fn test_checker_normal() {
 fn test_checker_miss_and_then_recover() {
     construct_context!(context, device, qpn = 0x1234);
 
-    make_ref_packet_event!(packet_ref,qpn,start_psn=0,msn=0x1235,addr=0x500u32,len=4096*5);
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0x500u32,
+        len = 4096 * 5
+    );
     let packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
     assert_eq!(packets.len(), 6);
-    // pkt 0 : first
-    // pkt 1 : continuous,ignore
-    // pkt 2 : miss
-    // pkt 3 : psn=3, expected_psn=2
-    // pkt 4 : continuous,ignore
-    // pkt 5 : last, psn=5, expected_psn=5
+    // psn = 0,expected_psn=0,
+    // psn = 3,expected_psn=2,
+    // psn = 5,expected_psn=5,
     // should be [0,1] [3,5]
     let mut input_packets = [packets[0].clone(), packets[3].clone(), packets[5].clone()];
     set_expected_psn(&mut input_packets[1], Psn::new(2));
@@ -189,8 +199,16 @@ fn test_checker_miss_and_then_recover() {
     check_qp_status(&context, qpn, QpStatus::OutOfOrder);
     check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
 
-    for i in 0..6 {
-        let mut pkt = packets[i].clone();
+    // retry
+    // psn = 0,expected_psn=6,
+    // psn = 1,expected_psn=6,
+    // psn = 2,expected_psn=6,
+    // psn = 3,expected_psn=6
+    // psn = 4,expected_psn=6
+    // psn = 5,expected_psn=6
+
+    for pkt in packets.iter().take(6) {
+        let mut pkt = pkt.clone();
         set_expected_psn(&mut pkt, Psn::new(6));
         context.handle_check_event(pkt);
     }
@@ -214,13 +232,20 @@ fn test_checker_out_of_order_and_miss() {
 
     // case 1
     // ID
-    // [0]pkt 0 : first
+    // [0]pkt 0 : first,expected_psn=0
     // [1]pkt 5 : last, psn=5,expected_psn=1
     // [2]pkt 3 : psn=3,expected_psn=6
     // [3]pkt 1 : psn=1,expected_psn=6
     // [4]pkt 4 : psn=4,expected_psn=6
     // should be [0-1] [3-5]
-    make_ref_packet_event!(packet_ref,qpn,start_psn=0,msn=0x1235,addr=0x500u32,len=4096*5);
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0x500u32,
+        len = 4096 * 5
+    );
     let packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
     assert_eq!(packets.len(), 6);
     let mut input_packets = [
@@ -251,8 +276,8 @@ fn test_checker_out_of_order_and_miss() {
     context.handle_check_event(input_packets[4].clone());
     check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
 
-    for i in 0..6 {
-        let mut pkt = packets[i].clone();
+    for packet in packets.iter().take(6) {
+        let mut pkt = packet.clone();
         set_expected_psn(&mut pkt, Psn::new(6));
         context.handle_check_event(pkt);
     }
@@ -278,7 +303,14 @@ fn test_checker_out_of_order_and_miss() {
     // [3]pkt 11: psn=11,expected_psn=10  [6,9] [11]
     // [4]pkt 10: psn=10,expected_psn=12  [6,11],in order
 
-    make_ref_packet_event!(packet_ref,qpn,start_psn=6,msn=0x1236,addr=0x500u32,len=4096*6);
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 6,
+        msn = 0x1236,
+        addr = 0x500u32,
+        len = 4096 * 6
+    );
     let packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
     assert_eq!(packets.len(), 7);
     let mut input_packets = [
@@ -321,33 +353,126 @@ fn test_checker_out_of_order_and_miss() {
 }
 
 #[test]
-fn test_checker_receive_out_of_order_first() {
+fn test_checker_single_msn_receive_out_of_order_first() {
     construct_context!(context, device, qpn = 0x1234);
 
     // case 1
-    // [0] psn = 5, middl,expected_psn = 0
-    make_ref_packet_event!(packet_ref,qpn,start_psn=5,msn=0x1235,addr=0x500u32,len=4096*5);
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0x500u32,
+        len = 4096 * 3
+    );
+    let mut packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
+    assert_eq!(packets.len(), 4);
 
-    let mut pkt = packet_ref.clone();
-    set_expected_psn(&mut pkt, Psn::new(0));
-    set_write_type(&mut pkt, ToHostWorkRbDescWriteType::Middle);
-    context.handle_check_event(pkt);
+    set_expected_psn(&mut packets[1], Psn::new(0));
+    context.handle_check_event(packets[1].clone());
     check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    let largest_psn_recved = context
+        .recv_ctx_map
+        .get_per_qp_ctx_mut(qpn)
+        .unwrap()
+        .largest_psn_recved();
+    assert_eq!(largest_psn_recved.get(), 1);
+    check_recv_ctx_exist(&context, qpn, msn, false);
 
-    // case 2
-    // [1] psn=5, first,expected_psn=0
+    set_expected_psn(&mut packets[3], Psn::new(3));
+    context.handle_check_event(packets[3].clone());
+    let largest_psn_recved = context
+        .recv_ctx_map
+        .get_per_qp_ctx_mut(qpn)
+        .unwrap()
+        .largest_psn_recved();
+    assert_eq!(largest_psn_recved.get(), 3);
+    check_recv_ctx_exist(&context, qpn, msn, false);
 }
 
 #[test]
-fn test_checker_miss_packet_recover_and_miss_again() {}
+fn test_checker_miss_packet_recover_and_miss_again() {
+    construct_context!(context, device, qpn = 0x1234);
+
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0u32,
+        len = 4096 * 11
+    );
+    let mut packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
+    assert_eq!(packets.len(), 11);
+
+    // case:
+    // psn = 0,expected_psn=0,
+    // psn = 4,expected_psn=3
+    // psn = 3,expected_psn=5 resume
+    // psn = 7,expected_psn=6
+    // psn = 6,expected_psn=8 resume
+    // psn = 10,expected_psn=10
+    reset_packet_psn!(packets, psn = 0, expected = 0);
+    reset_packet_psn!(packets, psn = 4, expected = 3);
+    reset_packet_psn!(packets, psn = 3, expected = 5);
+    reset_packet_psn!(packets, psn = 7, expected = 6);
+    reset_packet_psn!(packets, psn = 6, expected = 8);
+    reset_packet_psn!(packets, psn = 10, expected = 10);
+
+    context.handle_check_event(packets[0].clone());
+    check_qp_status(&context, qpn, QpStatus::Normal);
+
+    context.handle_check_event(packets[4].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    context.handle_check_event(packets[3].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, false, 1);
+
+    device.ctrl_pop_and_exec_handler(true); // resume
+    check_qp_status(&context, qpn, QpStatus::Normal);
+
+    context.handle_check_event(packets[7].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    context.handle_check_event(packets[6].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, false, 1);
+
+    device.ctrl_pop_and_exec_handler(true); // resume
+    check_qp_status(&context, qpn, QpStatus::Normal);
+
+    context.handle_check_event(packets[10].clone());
+    check_qp_status(&context, qpn, QpStatus::Normal);
+    assert!(device.work_pop().is_none());
+}
 
 #[test]
-fn test_checker_miss_multiple_transaction_and_then_recover() {}
+fn test_checker_redudant_packets() {
+    // psn = 0,expected_psn=0
+    // psn = 4,expected_psn=3
+    // psn = 3,expected_psn=5
+    // psn = 7,expected_psn=6
+    // psn = 6,expected_psn=8
+    // psn = 10,expected_psn=10
+    // psn = 0,expected_psn=11
+    // psn = 1,expected_psn=11
+    // psn = 2,expected_psn=11
+    // psn = 3,expected_psn=11
+    // psn = 4,expected_psn=11
+    // psn = 5,expected_psn=11
+    // psn = 6,expected_psn=11
+    // psn = 7,expected_psn=11
+    // psn = 8,expected_psn=11
+    // psn = 9,expected_psn=11
+    // psn = 10,expected_psn=11
+}
 
 #[test]
-fn test_checker_recover_failed() {}
+fn test_checker_cross_msn() {}
 
 #[derive(Debug, Default)]
+#[allow(clippy::vec_box)]
 struct MockCtrlDescSender {
     ctrl_queue: Mutex<Vec<(ToCardCtrlRbDesc, CtrlOpCtx)>>,
     work_queue: Mutex<Vec<Box<ToCardWorkRbDesc>>>,
@@ -418,11 +543,6 @@ impl From<PacketWrite> for PacketCheckEvent {
     }
 }
 
-fn set_write_type(pkt: &mut PacketCheckEvent, write_type: ToHostWorkRbDescWriteType) {
-    update(pkt, |desc| {
-        desc.write_type = write_type.clone();
-    });
-}
 
 fn set_expected_psn(pkt: &mut PacketCheckEvent, psn: Psn) {
     update(pkt, |desc| {
@@ -501,7 +621,7 @@ fn check_recv_ctx_flag_and_intervals(
 ) {
     let ctx = ctx.recv_ctx_map.get_ctx_mut(qpn, msn).unwrap();
     let wnd = ctx.window().unwrap();
-    println!("{:?}", wnd);
+    // println!("{:?}", wnd);
     assert_eq!(wnd.is_complete(), is_complete);
     assert_eq!(wnd.is_out_of_order(), is_out_of_order);
     assert_eq!(wnd.get_intervals_len(), intervals);

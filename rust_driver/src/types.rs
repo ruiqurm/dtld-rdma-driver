@@ -251,7 +251,7 @@ bitflags! {
 
 bitflags! {
     /// Work Request Send Flag
-    #[derive(Debug,Clone,Copy,Default,PartialEq)]
+    #[derive(Debug,Clone,Copy,Default,PartialEq, Eq)]
     pub struct WorkReqSendFlag: u8 {
         /// No flags
         const IbvSendNoFlags  = 0; // Not defined in rdma-core
@@ -295,9 +295,10 @@ pub enum QpType {
 
 /// Packet MTU
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub enum Pmtu {
     /// 256 bytes
+    #[default]
     Mtu256 = 1,
 
     /// 512 bytes
@@ -311,12 +312,6 @@ pub enum Pmtu {
 
     /// 4096 bytes
     Mtu4096 = 5,
-}
-
-impl Default for Pmtu {
-    fn default() -> Self {
-        Pmtu::Mtu256
-    }
 }
 
 impl From<&Pmtu> for u64 {
@@ -406,10 +401,6 @@ pub enum Error {
     /// Some error occurred in the device
     #[error(transparent)]
     Device(Box<dyn StdError>),
-
-    /// Double initialization
-    #[error("init failed: {0}")]
-    DoubleInit(String),
 
     /// Device busy. Typeically ringbuffer is full
     #[error("device busy")]

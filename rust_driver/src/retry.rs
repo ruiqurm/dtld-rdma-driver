@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Debug,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -9,16 +10,17 @@ use std::{
     u128,
 };
 
-use flume::Receiver;
+use flume::{Receiver, Sender};
 
 use crate::{
     device::ToCardWorkRbDesc,
     op_ctx::OpCtx,
     types::{Msn, Qpn},
-    ThreadSafeHashmap, WorkDescriptorSender,
+    Error, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
-pub(crate)struct RetryContext {
+#[derive(Debug)]
+pub(crate) struct RetryContext {
     descriptor: Box<ToCardWorkRbDesc>,
     retry_counter: u32,
     next_timeout: u128,
@@ -26,15 +28,16 @@ pub(crate)struct RetryContext {
 
 /// Typically the checking_interval should at most 1% of retry_timeout
 /// So that the retrying won't drift too much
-#[derive(Debug,Clone)]
-pub(crate) struct RetryConfig {
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
     max_retry: u32,
     retry_timeout: u128,
     checking_interval: Duration,
 }
 
 impl RetryConfig {
-    pub(crate) fn new(
+    /// Create a new retry config
+    pub fn new(
         max_retry: u32,
         retry_timeout: Duration,
         checking_interval: Duration,
@@ -52,6 +55,16 @@ pub(crate) struct RetryRecord {
     descriptor: Box<ToCardWorkRbDesc>,
     qpn: Qpn,
     msn: Msn,
+}
+
+impl RetryRecord {
+    pub(crate) fn new(descriptor: Box<ToCardWorkRbDesc>, qpn: Qpn, msn: Msn) -> Self {
+        Self {
+            descriptor,
+            qpn,
+            msn,
+        }
+    }
 }
 
 pub(crate) struct RetryCancel {
@@ -81,22 +94,31 @@ fn get_current_time() -> u128 {
         .as_millis()
 }
 
+#[derive(Debug)]
 pub(crate) struct RetryMonitor {
+    sender: Sender<RetryEvent>,
     stop_flag: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl RetryMonitor {
-    pub(crate) fn new(mut context: RetryMonitorContext) -> Self {
+    pub(crate) fn new(sender: Sender<RetryEvent>, mut context: RetryMonitorContext) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = Arc::<AtomicBool>::clone(&stop_flag);
         let thread = std::thread::spawn(move || {
             retry_monitor_working_thread(&stop_flag_clone, &mut context);
         });
         Self {
+            sender,
             stop_flag,
             thread: Some(thread),
         }
+    }
+
+    pub(crate) fn subscribe(&self, event: RetryEvent) -> Result<(), Error> {
+        self.sender
+            .send(event)
+            .map_err(|e| Error::ResourceNoAvailable(e.to_string()))
     }
 }
 
@@ -178,16 +200,17 @@ mod test {
     use parking_lot::{lock_api::RwLock, Mutex, RawRwLock};
 
     use crate::{
-        device::{
-            DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite,
-        }, op_ctx::{self, CtxStatus}, types::{Key, Msn, Qpn, ThreeBytesStruct}, Error, WorkDescriptorSender
+        device::{DescSge, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToCardWorkRbDescWrite},
+        op_ctx::{self, CtxStatus},
+        types::{Key, Msn, Qpn, ThreeBytesStruct},
+        Error, WorkDescriptorSender,
     };
 
     use super::{RetryConfig, RetryEvent, RetryMonitorContext};
     struct MockDevice(Mutex<Vec<ToCardWorkRbDesc>>);
 
     impl WorkDescriptorSender for MockDevice {
-        fn send_work_desc(&self, desc:  Box<ToCardWorkRbDesc>) -> Result<(), Error> {
+        fn send_work_desc(&self, desc: Box<ToCardWorkRbDesc>) -> Result<(), Error> {
             self.0.lock().push(*desc);
             Ok(())
         }
@@ -207,7 +230,7 @@ mod test {
             >::clone(&map),
             config: RetryConfig::new(
                 3,
-                Duration::from_millis(100),
+                Duration::from_millis(1000),
                 std::time::Duration::from_millis(10),
             ),
         };
@@ -215,7 +238,7 @@ mod test {
             (Qpn::default(), Msn::default()),
             op_ctx::OpCtx::new_running(),
         );
-        let _monitor = super::RetryMonitor::new(context);
+        let _monitor = super::RetryMonitor::new(sender.clone(),context);
         let desc = Box::new(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 ..Default::default()
@@ -231,7 +254,7 @@ mod test {
             sge2: None,
             sge3: None,
         }));
-        for i in 0..4 {
+        for _i in 0..4 {
             sender
                 .send(RetryEvent::Retry(super::RetryRecord {
                     descriptor: desc.clone(),
@@ -240,16 +263,16 @@ mod test {
                 }))
                 .unwrap();
             // should send first retry
-            std::thread::sleep(std::time::Duration::from_millis(130));
+            std::thread::sleep(std::time::Duration::from_millis(1020));
             assert_eq!(device.0.lock().len(), 1);
             // should send second retry
-            std::thread::sleep(std::time::Duration::from_millis(130));
+            std::thread::sleep(std::time::Duration::from_millis(1020));
             assert_eq!(device.0.lock().len(), 2);
             // should send last retry
-            std::thread::sleep(std::time::Duration::from_millis(130));
+            std::thread::sleep(std::time::Duration::from_millis(1020));
             assert_eq!(device.0.lock().len(), 3);
 
-            std::thread::sleep(std::time::Duration::from_millis(130));
+            std::thread::sleep(std::time::Duration::from_millis(1020));
             // should remove the record
             matches!(
                 map.read()
@@ -259,9 +282,8 @@ mod test {
                 CtxStatus::Failed(_)
             );
             device.0.lock().clear();
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(1000));
         }
-
 
         // sender
         //     .send(RetryEvent::Retry(super::RetryRecord {

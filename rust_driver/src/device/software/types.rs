@@ -189,10 +189,13 @@ impl PayloadInfo {
 
     /// Get the first and only element of the scatter-gather list.
     /// Note that you should only use this function when you are sure that the payload only contains one element.
+    /// 
+    /// If `skip_eth` is `true`, it will skip the first 14 bytes of the payload, which is the Ethernet header.
     pub(crate) fn direct_data_ptr(&self,skip_eth:bool) -> Option<&[u8]> {
         let buf = self.sg_list.first();
         buf.map(|first|{
             let data = unsafe { std::slice::from_raw_parts(first.data, first.len)};
+            #[allow(clippy::indexing_slicing)]
             if skip_eth{
                 &data[14..]
             } else{

@@ -1,21 +1,23 @@
 use std::error::Error;
 
 use crate::{
-    types::{QpType, Qpn},
+    types::Qpn,
     RoundRobinStrategy, SchedulerStrategy, SealedDesc, POP_BATCH_SIZE,
 };
 
-pub(crate) trait TestingHandler: Send + Sync + core::fmt::Debug + Clone + 'static {
-    fn handle_read_pkt(&self, desc: &mut Vec<SealedDesc>) -> Result<(), Box<dyn Error>>;
-    fn handle_common_nic_pkt(&self, desc: &mut Vec<SealedDesc>) -> Result<(), Box<dyn Error>>;
-    fn handle_data_pkt(&self, desc: &mut Vec<SealedDesc>) -> Result<(), Box<dyn Error>>;
+/// Testing Handler
+pub trait TestingHandler: Send + Sync + Clone + 'static {
+    /// Handle descriptor that will be sent by scheduler
+    fn handle_pkt(&self, desc: &mut Vec<SealedDesc>) -> Result<(), Box<dyn Error>>;
 }
 
+/// A stratrgy that allow you to kick or reorder packets.
 #[derive(Debug, Clone)]
-pub(crate) struct TestingStrategy<T: TestingHandler>(RoundRobinStrategy, T);
+pub struct TestingStrategy<T: TestingHandler>(RoundRobinStrategy, T);
 
 impl<T: TestingHandler> TestingStrategy<T> {
-    pub(crate) fn new(handlers: T) -> Self {
+    /// Create a new testing strategy
+    pub fn new(handlers: T) -> Self {
         TestingStrategy(RoundRobinStrategy::new(), handlers)
     }
 }
@@ -32,33 +34,7 @@ impl<T: TestingHandler> SchedulerStrategy for TestingStrategy<T> {
             return Ok(());
         }
 
-        #[allow(clippy::indexing_slicing)]
-        if vec.len() == 1 {
-            // handle read request, ack or nack
-            match &mut *vec[0].0 {
-                crate::device::ToCardWorkRbDesc::Read(_) => {
-                    self.1.handle_read_pkt(&mut vec)?;
-                    if vec.is_empty() {
-                        return Ok(());
-                    }
-                    return self.0.push(qpn, vec.into_iter());
-                }
-                crate::device::ToCardWorkRbDesc::WriteWithImm(raw_desc) => {
-                    if matches!(raw_desc.common.qp_type, QpType::RawPacket) {
-                        // handle raw packet
-                        self.1.handle_common_nic_pkt(&mut vec)?;
-                        if vec.is_empty() {
-                            return Ok(());
-                        }
-                        return self.0.push(qpn, vec.into_iter());
-                    };
-                }
-                crate::device::ToCardWorkRbDesc::ReadResp(_) => {}
-                crate::device::ToCardWorkRbDesc::Write(_) => {}
-            }
-        }
-
-        self.1.handle_data_pkt(&mut vec)?;
+        self.1.handle_pkt(&mut vec)?;
         if vec.is_empty() {
             return Ok(());
         }
@@ -88,33 +64,15 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handlers {
-        handler1: fn(&mut Vec<SealedDesc>),
-        handler2: fn(&mut Vec<SealedDesc>),
-        handler3: fn(&mut Vec<SealedDesc>),
+        handler: fn(&mut Vec<SealedDesc>),
     }
 
     impl TestingHandler for Handlers {
-        fn handle_read_pkt(
+        fn handle_pkt(
             &self,
             desc: &mut Vec<SealedDesc>,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            (self.handler1)(desc);
-            Ok(())
-        }
-
-        fn handle_common_nic_pkt(
-            &self,
-            desc: &mut Vec<SealedDesc>,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            (self.handler2)(desc);
-            Ok(())
-        }
-
-        fn handle_data_pkt(
-            &self,
-            desc: &mut Vec<SealedDesc>,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            (self.handler3)(desc);
+            (self.handler)(desc);
             Ok(())
         }
     }
@@ -146,16 +104,8 @@ mod tests {
         fn filter_threes_fold(desc: &mut Vec<SealedDesc>) {
             desc.retain(|desc| desc.get_psn().get() % 3 != 0);
         }
-        fn block_read(desc: &mut Vec<SealedDesc>) {
-            desc.clear()
-        }
-        fn do_nothing(_desc: &mut Vec<SealedDesc>) {
-            let _ = _desc;
-        }
         let strategy = TestingStrategy::new(Handlers {
-            handler1: block_read,
-            handler2: do_nothing,
-            handler3: filter_threes_fold,
+            handler: filter_threes_fold
         });
         // generate psn from 1 to 10
         let desc = generate_random_descriptors(2, 1, 10);

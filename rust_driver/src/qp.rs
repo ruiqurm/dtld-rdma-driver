@@ -19,7 +19,7 @@ const QP_MAX_CNT: usize = 1024;
 /// The status of current QP
 #[atomic_enum]
 #[non_exhaustive]
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum QpStatus {
     /// The QP is normal
     Normal = 0,

@@ -1270,10 +1270,10 @@ impl ToCardWorkRbDescBuilder {
 pub(crate) enum DeviceError {
     #[error("device error : {0}")]
     Device(String),
-    #[error("Overflow")]
-    Overflow,
     #[error("Scheduler : {0}")]
     Scheduler(String),
     #[error("Parse descriptor error : {0}")]
     ParseDesc(String),
+    #[error("Operation timeout")]
+    Timeout,
 }

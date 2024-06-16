@@ -7,7 +7,6 @@ use super::SGListBuilder;
 use super::ToCardCtrlRbDescBuilderType::QpManagement;
 use super::ToCardCtrlRbDescBuilderType::UpdateMrTable;
 use crate::device::scheduler::round_robin::RoundRobinStrategy;
-use crate::device::scheduler::DescriptorScheduler;
 use crate::device::software::tests::ToCardWorkRbDescBuilder;
 use crate::device::ToHostWorkRbDescWriteType;
 use crate::device::{

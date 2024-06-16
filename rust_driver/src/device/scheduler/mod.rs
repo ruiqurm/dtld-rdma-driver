@@ -20,8 +20,8 @@ use super::{
 };
 
 use crate::{
-    types::{Pmtu, Psn, Qpn},
-    utils::get_first_packet_max_length,
+    types::{Msn, Pmtu, Psn, Qpn},
+    utils::{calculate_packet_cnt, get_first_packet_max_length},
 };
 
 const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
@@ -34,6 +34,87 @@ pub(crate) mod testing;
 /// A sealed struct of `ToCardWorkRbDesc`
 #[derive(Debug, Clone)]
 pub struct SealedDesc(Box<ToCardWorkRbDesc>);
+
+impl SealedDesc {
+    #[cfg(test)]
+    pub(crate) fn new(desc: Box<ToCardWorkRbDesc>) -> Self {
+        SealedDesc(desc)
+    }
+
+    /// reorder a descripotr
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::unwrap_used
+    )] // it should only used for testing, so panic is fine
+    pub fn reorder(&self, idx_map: Vec<i32>) -> Vec<SealedDesc> {
+        let mut results = vec![];
+        if let ToCardWorkRbDesc::Write(desc) = &*self.0 {
+            let start_raddr = desc.common.raddr;
+            let start_laddr = desc.sge0.addr;
+            let start_psn = desc.common.psn;
+            let pmtu = u64::from(&desc.common.pmtu);
+            let cnt = calculate_packet_cnt(desc.common.pmtu, start_raddr, desc.common.total_len);
+            let max_len = get_first_packet_max_length(start_raddr, u32::from(&desc.common.pmtu));
+            let each_len = (0..cnt)
+                .map(|i| {
+                    if i == 0 {
+                        max_len
+                    } else if i == cnt - 1 {
+                        (desc.common.total_len - max_len) % (pmtu as u32)
+                    } else {
+                        pmtu as u32
+                    }
+                })
+                .collect::<Vec<u32>>();
+            let mut presums = Vec::with_capacity(each_len.len() + 1);
+            let mut presum = 0;
+            for i in 0..cnt {
+                presums.push(presum);
+                presum += each_len[i as usize];
+            }
+            presums.push(presum);
+
+            let mut all_sgements = vec![];
+            all_sgements.push((0_i32, 0_i32));
+            let mut last = 0_i32;
+            for i in &idx_map[1..] {
+                if *i != last + 1_i32 {
+                    let (start, _) = all_sgements.pop().unwrap();
+                    all_sgements.push((start, last));
+                    all_sgements.push((*i, *i));
+                }
+                last = *i
+            }
+            let (last_start, _) = all_sgements.pop().unwrap();
+            all_sgements.push((last_start, idx_map[idx_map.len() - 1]));
+
+            for (start, end) in all_sgements {
+                let is_first = start == 0_i32;
+                let is_last = end == cnt as i32 - 1_i32;
+                let mut new_desc = desc.clone();
+                new_desc.is_first = is_first;
+                new_desc.is_last = is_last;
+                new_desc.common.psn = start_psn.wrapping_add(start as u32);
+                new_desc.common.total_len = presums[end as usize + 1] - presums[start as usize];
+                new_desc.sge0.len = new_desc.common.total_len;
+                new_desc.common.raddr = start_raddr + presums[start as usize] as u64;
+                new_desc.sge0.addr = start_laddr + presums[start as usize] as u64;
+                results.push(SealedDesc(Box::new(ToCardWorkRbDesc::Write(new_desc))));
+            }
+        }
+        results
+    }
+
+    /// get msn of a descriptor
+    pub fn msn(&self) -> Option<Msn> {
+        if let ToCardWorkRbDesc::Write(desc) = &*self.0 {
+            Some(desc.common.msn)
+        } else {
+            None
+        }
+    }
+}
 
 /// Size of each batch pop from the scheduler
 pub const POP_BATCH_SIZE: usize = 8;
@@ -54,7 +135,7 @@ pub type BatchDescs = [Option<SealedDesc>; POP_BATCH_SIZE];
 
 /// A scheduler strategy that schedule the descriptor to the device.
 #[allow(clippy::module_name_repetitions)]
-pub trait SchedulerStrategy: Send + Sync + Debug + Clone + 'static {
+pub trait SchedulerStrategy: Send + Sync + Clone + 'static {
     /// Push the descriptor to the scheduler, where the descriptor is of same `MSN`.
     #[allow(clippy::linkedlist)]
     fn push<I>(&self, qpn: Qpn, desc: I) -> Result<(), Box<dyn Error>>
@@ -130,17 +211,18 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                     }
                     let mut guard = ringbuf.lock();
                     let mut writer = guard.write();
-                    for desc in descs.into_iter().flatten() {
-                        let desc = desc.into_desc();
-                        debug!("driver send to card SQ: {:?}", &desc);
+                    #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
+                    for sealed_scheduled_desc in descs.into_iter().flatten() {
+                        let scheduled_desc = sealed_scheduled_desc.into_desc();
+                        debug!("driver send to card SQ: {:?}", &scheduled_desc);
 
-                        let desc_cnt = desc.serialized_desc_cnt();
-                        desc.write_0(writer.next().unwrap());
-                        desc.write_1(writer.next().unwrap());
-                        desc.write_2(writer.next().unwrap());
+                        let desc_cnt = scheduled_desc.serialized_desc_cnt();
+                        scheduled_desc.write_0(writer.next().unwrap());
+                        scheduled_desc.write_1(writer.next().unwrap());
+                        scheduled_desc.write_2(writer.next().unwrap());
 
                         if desc_cnt == 4 {
-                            desc.write_3(writer.next().unwrap());
+                            scheduled_desc.write_3(writer.next().unwrap());
                         }
                     }
                 }
@@ -180,10 +262,10 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                     if len == 0 {
                         continue;
                     }
-                    for desc in descs.into_iter().flatten() {
-                        let desc = desc.into_desc();
-                        debug!("driver send to card SQ: {:?}", &desc);
-                        if let Err(e) = device.send(desc) {
+                    for sealed_scheduled_desc in descs.into_iter().flatten() {
+                        let scheduled_desc = sealed_scheduled_desc.into_desc();
+                        debug!("driver send to card SQ: {:?}", &scheduled_desc);
+                        if let Err(e) = device.send(scheduled_desc) {
                             error!("failed to send descriptor: {:?}", e);
                         }
                     }
@@ -435,24 +517,21 @@ fn recalculate_psn(raddr: u64, pmtu: Pmtu, total_len: u32, base_psn: Psn) -> Psn
 
 #[cfg(test)]
 mod test {
-    use std::net::Ipv4Addr;
-    use std::slice::from_raw_parts;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::thread::sleep;
     use std::{collections::LinkedList, sync::Arc};
 
-    use eui48::MacAddress;
     use parking_lot::lock_api::Mutex;
 
     use crate::device::ringbuf::{CsrWriterProxy, Ringbuf};
-    use crate::device::scheduler::SCHEDULER_SIZE;
     use crate::device::{
         DescSge, DeviceError, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
         ToCardWorkRbDescWrite, ToCardWorkRbDescWriteWithImm,
     };
 
-    use crate::types::{Key, Msn, Psn, Qpn, WorkReqSendFlag};
+    use crate::types::{Key, Msn, Qpn, WorkReqSendFlag};
     use crate::utils::Buffer;
+    use crate::SealedDesc;
 
     use super::{SGList, MAX_SGL_LENGTH};
 
@@ -544,7 +623,7 @@ mod test {
         let buffer = Buffer::new(4096, false).unwrap();
         let proxy = Proxy::default();
         let ringbuf = Mutex::new(Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer));
-        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy,ringbuf));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: length,
@@ -561,26 +640,53 @@ mod test {
                 key: Key::new(3),
             },
             ..Default::default()
-        }).into();
+        })
+        .into();
         scheduler.push(desc).unwrap();
 
         sleep(std::time::Duration::from_millis(10));
         let head = proxy.0.head.load(Ordering::Acquire);
         assert_eq!(head, 9); // 3 descriptors, each has 3 segments
-        // we do not check it accuracy here
+                             // we do not check it accuracy here
 
         // test a raw packet
-        let desc = ToCardWorkRbDesc::WriteWithImm(ToCardWorkRbDescWriteWithImm{
-            common: ToCardWorkRbDescCommon{
+        let desc = ToCardWorkRbDesc::WriteWithImm(ToCardWorkRbDescWriteWithImm {
+            common: ToCardWorkRbDescCommon {
                 total_len: 66,
                 qp_type: crate::types::QpType::RawPacket,
                 ..Default::default()
             },
             ..Default::default()
-        }).into();
+        })
+        .into();
         scheduler.push(desc).unwrap();
         sleep(std::time::Duration::from_millis(10));
         let head = proxy.0.head.load(Ordering::Acquire);
         assert_eq!(head, 9 + 3); // 1 descriptor, which has 3 segments
+    }
+
+    #[test]
+    fn test() {
+        let va = 128;
+        let desc = SealedDesc::new(Box::new(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
+            common: ToCardWorkRbDescCommon {
+                total_len: 256 * 10,
+                raddr: va,
+                dqpn: Qpn::new(2),
+                pmtu: crate::types::Pmtu::Mtu256,
+                flags: WorkReqSendFlag::empty(),
+                msn: Msn::new(0x27),
+                ..Default::default()
+            },
+            sge0: DescSge {
+                addr: 0,
+                len: 256 * 10,
+                key: Key::new(3),
+            },
+            ..Default::default()
+        })));
+        let results = desc.reorder(vec![0, 1, 5, 4, 2, 3, 6, 7, 8, 9, 10]);
+        assert_eq!(results.len(), 5);
+        // should cut into [0,1] [5],[4] [2,3],[6,10]
     }
 }

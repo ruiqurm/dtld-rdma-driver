@@ -150,7 +150,7 @@ use crate::{
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
 use derive_builder::Builder;
 use device::{
-    ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, DescSge, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
+    ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
 };
 use eui48::MacAddress;
 use flume::unbounded;
@@ -159,8 +159,9 @@ use op_ctx::{CtrlOpCtx, OpCtx};
 use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
 use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
 use qp::QpContext;
+use retry::{RetryEvent, RetryMonitor, RetryMonitorContext, RetryRecord};
 use std::{
-    collections::HashMap, net::{Ipv4Addr, SocketAddr}, sync::{
+    collections::HashMap, fmt::Debug, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
         Arc, OnceLock,
     }
@@ -204,8 +205,9 @@ mod tests;
 
 pub use crate::{mr::Mr, pd::Pd};
 pub use device::scheduler::{SchedulerStrategy,SealedDesc,POP_BATCH_SIZE,BatchDescs};
-pub use device::scheduler::round_robin::RoundRobinStrategy;
+pub use device::scheduler::{round_robin::RoundRobinStrategy,testing::{TestingStrategy,TestingHandler}};
 pub use types::Error;
+pub use retry::RetryConfig;
 pub use utils::{HugePage,AlignedMemory};
 
 
@@ -222,10 +224,9 @@ type ThreadSafeHashmap<K,V> = Arc<RwLock<HashMap<K,V>>>;
 /// The device provides a general interface, like `write`, `read`, `register_mr/qp/pd`, etc.
 /// 
 /// The device has an adaptor, which can be hardware, software, or emulated. 
-#[derive(Debug,Clone)]
+#[derive(Clone,Debug)]
 pub struct Device(Arc<DeviceInner<dyn DeviceAdaptor>>);
 
-#[derive(Debug)]
 struct DeviceInner<D: ?Sized> {
     pd: Mutex<HashMap<Pd, PdCtx>>,
     mr_table: Mutex<[Option<MrCtx>; MR_TABLE_SIZE]>,
@@ -236,11 +237,18 @@ struct DeviceInner<D: ?Sized> {
     next_ctrl_op_id: AtomicU32,
     work_desc_poller: OnceLock<WorkDescPoller>,
     pkt_checker_thread: OnceLock<PacketChecker>,
+    retry_monitor: OnceLock<RetryMonitor>,
     ctrl_desc_poller : OnceLock<ControlPoller>,
     local_network : RdmaDeviceNetworkParam,
     nic_device : Mutex<Option<NicInterface>>,
     buffer_keeper : Mutex<Vec<Buffer>>,
     adaptor: D,
+}
+
+impl<D: ?Sized> Debug for DeviceInner<D>{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceInner").field("pd", &self.pd).field("mr_table", &self.mr_table).field("qp_table", &self.qp_table).field("mr_pgt", &self.mr_pgt).field("user_op_ctx_map", &self.user_op_ctx_map).field("ctrl_op_ctx_map", &self.ctrl_op_ctx_map).field("next_ctrl_op_id", &self.next_ctrl_op_id).field("work_desc_poller", &self.work_desc_poller).field("pkt_checker_thread", &self.pkt_checker_thread).field("retry_monitor", &self.retry_monitor).field("ctrl_desc_poller", &self.ctrl_desc_poller).field("local_network", &self.local_network).field("nic_device", &self.nic_device).field("buffer_keeper", &self.buffer_keeper).finish()
+    }
 }
 
 /// The type of the device adaptor
@@ -273,7 +281,9 @@ pub enum DeviceType {
 pub struct DeviceConfig<Strat:SchedulerStrategy>{
     /// The network configuration of the device
     network_config : RdmaDeviceNetworkParam,
-    // retry_config : RetryConfig,
+
+    /// Retry config
+    retry_config : RetryConfig,
 
     /// The type of the device: hardware, software, or emulated
     device_type : DeviceType,
@@ -303,6 +313,7 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
+                    retry_monitor: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -324,6 +335,7 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
+                    retry_monitor: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -345,6 +357,7 @@ impl Device {
                     ctrl_op_ctx_map: Arc::new(RwLock::new(HashMap::new())),
                     next_ctrl_op_id: AtomicU32::new(0),
                     adaptor,
+                    retry_monitor: OnceLock::new(),
                     pkt_checker_thread: OnceLock::new(),
                     work_desc_poller: OnceLock::new(),
                     ctrl_desc_poller : OnceLock::new(),
@@ -354,7 +367,7 @@ impl Device {
                 }))
             }
         };
-        dev.init()?;
+        dev.init(config.retry_config)?;
 
         Ok(dev)
     }
@@ -409,6 +422,7 @@ impl Device {
                 .with_common(common)
                 .with_sge(sge0)
                 .build()?;
+            let clone_desc = desc.clone();
             self.send_work_desc(desc)?;
     
             let ctx = OpCtx::new_running();
@@ -417,6 +431,9 @@ impl Device {
                 .user_op_ctx_map
                 .write()
                 .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
+            if let Some(monitor) =self.0.retry_monitor.get(){
+                monitor.subscribe(RetryEvent::Retry(RetryRecord::new(clone_desc, dqpn, key.1)))?;
+            }
             Ok(ctx)
     }
     
@@ -497,14 +514,15 @@ impl Device {
         self.0.next_ctrl_op_id.fetch_add(1, Ordering::AcqRel)
     }
 
-    fn init(&self) -> Result<(), Error> {
+    #[allow(clippy::expect_used,clippy::unwrap_in_result)]
+    fn init(&self,retry_config:RetryConfig) -> Result<(), Error> {
         // enable ctrl desc poller module
         let ctrl_thread_ctx = ControlPollerContext{
             to_host_ctrl_rb: self.0.adaptor.to_host_ctrl_rb(),
             ctrl_op_ctx_map: Arc::<RwLock<HashMap<u32, CtrlOpCtx>>>::clone(&self.0.ctrl_op_ctx_map)
         };
         let ctrl_desc_poller = ControlPoller::new(ctrl_thread_ctx);
-        self.0.ctrl_desc_poller.set(ctrl_desc_poller).map_err(|_|Error::DoubleInit("ctrl_desc_poller has been set".to_owned()))?;
+        self.0.ctrl_desc_poller.set(ctrl_desc_poller).expect("ctrl_desc_poller has been set");
 
         let use_hugepage = self.0.adaptor.use_hugepage();
         let mut buf = Buffer::new(ACKNOWLEDGE_BUFFER_SIZE, use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
@@ -520,7 +538,7 @@ impl Device {
             checker_channel: checker_send_queue,
         };
         let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
-        self.0.work_desc_poller.set(work_desc_poller).map_err(|_|Error::DoubleInit("work descriptor poller has been set".to_owned()))?;
+        self.0.work_desc_poller.set(work_desc_poller).expect("work descriptor poller has been set");
 
         // create nic send device, but we don't prepare receive buffer. So it won't work now.
         let mut tx_slot_buf = Buffer::new(NIC_BUFFER_SIZE, use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
@@ -541,22 +559,19 @@ impl Device {
             ack_buffers: ack_buf,
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
-        self.0.pkt_checker_thread.set(pkt_checker_thread).map_err(|_|Error::DoubleInit("packet checker has been set".to_owned()))?;
+        self.0.pkt_checker_thread.set(pkt_checker_thread).expect("pkt_checker_thread has been set");
 
         // install retry monitor
-        // let (retry_send_channel, retry_recv_channel) = unbounded();
-        // let retry_context = RetryMonitorContext{
-        //     map: HashMap::new(),
-        //     receiver: retry_recv_channel,
-        //     config: RetryConfig::new(
-        //         1,
-        //         Duration::from_millis(5000),
-        //         Duration::from_millis(1),
-        //     ),
-        //     user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
-        //     device: Arc::new(self.clone()), // not so good here
-        // };  
-        // let retry_monitor = retry::RetryMonitor::new(retry_context);
+        let (retry_send_channel, retry_recv_channel) = unbounded();
+        let retry_context = RetryMonitorContext{
+            map: HashMap::new(),
+            receiver: retry_recv_channel,
+            config: retry_config,
+            user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
+            device: Arc::new(self.clone()),
+        };  
+        let retry_monitor = retry::RetryMonitor::new(retry_send_channel,retry_context);
+        self.0.retry_monitor.set(retry_monitor).expect("double init");
 
         // set card network
         self.set_network(&self.0.local_network)?;

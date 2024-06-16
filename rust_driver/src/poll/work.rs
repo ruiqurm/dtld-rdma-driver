@@ -239,7 +239,7 @@ mod tests {
             },
         );
         let (checker_channel, checker_recv_queue) = flume::unbounded();
-        let (notification_send_queue, notification_recv_queue) = flume::unbounded();
+        let (notification_send_queue, _notification_recv_queue) = flume::unbounded();
 
         let work_ctx = super::WorkDescPollerContext {
             work_rb,

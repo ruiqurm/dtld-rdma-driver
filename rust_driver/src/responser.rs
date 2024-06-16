@@ -68,7 +68,7 @@ fn make_ack_or_nack(
                 flags: WorkReqSendFlag::empty(),
                 qp_type: QpType::RawPacket,
                 psn: Psn::default(),
-                msn: msn,
+                msn,
             };
             (src_mac, src_ip, dst_mac, dst_ip, common)
         } else {
@@ -117,7 +117,7 @@ pub(crate) fn make_read_resp(
             flags: Default::default(),
             qp_type: qp.qp_type,
             psn: Psn::default(),
-            msn: msn,
+            msn,
         };
         let packet_cnt = calculate_packet_cnt(qp.pmtu, raddr, len);
         let first_pkt_psn = {
@@ -150,6 +150,7 @@ pub(crate) fn make_read_resp(
 /// let be64 = super::mac_to_be64(mac_addr);
 /// assert_eq!(be64, 0xbc9a78563412);
 /// ```
+#[allow(clippy::indexing_slicing)]
 fn mac_to_be64(mac: MacAddress) -> u64 {
     let mac = mac.as_bytes();
     u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0])

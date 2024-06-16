@@ -107,7 +107,7 @@ impl PacketCheckerContext {
                     is_normal = false;
                 }
                 if is_normal {
-                    self.handle_qp_normal(&event, pmtu);
+                    self.handle_qp_normal(&event);
                 } else {
                     self.handle_qp_ooo(&event, pmtu);
                 }
@@ -131,24 +131,27 @@ impl PacketCheckerContext {
         }
     }
 
-    fn handle_qp_normal(&self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
+    fn handle_qp_normal(&self, event: &ToHostWorkRbDescWriteOrReadResp) {
         let qpn = event.common.dqpn;
         let msn = event.common.msn;
 
         match event.write_type {
             ToHostWorkRbDescWriteType::First => {
                 let ctx = RecvContext::from(event);
-                self.recv_ctx_map.insert_ctx(qpn, msn, ctx, pmtu);
+                self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
             }
             ToHostWorkRbDescWriteType::Last => {
                 self.recv_ctx_map.remove_ctx(qpn, msn);
+                #[allow(clippy::else_if_without_else)]
                 if event.is_read_resp {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 } else if !event.can_auto_ack {
                     self.send_ack(qpn, msn, event.psn);
                 }
             }
-            ToHostWorkRbDescWriteType::Only => {
+            ToHostWorkRbDescWriteType::Only =>
+            {
+                #[allow(clippy::else_if_without_else)]
                 if event.is_read_resp {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 } else if !event.can_auto_ack {
@@ -171,25 +174,24 @@ impl PacketCheckerContext {
     }
 
     // handle qp that out-of-order
+    #[allow(clippy::unwrap_used)]
     fn handle_qp_ooo(&self, event: &ToHostWorkRbDescWriteOrReadResp, pmtu: Pmtu) {
         let qpn = event.common.dqpn;
         let msn = event.common.msn;
         let mut need_check_completed_or_try_recover = false;
+        // the qp contect must exist, for previously we have created inside enter_qp_error_status
+        let largest_psn_recved = self
+            .recv_ctx_map
+            .get_per_qp_ctx_mut(qpn)
+            .unwrap() // qp_ctx should have created when it enters in error status
+            .largest_psn_recved();
+        let recved_psn = event.psn;
         match event.write_type {
             ToHostWorkRbDescWriteType::First => {
                 let ctx = RecvContext::new_with_recvmap(event, pmtu);
-                self.recv_ctx_map.insert_ctx(qpn, msn, ctx, pmtu);
+                self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
             }
             ToHostWorkRbDescWriteType::Middle | ToHostWorkRbDescWriteType::Last => {
-                // the qp contect must exist, for previously we have created inside enter_qp_error_status
-                let largest_psn_recved = self
-                    .recv_ctx_map
-                    .get_per_qp_ctx_mut(qpn)
-                    .unwrap()
-                    .largest_psn_recved
-                    .clone();
-                let recved_psn = event.psn;
-
                 if let Some(mut ctx) = self.recv_ctx_map.get_ctx_mut(qpn, msn) {
                     let expected_psn = event.common.expected_psn;
                     let range = get_continous_range(largest_psn_recved, expected_psn);
@@ -201,13 +203,10 @@ impl PacketCheckerContext {
                     need_check_completed_or_try_recover = true;
                 }
                 // otherwise, we ignore this packet,but we should record its psn
-                // the qp contect must exist, for previously we have created inside enter_qp_error_status
-                self.recv_ctx_map
-                    .get_per_qp_ctx_mut(qpn)
-                    .unwrap()
-                    .update_largest_psn_recved(recved_psn);
             }
-            ToHostWorkRbDescWriteType::Only => {
+            ToHostWorkRbDescWriteType::Only =>
+            {
+                #[allow(clippy::else_if_without_else)]
                 if event.is_read_resp {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 } else if !event.can_auto_ack {
@@ -215,12 +214,18 @@ impl PacketCheckerContext {
                 }
             }
         };
+        // the qp contect must exist, for previously we have created inside enter_qp_error_status
+        self.recv_ctx_map
+            .get_per_qp_ctx_mut(qpn)
+            .unwrap() // qp_ctx should have created when it enters in error status
+            .update_largest_psn_recved(recved_psn);
         if need_check_completed_or_try_recover {
             self.check_completed_and_try_recover(qpn, msn);
         }
     }
 
     /// Check if corresponding msn is completed and try to recover the qp status
+    #[allow(clippy::unwrap_used)]
     fn check_completed_and_try_recover(&self, qpn: Qpn, msn: Msn) {
         let mut perqp_map = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap();
         let (is_read_resp, is_completed, last_psn, recover_psn) =
@@ -247,17 +252,19 @@ impl PacketCheckerContext {
                 // we should manually send ack the packet
                 self.send_ack(qpn, msn, last_psn);
             }
-            let perqp_map_len = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap().map.len();
-            // if there is only one recv context and it's in-order,
-            // we can try to recover the qp status
-            if perqp_map_len <= 1 {
-                if let Some(recover_psn) = recover_psn {
-                    let qp_table_ref = self.qp_table.clone();
-                    try_recover(&self.ctrl_desc_sender, qp_table_ref, qpn, recover_psn);
-                }
-                if perqp_map_len == 0 {
-                    self.recv_ctx_map.remove_per_qp_ctx(qpn);
-                }
+        }
+
+        let perqp_map_len = self.recv_ctx_map.get_per_qp_ctx_mut(qpn).unwrap().map.len();
+        // if there is only one recv context and it's in-order,
+        // we can try to recover the qp status
+        if perqp_map_len <= 1 {
+            if let Some(recover_psn) = recover_psn {
+                #[allow(clippy::clone_on_ref_ptr)] // FIXME: refactor later
+                let qp_table_ref = self.qp_table.clone();
+                try_recover(&self.ctrl_desc_sender, qp_table_ref, qpn, recover_psn);
+            }
+            if perqp_map_len == 0 {
+                self.recv_ctx_map.remove_per_qp_ctx(qpn);
             }
         }
     }
@@ -274,10 +281,10 @@ impl PacketCheckerContext {
 
         let mut per_qp_map = self
             .recv_ctx_map
-            .get_or_create_per_qp_ctx_mut(qpn, recved_psn, pmtu);
+            .get_or_create_per_qp_ctx_mut(qpn, recved_psn);
         // we know that if we are previous in the normal status,
-        // we should have only one recv context
-        assert_eq!(per_qp_map.map.len(), 1);
+        // we should have only one or not recv context left.
+        debug_assert!(per_qp_map.map.len() <= 1, "Not in normal status");
 
         // the expected_psn is the psn that we should receive **next**
         let start_psn = expected_psn.wrapping_sub(1);
@@ -332,15 +339,13 @@ pub(crate) struct RecvContextMap(RefCell<HashMap<Qpn, PerQpContextMap>>);
 
 #[derive(Debug)]
 pub(crate) struct PerQpContextMap {
-    pmtu: Pmtu,
     map: BTreeMap<Msn, RecvContext>,
     largest_psn_recved: Psn,
 }
 
 impl PerQpContextMap {
-    fn new(pmtu: Pmtu, largest_psn_recved: Psn) -> Self {
+    fn new(largest_psn_recved: Psn) -> Self {
         Self {
-            pmtu,
             map: BTreeMap::new(),
             largest_psn_recved,
         }
@@ -353,6 +358,10 @@ impl PerQpContextMap {
         }
         self.largest_psn_recved = psn;
     }
+
+    pub(crate) fn largest_psn_recved(&self) -> Psn {
+        self.largest_psn_recved
+    }
 }
 
 impl RecvContextMap {
@@ -360,12 +369,12 @@ impl RecvContextMap {
         Self(HashMap::new().into())
     }
 
-    fn insert_ctx(&self, qpn: Qpn, msn: Msn, ctx: RecvContext, qp_pmtu: Pmtu) {
+    fn insert_ctx(&self, qpn: Qpn, msn: Msn, ctx: RecvContext) {
         // the `per qp context` might leak here?
         let mut inner = self.0.borrow_mut();
         let per_qp_map = inner
             .entry(qpn)
-            .or_insert(PerQpContextMap::new(qp_pmtu, Psn::default()));
+            .or_insert(PerQpContextMap::new(Psn::default()));
         if per_qp_map.map.insert(msn, ctx).is_some() {
             log::error!("create duplicate msn({:?}) record for qpn={:?}", msn, qpn);
         }
@@ -385,6 +394,7 @@ impl RecvContextMap {
         let _dont_care = inner.remove(&qpn);
     }
 
+    #[allow(clippy::unwrap_used, clippy::unwrap_in_result)] // the unwrap is checked.
     pub(crate) fn get_ctx_mut(&self, qpn: Qpn, msn: Msn) -> Option<RefMut<RecvContext>> {
         let should_ret_none = {
             let inner = self.0.borrow();
@@ -406,12 +416,14 @@ impl RecvContextMap {
         &self,
         qpn: Qpn,
         psn: Psn,
-        pmtu: Pmtu,
     ) -> RefMut<PerQpContextMap> {
         let mut inner = self.0.borrow_mut();
-        let per_qp_map = inner.entry(qpn).or_insert(PerQpContextMap::new(pmtu, psn));
+        let _per_qp_map = inner.entry(qpn).or_insert(PerQpContextMap::new(psn));
         drop(inner);
-        RefMut::map(self.0.borrow_mut(), |inner| inner.get_mut(&qpn).unwrap())
+        #[allow(clippy::unwrap_used)] // value is create above.
+        RefMut::map(self.0.borrow_mut(), |inner_mut| {
+            inner_mut.get_mut(&qpn).unwrap()
+        })
     }
 
     pub(crate) fn get_per_qp_ctx_mut(&self, qpn: Qpn) -> Option<RefMut<PerQpContextMap>> {
@@ -419,6 +431,7 @@ impl RecvContextMap {
             let inner = self.0.borrow();
             inner.contains_key(&qpn)
         };
+        #[allow(clippy::unwrap_used)] // the unwrap is checked.
         if !should_ret_none {
             None
         } else {
@@ -467,7 +480,7 @@ impl RecvContext {
 
     #[cfg(test)]
     pub(crate) fn window(&self) -> Option<&SlidingWindow> {
-        self.recv_map.as_ref().map(|x| &**x)
+        self.recv_map.as_deref()
     }
 }
 
@@ -505,16 +518,16 @@ impl SlidingWindow {
             return;
         }
 
-        let diff = from.wrapping_sub(self.start_psn.get()).get();
-        if diff >= MAX_WINDOW_SIZE {
+        let diff_of_start_psn = from.wrapping_sub(self.start_psn.get()).get();
+        if diff_of_start_psn >= MAX_WINDOW_SIZE {
             return;
         }
-        let abs_left = diff;
-        let diff = to.wrapping_sub(self.start_psn.get()).get();
-        if diff >= MAX_WINDOW_SIZE {
+        let abs_left = diff_of_start_psn;
+        let diff_of_end_psn = to.wrapping_sub(self.start_psn.get()).get();
+        if diff_of_end_psn >= MAX_WINDOW_SIZE {
             return;
         }
-        let abs_right = diff;
+        let abs_right = diff_of_end_psn;
 
         if self.intervals.is_empty() {
             let _: Option<u32> = self.intervals.insert(abs_left, abs_right);
@@ -580,16 +593,22 @@ impl SlidingWindow {
         *end == self.num_of_packets - 1 && *start == 0
     }
 
+    #[allow(
+        clippy::unwrap_used,
+        clippy::unwrap_in_result,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing
+    )] // if it's out of order, it must have at least one interval
     pub(crate) fn try_get_recover_psn(&self) -> Option<Psn> {
-        if !self.is_out_of_order() {
-            let offset_of_next_expected = self.intervals.get(&0).unwrap() + 1;
-            Some(self.start_psn.wrapping_add(offset_of_next_expected))
-        } else {
-            None
-        }
+        (!self.is_out_of_order()).then(|| {
+            let offset_of_next_expected = &self.intervals[&0] + 1;
+            self.start_psn.wrapping_add(offset_of_next_expected)
+        })
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn last_psn(&self) -> Psn {
+        // num_of_packets > 0
         self.start_psn.wrapping_add(self.num_of_packets - 1)
     }
 
@@ -637,11 +656,7 @@ impl Default for PacketCheckEvent {
 fn get_continous_range(largest_psn_recved: Psn, expected_psn: Psn) -> Option<(Psn, Psn)> {
     let left = largest_psn_recved.wrapping_add(1);
     let right = expected_psn.wrapping_sub(1);
-    if right.wrapping_sub(left.get()).get() <= MAX_WINDOW_SIZE {
-        Some((left, right))
-    } else {
-        None
-    }
+    (right.wrapping_sub(left.get()).get() <= MAX_WINDOW_SIZE).then_some((left, right))
 }
 
 #[cfg(test)]
@@ -663,11 +678,11 @@ mod tests {
         checker::get_continous_range,
         device::ToCardCtrlRbDesc,
         op_ctx::{CtrlOpCtx, OpCtx},
-        types::{Msn, Pmtu, Psn, Qpn},
+        types::{Msn, Psn, Qpn},
         CtrlDescriptorSender,
     };
 
-    use super::{wakeup_user_op_ctx, RecvContext};
+    use super::wakeup_user_op_ctx;
 
     #[test]
     fn test_sliding_window() {
@@ -768,6 +783,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_ref_ptr)] //FIXME: refactor later
     fn test_try_recover() {
         use std::collections::HashMap;
 
@@ -792,7 +808,7 @@ mod tests {
             },
         );
 
-        let sender_clone: Arc<dyn CtrlDescriptorSender> = sender.clone();
+        let sender_clone: Arc<dyn CtrlDescriptorSender> = Arc::<MockCtrlDescSender>::clone(&sender);
 
         try_recover(&sender_clone, qp_table.clone(), qpn, Psn::default());
 
@@ -824,7 +840,7 @@ mod tests {
         let ctx = OpCtx::new_running();
         user_op_ctx_map.write().insert((qpn, msn), ctx.clone());
         let flag = Arc::new(AtomicBool::new(false));
-        let clone_flag = flag.clone();
+        let clone_flag = Arc::<AtomicBool>::clone(&flag);
         spawn(move || {
             let _u = ctx.wait();
             clone_flag.store(true, Ordering::Release);
@@ -836,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_recv_ctx() {
-        let mut per_qp_map = super::PerQpContextMap::new(Pmtu::default(), Psn::new(10));
+        let mut per_qp_map = super::PerQpContextMap::new(Psn::new(10));
         per_qp_map.largest_psn_recved = Psn::new(10);
         per_qp_map.update_largest_psn_recved(Psn::new(20));
         assert_eq!(per_qp_map.largest_psn_recved, Psn::new(20));
@@ -845,8 +861,6 @@ mod tests {
         per_qp_map.update_largest_psn_recved(Psn::new(0));
         assert_eq!(per_qp_map.largest_psn_recved, Psn::new(20));
 
-
-        let recv_ctx = RecvContext::default();        
         let r = get_continous_range(Psn::new(10), Psn::new(20));
         assert_eq!(r, Some((Psn::new(11), Psn::new(19))));
         let r = get_continous_range(Psn::new(10), Psn::new(11));

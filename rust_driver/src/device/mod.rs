@@ -19,7 +19,7 @@ pub(crate) use self::{
 };
 
 /// Public interface for a device. Can be a real hardware device or a software emulation.
-pub(crate) trait DeviceAdaptor: Send + Sync + Debug {
+pub(crate) trait DeviceAdaptor: Send + Sync {
     fn to_card_ctrl_rb(&self) -> Arc<dyn ToCardRb<ToCardCtrlRbDesc>>;
     fn to_host_ctrl_rb(&self) -> Arc<dyn ToHostRb<ToHostCtrlRbDesc>>;
 
