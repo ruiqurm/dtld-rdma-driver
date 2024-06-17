@@ -96,8 +96,7 @@ impl Device {
                 .adaptor
                 .get_phys_addr(mr_pgt.table.as_ptr() as usize)
                 .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?
-                as u64
-                + pgt_offset as u64 * 8,
+                as u64,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
         });
