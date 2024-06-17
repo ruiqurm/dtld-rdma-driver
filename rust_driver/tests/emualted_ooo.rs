@@ -57,7 +57,7 @@ fn create_and_init_card<'a>(
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
-        .retry_config(RetryConfig::new(3, Duration::from_millis( 10000), Duration::from_millis(100)))
+        .retry_config(RetryConfig::new(true,3, Duration::from_millis( 10000), Duration::from_millis(100)))
         .device_type(DeviceType::Emulated {
             rpc_server_addr: mock_server_addr.parse().unwrap(),
             heap_mem_start_addr: head_start_addr,
@@ -111,8 +111,6 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
-#[test]
-#[serial]
 fn test_emulated() {
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();

@@ -3,16 +3,18 @@ use core::time;
 use eui48::MacAddress;
 use log::{debug, info};
 use open_rdma_driver::{
-    qp::QpManager, types::{
-        Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
-    }, Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RoundRobinStrategy
+    qp::QpManager,
+    types::{
+        Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
+        RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
+    },
+    Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RetryConfig, RoundRobinStrategy,
 };
-use std::{net::Ipv4Addr, thread};
+use std::{net::Ipv4Addr, thread, time::Duration};
 
 use crate::common::init_logging;
 
-const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT: usize = 1024 * 64;
+const BUFFER_LENGTH: usize = 1024 * 1024 * 2;
 
 mod common;
 
@@ -23,14 +25,20 @@ fn create_and_init_card<'a>(
     remote_network: &RdmaDeviceNetworkParam,
 ) -> (Device, Pd, Mr, HugePage) {
     let config = DeviceConfigBuilder::default()
-    .network_config(local_network)
-    .device_type(DeviceType::Hardware {
-        device_path: "/dev/infiniband/uverbs0".to_owned(),
-    })
-    .strategy(RoundRobinStrategy::new())
-    .build()
-    .unwrap();
-let dev = Device::new(config).unwrap();
+        .network_config(local_network)
+        .device_type(DeviceType::Hardware {
+            device_path: "/dev/infiniband/uverbs0".to_owned(),
+        })
+        .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            1,
+            Duration::from_secs(100),
+            Duration::from_millis(10),
+        ))
+        .build()
+        .unwrap();
+    let dev = Device::new(config).unwrap();
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -54,9 +62,10 @@ let dev = Device::new(config).unwrap();
     let qp = QpBuilder::default()
         .pd(pd)
         .qpn(qpn)
+        .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu1024)
+        .pmtu(Pmtu::Mtu4096)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
         .build()
@@ -93,8 +102,7 @@ fn main() {
     debug!("===========3====================");
     let qpn = qp_manager.alloc().unwrap();
     debug!("===========4====================");
-    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, qpn, a_network, &b_network);
+    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) = create_and_init_card(0, qpn, a_network, &b_network);
     debug!("===========5====================");
     // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
     //     create_and_init_card(1, qpn, &b_network, &a_network);
@@ -111,11 +119,6 @@ fn main() {
         mr_buffer_a.as_ptr() as usize,
         mr_a.get_key().get()
     );
-    let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
-        SEND_CNT.try_into().unwrap(),
-        mr_a.get_key(),
-    );
     debug!("===========6====================");
     // let sge1 = Sge::new(
     //     &mr_buffer_a[SEND_CNT] as *const u8 as u64,
@@ -124,13 +127,14 @@ fn main() {
     // );
 
     loop {
-        for (idx, item) in mr_buffer_a.iter().enumerate() {
-            print!("{:x}", *item);
-            if idx > 16 {
-                break;
-            }
-        }
-        thread::sleep(time::Duration::from_secs(1));
+        // for (idx, item) in mr_buffer_a.iter().enumerate() {
+        //     print!("{:x}", *item);
+        //     if idx > 16 {
+        //         break;
+        //     }
+        // }
+        thread::sleep(time::Duration::from_secs(5));
+        info!("tick");
     }
 
     // test write

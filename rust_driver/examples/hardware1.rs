@@ -2,22 +2,20 @@
 use eui48::MacAddress;
 use log::{debug, info};
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
+    qp::QpManager, types::{
         Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    },
-    Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RoundRobinStrategy,
+    }, Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RetryConfig, RoundRobinStrategy
 };
 use std::{
     io::{self, BufRead},
-    net::Ipv4Addr,
+    net::Ipv4Addr, time::Duration,
 };
 
 use crate::common::init_logging;
 
 const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT: usize = 1024 * 64;
+const SEND_CNT: usize = 1024 * 128;
 
 mod common;
 
@@ -33,6 +31,12 @@ fn create_and_init_card<'a>(
             device_path: "/dev/infiniband/uverbs0".to_owned(),
         })
         .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            1,
+            Duration::from_secs(100),
+            Duration::from_millis(10),
+        ))
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();
@@ -59,6 +63,7 @@ fn create_and_init_card<'a>(
     let qp = QpBuilder::default()
         .pd(pd)
         .qpn(qpn)
+        .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
         .pmtu(Pmtu::Mtu1024)
@@ -98,8 +103,7 @@ fn main() {
     debug!("===========3====================");
     let qpn = qp_manager.alloc().unwrap();
     debug!("===========4====================");
-    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, qpn, a_network, &b_network);
+    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) = create_and_init_card(0, qpn, a_network, &b_network);
     debug!("===========5====================");
     // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
     //     create_and_init_card(1, qpn, &b_network, &a_network);

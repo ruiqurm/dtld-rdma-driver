@@ -30,6 +30,7 @@ pub(crate) struct RetryContext {
 /// So that the retrying won't drift too much
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
+    is_enable : bool,
     max_retry: u32,
     retry_timeout: u128,
     checking_interval: Duration,
@@ -38,11 +39,13 @@ pub struct RetryConfig {
 impl RetryConfig {
     /// Create a new retry config
     pub fn new(
+        is_enable: bool,
         max_retry: u32,
         retry_timeout: Duration,
         checking_interval: Duration,
     ) -> Self {
         Self {
+            is_enable,
             max_retry,
             retry_timeout: retry_timeout.as_millis(),
             checking_interval,
@@ -125,9 +128,11 @@ impl RetryMonitor {
 impl RetryMonitorContext {
     fn check_receive(&mut self) {
         while let Ok(record) = self.receiver.try_recv() {
-            match record {
-                RetryEvent::Retry(record) => self.handle_retry(record),
-                RetryEvent::Cancel(cancel) => self.handle_cancel(&cancel),
+            if self.config.is_enable{
+                match record {
+                    RetryEvent::Retry(record) => self.handle_retry(record),
+                    RetryEvent::Cancel(cancel) => self.handle_cancel(&cancel),
+                }
             }
         }
     }
@@ -229,6 +234,7 @@ mod test {
                 RwLock<RawRwLock, HashMap<(ThreeBytesStruct, Msn), op_ctx::OpCtx<()>>>,
             >::clone(&map),
             config: RetryConfig::new(
+                true,
                 3,
                 Duration::from_millis(1000),
                 std::time::Duration::from_millis(10),

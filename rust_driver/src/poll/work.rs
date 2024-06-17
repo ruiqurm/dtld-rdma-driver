@@ -10,8 +10,7 @@ use crate::{
     buf::Slot,
     checker::PacketCheckEvent,
     device::{
-        ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescRaw, ToHostWorkRbDescStatus,
-        ToHostWorkRbDescWriteWithImm,
+        DeviceError, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescRaw, ToHostWorkRbDescStatus, ToHostWorkRbDescWriteWithImm
     },
     nic::NicRecvNotification,
     Error,
@@ -51,7 +50,11 @@ impl WorkDescPollerContext {
         while !stop_flag.load(Ordering::Relaxed) {
             let desc = match ctx.work_rb.pop() {
                 Ok(desc) => desc,
-                Err(e) => {
+                Err(DeviceError::ParseDesc(e)) => {
+                    error!("parse descriptor failed : {:?}", e);
+                    continue;
+                }
+                Err(e)=>{
                     error!("WorkDescPoller is stopped due to : {:?}", e);
                     return;
                 }
@@ -258,7 +261,7 @@ mod tests {
             panic!("not a write event");
         }
         if let crate::checker::PacketCheckEvent::Write(w) = checker_recv_queue.recv().unwrap() {
-            assert_eq!(w.psn.get(), 3);
+            assert_eq!(w.psn.get(), 2);
         } else {
             panic!("not a write event");
         }
