@@ -78,7 +78,15 @@ macro_rules! make_ref_packet_event {
 
 macro_rules! reset_packet_psn {
     ($packets : ident, psn = $psn:expr,expected = $expected: expr) => {
-        set_expected_psn(&mut $packets[$psn], Psn::new($expected));
+        let base_psn = if let PacketCheckEvent::Write(p) = &($packets)[0] {
+            p.psn
+        } else {
+            panic!("should be a write event")
+        };
+        set_expected_psn(
+            &mut $packets[Psn::new($psn).wrapping_abs(base_psn) as usize],
+            base_psn.wrapping_add($expected),
+        );
     };
 }
 
@@ -449,13 +457,24 @@ fn test_checker_miss_packet_recover_and_miss_again() {
 
 #[test]
 fn test_checker_redudant_packets() {
+    construct_context!(context, device, qpn = 0x1234);
+
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0u32,
+        len = 4096 * 11
+    );
+    let mut packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
+    assert_eq!(packets.len(), 11);
+
     // psn = 0,expected_psn=0
-    // psn = 4,expected_psn=3
-    // psn = 3,expected_psn=5
-    // psn = 7,expected_psn=6
-    // psn = 6,expected_psn=8
-    // psn = 10,expected_psn=10
-    // psn = 0,expected_psn=11
+    // psn = 9,expected_psn=8, miss 8
+    // psn = 9,expected_psn=10,redudant
+    // psn = 10,expected_psn=10,last
+    // psn = 10,expected_psn=11,redudant
     // psn = 1,expected_psn=11
     // psn = 2,expected_psn=11
     // psn = 3,expected_psn=11
@@ -464,29 +483,258 @@ fn test_checker_redudant_packets() {
     // psn = 6,expected_psn=11
     // psn = 7,expected_psn=11
     // psn = 8,expected_psn=11
-    // psn = 9,expected_psn=11
-    // psn = 10,expected_psn=11
+    // psn = 9,expected_psn=11,[ack]
+    // psn = 10,expected_psn=11,drop
+    // psn = 10,expected_psn=11,drop
+    // psn = 0,expected_psn=11,drop
+    reset_packet_psn!(packets, psn = 0, expected = 0);
+    context.handle_check_event(packets[0].clone());
+    check_qp_status(&context, qpn, QpStatus::Normal);
+
+    reset_packet_psn!(packets, psn = 9, expected = 8);
+    context.handle_check_event(packets[9].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    reset_packet_psn!(packets, psn = 9, expected = 10);
+    context.handle_check_event(packets[9].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    reset_packet_psn!(packets, psn = 10, expected = 10);
+    context.handle_check_event(packets[10].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    reset_packet_psn!(packets, psn = 10, expected = 10);
+    context.handle_check_event(packets[10].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+
+    for i in 0..=7 {
+        reset_packet_psn!(packets, psn = i, expected = 11);
+        context.handle_check_event(packets[i as usize].clone());
+        check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, true, 2);
+    }
+
+    reset_packet_psn!(packets, psn = 8, expected = 11);
+    context.handle_check_event(packets[8].clone());
+    assert!(device.work_pop().is_some());
+
+    device.ctrl_pop_and_exec_handler(false);
+    reset_packet_psn!(packets, psn = 9, expected = 11);
+    context.handle_check_event(packets[9].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_exist(&context, qpn, msn, false);
+
+    reset_packet_psn!(packets, psn = 10, expected = 11);
+    context.handle_check_event(packets[10].clone());
+    check_recv_ctx_exist(&context, qpn, msn, false);
+
+    reset_packet_psn!(packets, psn = 0, expected = 11);
+    context.handle_check_event(packets[0].clone());
+    check_recv_ctx_exist(&context, qpn, msn, false);
 }
 
 #[test]
 fn test_checker_miss_first() {
     // psn = 1,expected_psn=0
-    // received psn from 2-5,no reported
+    // // received psn from 2-5,no reported
     // psn = 6,last,expected_psn=6
     // psn = 0,first,expected_psn=7
+    // // send nack, descriptor 1-6 is sent.
+    // psn = 1,expected_psn=7
+    // psn = 2,expected_psn=7
+    // psn = 3,expected_psn=7
+    // psn = 4,expected_psn=7
+    // psn = 5,expected_psn=7
+    // psn = 6,expected_psn=7 [try resume]
+    construct_context!(context, device, qpn = 0x1234);
 
+    make_ref_packet_event!(
+        packet_ref,
+        qpn,
+        start_psn = 0,
+        msn = 0x1235,
+        addr = 0u32,
+        len = 4096 * 7
+    );
+    let mut packets = generate_range_of_packet(packet_ref, Pmtu::Mtu4096);
+    assert_eq!(packets.len(), 7);
+
+    reset_packet_psn!(packets, psn = 1, expected = 0);
+    context.handle_check_event(packets[1].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_exist(&context, qpn, msn, false);
+
+    reset_packet_psn!(packets, psn = 6, expected = 6);
+    context.handle_check_event(packets[6].clone());
+    check_recv_ctx_exist(&context, qpn, msn, false);
+
+    reset_packet_psn!(packets, psn = 0, expected = 7);
+    context.handle_check_event(packets[0].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, false, 1);
+    assert!(!device.has_ctrl_desc());
+
+    for i in 1..=6 {
+        reset_packet_psn!(packets, psn = i, expected = 7);
+        context.handle_check_event(packets[i as usize].clone());
+        if i == 6 {
+            check_recv_ctx_exist(&context, qpn, msn, false);
+            assert!(device.has_ctrl_desc());
+        } else {
+            check_recv_ctx_flag_and_intervals(&context, qpn, msn, false, false, 1);
+            assert!(!device.has_ctrl_desc());
+        }
+    }
+}
+
+#[test]
+fn test_checker_multiple_later_msn_come_first() {
+    // msn = 1, psn = 6, expected_psn=0
+    // msn = 1, psn = 11, expected_psn=11 ,last,send ack
+    // msn = 0, psn = 0,expected_psn=12,first
+    // msn = 0, psn = 1,expected_psn=12
+    // msn = 0, psn = 2,expected_psn=12
+    // msn = 0, psn = 3,expected_psn=12
+    // msn = 0, psn = 4,expected_psn=12
+    // msn = 0, psn = 5,expected_psn=12,last,try_resume,send ack
+    construct_context!(context, device, qpn = 0x1234);
+
+    make_ref_packet_event!(
+        packet_ref1,
+        qpn,
+        start_psn = 0,
+        msn = 0,
+        addr = 0u32,
+        len = 4096 * 6
+    );
+
+    let mut packets = generate_range_of_packet(packet_ref1, Pmtu::Mtu4096);
+    make_ref_packet_event!(
+        packet_ref2,
+        qpn,
+        start_psn = 6,
+        msn = 1,
+        addr = 0u32,
+        len = 4096 * 6
+    );
+    packets.extend(generate_range_of_packet(packet_ref2, Pmtu::Mtu4096));
+
+    assert_eq!(packets.len(), 12);
+
+    reset_packet_psn!(packets, psn = 6, expected = 0);
+    context.handle_check_event(packets[6].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_exist(&context, qpn, Msn::new(1), true);
+
+    reset_packet_psn!(packets, psn = 11, expected = 11);
+    assert!(!device.has_ctrl_desc());
+    context.handle_check_event(packets[11].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_exist(&context, qpn, Msn::new(1), false);
+    // FIXME: Alougth we skip the last MSN, we can still resume
+    // assert!(!device.has_ctrl_desc());
+    device.ctrl_pop_and_exec_handler(false);
+    assert!(device.work_pop().is_some());
+
+    for i in 0..6 {
+        reset_packet_psn!(packets, psn = i, expected = 12);
+        context.handle_check_event(packets[i as usize].clone());
+        if i == 5 {
+            check_recv_ctx_exist(&context, qpn, Msn::new(0), false);
+            assert!(device.work_pop().is_some());
+        } else {
+            check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(0), false, false, 1);
+        }
+    }
 }
 
 #[test]
 fn test_checker_multiple_msn() {
+    construct_context!(context, device, qpn = 0x1234);
 
-}
+    make_ref_packet_event!(
+        packet_ref1,
+        qpn,
+        start_psn = 0,
+        msn = 1,
+        addr = 0u32,
+        len = 4096 * 6
+    );
 
-#[test]
-fn test_checker_multiple_msn_miss_first() {
+    let mut packets = generate_range_of_packet(packet_ref1, Pmtu::Mtu4096);
+    make_ref_packet_event!(
+        packet_ref2,
+        qpn,
+        start_psn = 6,
+        msn = 2,
+        addr = 0u32,
+        len = 4096 * 6
+    );
+    packets.extend(generate_range_of_packet(packet_ref2, Pmtu::Mtu4096));
+    make_ref_packet_event!(
+        packet_ref3,
+        qpn,
+        start_psn = 12,
+        msn = 3,
+        addr = 0u32,
+        len = 4096 * 6
+    );
+    packets.extend(generate_range_of_packet(packet_ref3, Pmtu::Mtu4096));
+    assert_eq!(packets.len(), 18);
+    // msn = 1, psn = 0, expected_psn=0,[first],5 pkts
+    // msn = 1, psn = 4, expected_psn=3,[lost 3]
+    // msn = 1, psn = 5, expected_psn=5,[last]
+    // msn = 2, psn = 6, expected_psn=6,[first]
+    // msn = 2, psn = 11, expected_psn=11,[last]
+    // msn = 2, psn = 12, expected_psn=12,[first]
+    // msn = 1, psn = 3, expected_psn=13,[ack]
+    // msn = 2, psn = 6, expected_psn=13,[invalid first]
+    // msn = 1, psn = 0, expected_psn=13,[invalid first]
+
+    reset_packet_psn!(packets, psn = 0, expected = 0);
+    context.handle_check_event(packets[0].clone());
+    check_qp_status(&context, qpn, QpStatus::Normal);
+    check_recv_ctx_exist(&context, qpn, Msn::new(1), true);
+
+
+    reset_packet_psn!(packets, psn = 4, expected = 3);
+    context.handle_check_event(packets[4].clone());
+    check_qp_status(&context, qpn, QpStatus::OutOfOrder);
+    check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(1), false, true, 2);
+
+    reset_packet_psn!(packets, psn = 5, expected = 5);
+    context.handle_check_event(packets[5].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(1), false, true, 2);
+
+    reset_packet_psn!(packets, psn = 6, expected = 6);
+    context.handle_check_event(packets[6].clone());
+    check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(2), false, false, 1);
     
-}
+    reset_packet_psn!(packets, psn = 11, expected = 11);
+    context.handle_check_event(packets[11].clone());
+    check_recv_ctx_exist(&context, qpn, Msn::new(2), false);
+    device.work_pop().expect("should get a ack");
 
+    reset_packet_psn!(packets, psn = 12, expected = 12);
+    context.handle_check_event(packets[12].clone());
+    check_recv_ctx_exist(&context, qpn, Msn::new(3), true);
+    check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(3), false, false, 1);
+
+    reset_packet_psn!(packets, psn = 3, expected = 13);
+    context.handle_check_event(packets[3].clone());
+    check_recv_ctx_exist(&context, qpn, Msn::new(1), false);
+    device.work_pop().expect("should get a ack");
+
+    reset_packet_psn!(packets, psn = 6, expected = 13);
+    context.handle_check_event(packets[6].clone());
+    check_recv_ctx_exist(&context, qpn, Msn::new(2), false);
+
+    reset_packet_psn!(packets, psn = 0, expected = 13);
+    context.handle_check_event(packets[0].clone());
+    check_recv_ctx_exist(&context, qpn, Msn::new(2), false);
+
+
+
+}
 
 #[derive(Debug, Default)]
 #[allow(clippy::vec_box)]
@@ -501,6 +749,10 @@ impl MockCtrlDescSender {
                 handler(is_succ);
             }
         }
+    }
+
+    fn has_ctrl_desc(&self) -> bool {
+        !self.ctrl_queue.lock().is_empty()
     }
 
     fn work_pop(&self) -> Option<Box<ToCardWorkRbDesc>> {
@@ -559,7 +811,6 @@ impl From<PacketWrite> for PacketCheckEvent {
         })
     }
 }
-
 
 fn set_expected_psn(pkt: &mut PacketCheckEvent, psn: Psn) {
     update(pkt, |desc| {
@@ -639,7 +890,28 @@ fn check_recv_ctx_flag_and_intervals(
     let ctx = ctx.recv_ctx_map.get_ctx_mut(qpn, msn).unwrap();
     let wnd = ctx.window().unwrap();
     // println!("{:?}", wnd);
-    assert_eq!(wnd.is_complete(), is_complete);
-    assert_eq!(wnd.is_out_of_order(), is_out_of_order);
-    assert_eq!(wnd.get_intervals_len(), intervals);
+    assert_eq!(
+        wnd.is_complete(),
+        is_complete,
+        "qpn:{:?},msn:{:?},intervals:{}",
+        qpn,
+        msn,
+        intervals
+    );
+    assert_eq!(
+        wnd.is_out_of_order(),
+        is_out_of_order,
+        "qpn:{:?},msn:{:?},intervals:{}",
+        qpn,
+        msn,
+        intervals
+    );
+    assert_eq!(
+        wnd.get_intervals_len(),
+        intervals,
+        "qpn:{:?},msn:{:?},intervals:{}",
+        qpn,
+        msn,
+        intervals
+    );
 }

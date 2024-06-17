@@ -18,7 +18,7 @@ use crate::{
     op_ctx::OpCtx,
     qp::QpContext,
     responser::{make_ack, make_read_resp},
-    types::{Msn, Pmtu, Psn, Qpn},
+    types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE},
     utils::calculate_packet_cnt,
     CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
 };
@@ -28,7 +28,7 @@ use flume::{Receiver, TryRecvError};
 use log::{error, info};
 use parking_lot::RwLock;
 
-const MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
+const MAX_MSN_WINDOW_PER_QP: usize = 16;
 
 #[derive(Debug)]
 pub(crate) struct PacketChecker {
@@ -114,6 +114,11 @@ impl PacketCheckerContext {
             }
             PacketCheckEvent::ReadReq(event) => {
                 // convert read req directly
+                self.recv_ctx_map.set_recent_msn_status(
+                    event.common.dqpn,
+                    event.common.msn,
+                    RecentQpMsnStatus::Finished,
+                );
                 if let Ok(desc) = make_read_resp(&self.qp_table, &event) {
                     if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
                         error!("Send read resp failed {:?}", e);
@@ -137,8 +142,11 @@ impl PacketCheckerContext {
 
         match event.write_type {
             ToHostWorkRbDescWriteType::First => {
-                let ctx = RecvContext::from(event);
-                self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
+                let status = self.recv_ctx_map.query_recent_msn_status(qpn, msn);
+                if matches!(status, RecentQpMsnStatus::NoExist) {
+                    let ctx = RecvContext::from(event);
+                    self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
+                }
             }
             ToHostWorkRbDescWriteType::Last => {
                 self.recv_ctx_map.remove_ctx(qpn, msn);
@@ -149,8 +157,9 @@ impl PacketCheckerContext {
                     self.send_ack(qpn, msn, event.psn);
                 }
             }
-            ToHostWorkRbDescWriteType::Only =>
-            {
+            ToHostWorkRbDescWriteType::Only => {
+                self.recv_ctx_map
+                    .set_recent_msn_status(qpn, msn, RecentQpMsnStatus::Finished);
                 #[allow(clippy::else_if_without_else)]
                 if event.is_read_resp {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
@@ -188,8 +197,11 @@ impl PacketCheckerContext {
         let recved_psn = event.psn;
         match event.write_type {
             ToHostWorkRbDescWriteType::First => {
-                let ctx = RecvContext::new_with_recvmap(event, pmtu);
-                self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
+                let status = self.recv_ctx_map.query_recent_msn_status(qpn, msn);
+                if matches!(status, RecentQpMsnStatus::NoExist) {
+                    let ctx = RecvContext::new_with_recvmap(event, pmtu);
+                    self.recv_ctx_map.insert_ctx(qpn, msn, ctx);
+                }
             }
             ToHostWorkRbDescWriteType::Middle | ToHostWorkRbDescWriteType::Last => {
                 if let Some(mut ctx) = self.recv_ctx_map.get_ctx_mut(qpn, msn) {
@@ -204,8 +216,9 @@ impl PacketCheckerContext {
                 }
                 // otherwise, we ignore this packet,but we should record its psn
             }
-            ToHostWorkRbDescWriteType::Only =>
-            {
+            ToHostWorkRbDescWriteType::Only => {
+                self.recv_ctx_map
+                    .set_recent_msn_status(qpn, msn, RecentQpMsnStatus::Finished);
                 #[allow(clippy::else_if_without_else)]
                 if event.is_read_resp {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
@@ -258,14 +271,24 @@ impl PacketCheckerContext {
         // if there is only one recv context and it's in-order,
         // we can try to recover the qp status
         if perqp_map_len <= 1 {
+            let largest_psn_recved = self
+                .recv_ctx_map
+                .get_per_qp_ctx_mut(qpn)
+                .unwrap() // qp_ctx should have created when it enters in error status
+                .largest_psn_recved();
             if let Some(recover_psn) = recover_psn {
+                // recover_psn should be largest_psn_recved + 1
+                if recover_psn != largest_psn_recved.wrapping_add(1) {
+                    return;
+                }
                 #[allow(clippy::clone_on_ref_ptr)] // FIXME: refactor later
                 let qp_table_ref = self.qp_table.clone();
                 try_recover(&self.ctrl_desc_sender, qp_table_ref, qpn, recover_psn);
             }
-            if perqp_map_len == 0 {
-                self.recv_ctx_map.remove_per_qp_ctx(qpn);
-            }
+            // TODO: should we remove qp context at once?
+            // if perqp_map_len == 0 {
+            //     self.recv_ctx_map.remove_per_qp_ctx(qpn);
+            // }
         }
     }
 
@@ -337,10 +360,21 @@ fn try_recover(
 #[derive(Debug, Default)]
 pub(crate) struct RecvContextMap(RefCell<HashMap<Qpn, PerQpContextMap>>);
 
+#[repr(u8)]
+#[derive(Debug, Default, Clone, Copy)]
+enum RecentQpMsnStatus {
+    #[default]
+    NoExist = 0,
+    Processing = 1,
+    Finished = 2,
+    UnKnown = 3,
+}
+
 #[derive(Debug)]
 pub(crate) struct PerQpContextMap {
     map: BTreeMap<Msn, RecvContext>,
     largest_psn_recved: Psn,
+    recent_msn_finished: [(Msn, RecentQpMsnStatus); MAX_MSN_WINDOW_PER_QP],
 }
 
 impl PerQpContextMap {
@@ -348,19 +382,42 @@ impl PerQpContextMap {
         Self {
             map: BTreeMap::new(),
             largest_psn_recved,
+            recent_msn_finished: [(Msn::default(), RecentQpMsnStatus::default());
+                MAX_MSN_WINDOW_PER_QP],
         }
     }
 
     pub(crate) fn update_largest_psn_recved(&mut self, psn: Psn) {
-        let diff = psn.wrapping_sub(self.largest_psn_recved.get()).get();
-        if diff >= MAX_WINDOW_SIZE {
-            return;
+        if !self.largest_psn_recved.larger_in_psn(psn){
+            self.largest_psn_recved = psn;
         }
-        self.largest_psn_recved = psn;
     }
 
     pub(crate) fn largest_psn_recved(&self) -> Psn {
         self.largest_psn_recved
+    }
+
+    #[allow(clippy::indexing_slicing)]
+    fn query_recent_msn_status(&self, msn: Msn) -> RecentQpMsnStatus {
+        let idx = msn.get() as usize % MAX_MSN_WINDOW_PER_QP;
+        match self.recent_msn_finished[idx] {
+            (_, RecentQpMsnStatus::NoExist) => RecentQpMsnStatus::NoExist,
+            (_, RecentQpMsnStatus::Processing) => RecentQpMsnStatus::Processing,
+            (previous_msn, RecentQpMsnStatus::Finished) => {
+                if previous_msn == msn {
+                    RecentQpMsnStatus::Finished
+                } else {
+                    RecentQpMsnStatus::NoExist
+                }
+            }
+            (_, RecentQpMsnStatus::UnKnown) => RecentQpMsnStatus::UnKnown,
+        }
+    }
+
+    #[allow(clippy::indexing_slicing)]
+    fn set_recent_msn_status(&mut self, msn: Msn, status: RecentQpMsnStatus) {
+        let idx = msn.get() as usize % MAX_MSN_WINDOW_PER_QP;
+        self.recent_msn_finished[idx] = (msn, status);
     }
 }
 
@@ -377,6 +434,8 @@ impl RecvContextMap {
             .or_insert(PerQpContextMap::new(Psn::default()));
         if per_qp_map.map.insert(msn, ctx).is_some() {
             log::error!("create duplicate msn({:?}) record for qpn={:?}", msn, qpn);
+        } else {
+            per_qp_map.set_recent_msn_status(msn, RecentQpMsnStatus::Processing);
         }
     }
 
@@ -384,6 +443,7 @@ impl RecvContextMap {
         let mut inner = self.0.borrow_mut();
         if let Some(per_qp_map) = inner.get_mut(&qpn) {
             let _dont_care = per_qp_map.map.remove(&msn);
+            per_qp_map.set_recent_msn_status(msn, RecentQpMsnStatus::Finished);
         } else {
             log::error!("No recv ctx found for qpn={:?},msn={:?}", qpn, msn);
         }
@@ -438,6 +498,22 @@ impl RecvContextMap {
             Some(RefMut::map(self.0.borrow_mut(), |inner| {
                 inner.get_mut(&qpn).unwrap()
             }))
+        }
+    }
+
+    fn query_recent_msn_status(&self, qpn: Qpn, msn: Msn) -> RecentQpMsnStatus {
+        let inner = self.0.borrow();
+        if let Some(per_qp_map) = inner.get(&qpn) {
+            per_qp_map.query_recent_msn_status(msn)
+        } else {
+            RecentQpMsnStatus::NoExist
+        }
+    }
+
+    fn set_recent_msn_status(&self, qpn: Qpn, msn: Msn, status: RecentQpMsnStatus) {
+        let mut inner = self.0.borrow_mut();
+        if let Some(per_qp_map) = inner.get_mut(&qpn) {
+            per_qp_map.set_recent_msn_status(msn, status);
         }
     }
 }
@@ -519,12 +595,12 @@ impl SlidingWindow {
         }
 
         let diff_of_start_psn = from.wrapping_sub(self.start_psn.get()).get();
-        if diff_of_start_psn >= MAX_WINDOW_SIZE {
+        if diff_of_start_psn >= PSN_MAX_WINDOW_SIZE {
             return;
         }
         let abs_left = diff_of_start_psn;
         let diff_of_end_psn = to.wrapping_sub(self.start_psn.get()).get();
-        if diff_of_end_psn >= MAX_WINDOW_SIZE {
+        if diff_of_end_psn >= PSN_MAX_WINDOW_SIZE {
             return;
         }
         let abs_right = diff_of_end_psn;
@@ -656,7 +732,7 @@ impl Default for PacketCheckEvent {
 fn get_continous_range(largest_psn_recved: Psn, expected_psn: Psn) -> Option<(Psn, Psn)> {
     let left = largest_psn_recved.wrapping_add(1);
     let right = expected_psn.wrapping_sub(1);
-    (right.wrapping_sub(left.get()).get() <= MAX_WINDOW_SIZE).then_some((left, right))
+    (right.wrapping_sub(left.get()).get() <= PSN_MAX_WINDOW_SIZE).then_some((left, right))
 }
 
 #[cfg(test)]

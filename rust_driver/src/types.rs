@@ -11,6 +11,8 @@ use crate::Pd;
 
 /// page size is 2MB.
 pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
+pub(crate) const PSN_MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
+
 
 /// Type for `Imm`
 #[derive(Debug, Clone, Copy, Hash, Default)]
@@ -204,6 +206,13 @@ impl ThreeBytesStruct {
         } else {
             self.0 + Self::BORDER - rhs.0
         }
+    }
+
+    /// Check if the current PSN is larger or equal to the PSN in the argument
+    pub(crate) fn larger_in_psn(&self,rhs:Psn) -> bool{
+        let diff = self.wrapping_sub(rhs.get()).get();
+        // if diff < 2^23, then self is larger or equal to rhs
+        diff <= PSN_MAX_WINDOW_SIZE
     }
 }
 
