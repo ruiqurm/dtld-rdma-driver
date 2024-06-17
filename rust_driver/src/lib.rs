@@ -157,7 +157,8 @@ use flume::unbounded;
 use nic::NicInterface;
 use op_ctx::{CtrlOpCtx, OpCtx};
 use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
-use poll::{ctrl::{ControlPoller, ControlPollerContext}, work::{WorkDescPoller, WorkDescPollerContext}};
+use ctrl_poller::{ControlPoller, ControlPollerContext};
+use work_poller::{WorkDescPoller, WorkDescPollerContext};
 use qp::QpContext;
 use retry::{RetryEvent, RetryMonitor, RetryMonitorContext, RetryRecord};
 use std::{
@@ -186,8 +187,10 @@ pub mod types;
 mod device;
 /// pakcet check thread: checking if the packet is received correctly
 mod checker;
-/// poll thread: polling the work descriptor and control descriptor
-mod poll;
+/// ctrl poll thread: polling the ctrl descriptor
+mod ctrl_poller;
+/// work poll thread: polling the work descriptor
+mod work_poller;
 /// responser thread: sending the response(read resp or ack) to the device
 mod responser;
 /// A simple buffer allocator

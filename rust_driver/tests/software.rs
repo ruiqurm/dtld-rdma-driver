@@ -11,8 +11,6 @@ use open_rdma_driver::{
 use serial_test::serial;
 use std::net::Ipv4Addr;
 
-use crate::common::init_logging;
-
 const BUFFER_LENGTH: usize = 1024 * 128;
 const SEND_CNT: usize = 1024 * 64;
 

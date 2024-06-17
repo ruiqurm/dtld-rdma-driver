@@ -469,7 +469,24 @@ fn test_checker_redudant_packets() {
 }
 
 #[test]
-fn test_checker_cross_msn() {}
+fn test_checker_miss_first() {
+    // psn = 1,expected_psn=0
+    // received psn from 2-5,no reported
+    // psn = 6,last,expected_psn=6
+    // psn = 0,first,expected_psn=7
+
+}
+
+#[test]
+fn test_checker_multiple_msn() {
+
+}
+
+#[test]
+fn test_checker_multiple_msn_miss_first() {
+    
+}
+
 
 #[derive(Debug, Default)]
 #[allow(clippy::vec_box)]
