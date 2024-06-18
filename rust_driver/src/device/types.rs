@@ -979,7 +979,7 @@ impl ToHostWorkRbDesc {
         clippy::indexing_slicing,
         clippy::too_many_lines
     )]
-    pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
+    pub(crate) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
         //     MSN                             msn;            // 24
@@ -989,7 +989,8 @@ impl ToHostWorkRbDesc {
         //     PSN                             expectedPSN;    // 24
         // } MetaReportQueueDescBthRethReth deriving(Bits, FShow);
         let desc_bth = MetaReportQueueDescBthReth(&src[0..32]);
-
+        //print buffer in hex:
+        log::info!("{:02x?}", &src[0..32]);
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
 
         let status =
@@ -1130,7 +1131,7 @@ impl ToHostWorkRbDesc {
 
 impl IncompleteToHostWorkRbDesc {
     #[allow(clippy::cast_possible_truncation)]
-    pub(super) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
+    pub(crate) fn read(self, src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         fn read_second_reth(src: &[u8]) -> (u64, Key) {
             // typedef struct {
             //     RKEY                            secondaryRkey;   // 32

@@ -70,6 +70,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
         rpc_server_addr: SocketAddr,
         heap_mem_start_addr: usize,
         strategy: Strat,
+        scheduler_size : usize
     ) -> Result<Arc<Self>, DeviceError> {
         let rpc_cli =
             RpcClient::new(rpc_server_addr).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -107,6 +108,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
+            scheduler_size
         ));
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),

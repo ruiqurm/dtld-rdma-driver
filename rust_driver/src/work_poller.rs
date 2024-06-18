@@ -48,35 +48,42 @@ impl WorkDescPoller {
 impl WorkDescPollerContext {
     pub(crate) fn poll_working_thread(ctx: &Self, stop_flag: &AtomicBool) {
         while !stop_flag.load(Ordering::Relaxed) {
-            let desc = match ctx.work_rb.pop() {
-                Ok(desc) => desc,
-                Err(DeviceError::ParseDesc(e)) => {
-                    error!("parse descriptor failed : {:?}", e);
-                    continue;
-                }
-                Err(e)=>{
-                    error!("WorkDescPoller is stopped due to : {:?}", e);
-                    return;
-                }
-            };
-            debug!("driver read from card RQ: {:?}", &desc);
-            if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
-                error!("desc status is {:?}", desc.status());
-                continue;
-            }
-
-            let result = match desc {
-                ToHostWorkRbDesc::Read(desc) => ctx.handle_work_desc_to_checker(desc),
-                ToHostWorkRbDesc::WriteOrReadResp(desc) => ctx.handle_work_desc_to_checker(desc),
-                ToHostWorkRbDesc::WriteWithImm(desc) => ctx.handle_work_desc_write_with_imm(&desc),
-                ToHostWorkRbDesc::Ack(desc) => ctx.handle_work_desc_to_checker(desc),
-                ToHostWorkRbDesc::Raw(desc) => ctx.handle_work_desc_raw(&desc),
-            };
-            if let Err(reason) = result {
-                error!("poll_work_rb stopped: {}", reason);
-                return;
+            if ctx.recv_a_desc().is_err(){
+                break;
             }
         }
+    }
+
+    pub(crate) fn recv_a_desc(&self) -> Result<(), Error> {
+        let desc = match self.work_rb.pop() {
+            Ok(desc) => desc,
+            Err(DeviceError::ParseDesc(e)) => {
+                error!("parse descriptor failed : {:?}", e);
+                return Ok(());
+            }
+            Err(e)=>{
+                error!("WorkDescPoller is stopped due to : {:?}", e);
+                return Ok(());
+            }
+        };
+        debug!("driver read from card RQ: {:?}", &desc);
+        if !matches!(desc.status(), ToHostWorkRbDescStatus::Normal) {
+            error!("desc status is {:?}", desc.status());
+            return Ok(());
+        }
+
+        let result = match desc {
+            ToHostWorkRbDesc::Read(desc) => self.handle_work_desc_to_checker(desc),
+            ToHostWorkRbDesc::WriteOrReadResp(desc) => self.handle_work_desc_to_checker(desc),
+            ToHostWorkRbDesc::WriteWithImm(desc) => self.handle_work_desc_write_with_imm(&desc),
+            ToHostWorkRbDesc::Ack(desc) => self.handle_work_desc_to_checker(desc),
+            ToHostWorkRbDesc::Raw(desc) => self.handle_work_desc_raw(&desc),
+        };
+        if let Err(reason) = result {
+            error!("poll_work_rb stopped: {}", reason);
+            return Err(reason);
+        }
+        Ok(())
     }
 
     #[inline]

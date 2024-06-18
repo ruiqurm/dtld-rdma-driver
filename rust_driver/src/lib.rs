@@ -202,6 +202,9 @@ mod retry;
 /// utility functions
 mod utils;
 
+/// THIS FILE IS ONLY USED FOR EXPORT AN ENTRY FUNCTION FOR BENCHMARKING
+pub mod tmp_benchmark_entry;
+
 /// unit test
 #[cfg(test)]
 mod tests;
@@ -292,7 +295,10 @@ pub struct DeviceConfig<Strat:SchedulerStrategy>{
     device_type : DeviceType,
 
     /// The scheduler strategy
-    strategy : Strat
+    strategy :  Strat,
+
+    /// scheduler size
+    scheduler_size : usize
 }
 
 impl Device {
@@ -304,8 +310,8 @@ impl Device {
     pub fn new<Strat:SchedulerStrategy>(config : DeviceConfig<Strat>) -> Result<Self, Error> {
         let dev  = match config.device_type{
             DeviceType::Hardware{device_path} => {
-                let adaptor = HardwareDevice::new(device_path,config.strategy).map_err(|e| Error::Device(Box::new(e)))?;
-                    let use_hugepage =  adaptor.use_hugepage();
+                let adaptor = HardwareDevice::new(device_path,config.strategy,config.scheduler_size).map_err(|e| Error::Device(Box::new(e)))?;
+                let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
                     pd: Mutex::new(HashMap::new()),
@@ -326,7 +332,7 @@ impl Device {
                 }))
             },
             DeviceType::Emulated{rpc_server_addr,heap_mem_start_addr} => {
-                let adaptor = EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,config.strategy).map_err(|e| Error::Device(Box::new(e)))?;
+                let adaptor = EmulatedDevice::new(rpc_server_addr, heap_mem_start_addr,config.strategy,config.scheduler_size).map_err(|e| Error::Device(Box::new(e)))?;
                 let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
@@ -348,7 +354,7 @@ impl Device {
                 }))
             }
             DeviceType::Software => {
-                let adaptor = SoftwareDevice::new(config.network_config.ipaddr,DEFAULT_RMDA_PORT,config.strategy).map_err(Error::Device)?;
+                let adaptor = SoftwareDevice::new(config.network_config.ipaddr,DEFAULT_RMDA_PORT,config.strategy,config.scheduler_size).map_err(Error::Device)?;
                 let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {

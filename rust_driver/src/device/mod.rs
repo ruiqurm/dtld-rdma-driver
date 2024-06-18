@@ -16,6 +16,7 @@ pub(crate) use types::ToCardWorkRbDesc;
 
 pub(crate) use self::{
     emulated::EmulatedDevice, hardware::HardwareDevice, software::SoftwareDevice, types::*,
+    ringbuf::{Ringbuf,CsrReaderProxy,CsrWriterProxy}
 };
 
 /// Public interface for a device. Can be a real hardware device or a software emulation.

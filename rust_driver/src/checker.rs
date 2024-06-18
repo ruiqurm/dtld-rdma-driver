@@ -17,7 +17,7 @@ use crate::{
     },
     op_ctx::OpCtx,
     qp::QpContext,
-    responser::{make_ack, make_read_resp},
+    responser::{make_ack, make_nack, make_read_resp},
     types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE},
     utils::calculate_packet_cnt,
     CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
@@ -126,11 +126,25 @@ impl PacketCheckerContext {
                 }
             }
             PacketCheckEvent::Ack(event) => {
-                let code = event.code;
+                let code = event.code;  
                 let qpn = event.common.dqpn;
                 let msn = event.common.msn;
                 if matches!(code, ToHostWorkRbDescAethCode::Ack) {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
+                }
+            },
+            PacketCheckEvent::Retry => {
+                let b = self.recv_ctx_map.0.borrow();
+                for (qpn, per_qp_map) in b.iter() {
+                    for (msn, ctx) in per_qp_map.map.iter() {
+                        if let Some(map) = ctx.recv_map.as_ref(){
+                            if map.is_out_of_order(){
+                                map.intervals.iter().for_each(|(start,end)|{
+                                    
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -179,6 +193,17 @@ impl PacketCheckerContext {
             }
         } else {
             error!("send ack failed");
+        }
+    }
+
+    fn send_nack(&self, qpn: Qpn, msn: Msn, (psn_start,psn_end): (Psn,Psn)) {
+        let slot = self.ack_buffers.recycle_buf();
+        if let Ok(desc) = make_nack(slot, &self.qp_table, qpn, msn, psn_start,psn_end) {
+            if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
+                error!("Send nack failed {:?}", e);
+            }
+        } else {
+            error!("send nack failed");
         }
     }
 
@@ -367,7 +392,6 @@ enum RecentQpMsnStatus {
     NoExist = 0,
     Processing = 1,
     Finished = 2,
-    UnKnown = 3,
 }
 
 #[derive(Debug)]
@@ -410,7 +434,6 @@ impl PerQpContextMap {
                     RecentQpMsnStatus::NoExist
                 }
             }
-            (_, RecentQpMsnStatus::UnKnown) => RecentQpMsnStatus::UnKnown,
         }
     }
 
@@ -703,6 +726,7 @@ pub(crate) enum PacketCheckEvent {
     Write(ToHostWorkRbDescWriteOrReadResp),
     Ack(ToHostWorkRbDescAck),
     ReadReq(ToHostWorkRbDescRead),
+    Retry
 }
 
 impl From<ToHostWorkRbDescWriteOrReadResp> for PacketCheckEvent {

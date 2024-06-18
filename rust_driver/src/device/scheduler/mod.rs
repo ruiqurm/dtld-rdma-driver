@@ -24,8 +24,6 @@ use crate::{
     utils::{calculate_packet_cnt, get_first_packet_max_length},
 };
 
-const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
-const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
 pub(crate) mod round_robin;
@@ -183,6 +181,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
     >(
         strategy: Strat,
         ringbuf: Mutex<Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
+        scheduler_size: usize,
     ) -> Self {
         let (sender, receiver) = unbounded();
         let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
@@ -197,35 +196,9 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                     Err(TryRecvError::Disconnected) => return,
                 };
                 if let Some(desc) = desc {
-                    let dqpn = get_to_card_desc_common(&desc).dqpn;
-                    let splited_descs = split_descriptor(desc);
-                    if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
-                        error!("failed to push descriptors: {:?}", e);
-                    }
+                    push_to_scheduler(desc, &strategy, scheduler_size);
                 }
-
-                if let Ok((descs, len)) = strategy.pop_batch() {
-                    // avoid lock if no descriptor
-                    if len == 0 {
-                        continue;
-                    }
-                    let mut guard = ringbuf.lock();
-                    let mut writer = guard.write();
-                    #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
-                    for sealed_scheduled_desc in descs.into_iter().flatten() {
-                        let scheduled_desc = sealed_scheduled_desc.into_desc();
-                        debug!("driver send to card SQ: {:?}", &scheduled_desc);
-
-                        let desc_cnt = scheduled_desc.serialized_desc_cnt();
-                        scheduled_desc.write_0(writer.next().unwrap());
-                        scheduled_desc.write_1(writer.next().unwrap());
-                        scheduled_desc.write_2(writer.next().unwrap());
-
-                        if desc_cnt == 4 {
-                            scheduled_desc.write_3(writer.next().unwrap());
-                        }
-                    }
-                }
+                pop_and_write_to_ringbuf(&strategy, &ringbuf);
             }
         });
         Self {
@@ -237,7 +210,11 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
         }
     }
 
-    pub(crate) fn new_with_software(strategy: Strat, device: Arc<BlueRDMALogic>) -> Self {
+    pub(crate) fn new_with_software(
+        strategy: Strat,
+        device: Arc<BlueRDMALogic>,
+        scheduler_size: usize,
+    ) -> Self {
         let (sender, receiver) = unbounded();
         let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -251,13 +228,8 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                     Err(TryRecvError::Disconnected) => return,
                 };
                 if let Some(desc) = desc {
-                    let dqpn = get_to_card_desc_common(&desc).dqpn;
-                    let splited_descs = split_descriptor(desc);
-                    if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
-                        error!("failed to push descriptors: {:?}", e);
-                    }
+                    push_to_scheduler(desc, &strategy, scheduler_size);
                 }
-
                 if let Ok((descs, len)) = strategy.pop_batch() {
                     if len == 0 {
                         continue;
@@ -278,6 +250,52 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
             thread_handler: Some(thread_handler),
             receiver,
             stop_flag,
+        }
+    }
+}
+
+pub(crate) fn push_to_scheduler<Strat: SchedulerStrategy>(
+    desc: Box<ToCardWorkRbDesc>,
+    strategy: &Strat,
+    scheduler_size: usize,
+) {
+    let dqpn = get_to_card_desc_common(&desc).dqpn;
+    let splited_descs = split_descriptor(desc, scheduler_size);
+    if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
+        error!("failed to push descriptors: {:?}", e);
+    }
+}
+
+pub(crate) fn pop_and_write_to_ringbuf<
+    Strat: SchedulerStrategy,
+    T: CsrWriterProxy + Send + 'static,
+    const DEPTH: usize,
+    const ELEM_SIZE: usize,
+    const PAGE_SIZE: usize,
+>(
+    strategy: &Strat,
+    ringbuf: &Mutex<Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
+) {
+    if let Ok((descs, len)) = strategy.pop_batch() {
+        // avoid lock if no descriptor
+        if len == 0 {
+            return;
+        }
+        let mut guard = ringbuf.lock();
+        let mut writer = guard.write();
+        #[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
+        for sealed_scheduled_desc in descs.into_iter().flatten() {
+            let scheduled_desc = sealed_scheduled_desc.into_desc();
+            debug!("driver send to card SQ: {:?}", &scheduled_desc);
+
+            let desc_cnt = scheduled_desc.serialized_desc_cnt();
+            scheduled_desc.write_0(writer.next().unwrap());
+            scheduled_desc.write_1(writer.next().unwrap());
+            scheduled_desc.write_2(writer.next().unwrap());
+
+            if desc_cnt == 4 {
+                scheduled_desc.write_3(writer.next().unwrap());
+            }
         }
     }
 }
@@ -335,12 +353,12 @@ impl From<Box<ToCardWorkRbDesc>> for SealedDesc {
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
-fn get_first_schedule_segment_length(va: u64) -> u32 {
-    let offset = va.wrapping_rem(SCHEDULER_SIZE as u64);
+fn get_first_schedule_segment_length(va: u64, scheduler_size: usize) -> u32 {
+    let offset = va.wrapping_rem(scheduler_size as u64);
     // the `SCHEDULER_SIZE` is in range of u32 and offset is less than `SCHEDULER_SIZE`
     // So is safe to convert
     // And the offset is less than `SCHEDULER_SIZE`, which will never downflow
-    (SCHEDULER_SIZE as u32) - offset as u32
+    (scheduler_size as u32) - offset as u32
 }
 
 fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
@@ -406,11 +424,14 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
 
 /// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
 #[allow(clippy::linkedlist)]
-pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<SealedDesc> {
+pub(crate) fn split_descriptor(
+    desc: Box<ToCardWorkRbDesc>,
+    scheduler_size: usize,
+) -> LinkedList<SealedDesc> {
     let is_read = matches!(*desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
     #[allow(clippy::cast_possible_truncation)]
-    if is_read || total_len < SCHEDULER_SIZE as u32 {
+    if is_read || total_len < scheduler_size as u32 {
         let mut list = LinkedList::new();
         list.push_back(SealedDesc(desc));
         return list;
@@ -429,7 +450,7 @@ pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<Sealed
     let mut sg_list = SGList::new_from_sge(sge);
 
     let mut descs = LinkedList::new();
-    let mut this_length = get_first_schedule_segment_length(raddr);
+    let mut this_length = get_first_schedule_segment_length(raddr, scheduler_size);
     let mut remain_data_length = total_len;
     let mut current_va = raddr;
     let mut base_psn = psn;
@@ -459,8 +480,8 @@ pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<Sealed
         descs.push_back(SealedDesc(new_desc));
         current_va = current_va.wrapping_add(u64::from(this_length));
         remain_data_length = remain_data_length.wrapping_sub(this_length);
-        this_length = if remain_data_length > SCHEDULER_SIZE_U32 {
-            SCHEDULER_SIZE_U32
+        this_length = if remain_data_length > scheduler_size as u32 {
+            scheduler_size as u32
         } else {
             remain_data_length
         };
@@ -570,11 +591,11 @@ mod test {
 
     #[test]
     fn test_helper_function_first_length() {
-        let length = super::get_first_schedule_segment_length(0);
+        let length = super::get_first_schedule_segment_length(0, 1024 * 32);
         assert_eq!(length, 1024 * 32);
-        let length = super::get_first_schedule_segment_length(1024 * 29);
+        let length = super::get_first_schedule_segment_length(1024 * 29, 1024 * 32);
         assert_eq!(length, 1024 * 3);
-        let length = super::get_first_schedule_segment_length(1024 * 32 + 1);
+        let length = super::get_first_schedule_segment_length(1024 * 32 + 1, 1024 * 32);
         assert_eq!(length, 1024 * 32 - 1);
     }
     #[test]
@@ -623,7 +644,11 @@ mod test {
         let buffer = Buffer::new(4096, false).unwrap();
         let proxy = Proxy::default();
         let ringbuf = Mutex::new(Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer));
-        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(
+            strategy,
+            ringbuf,
+            1024 * 32,
+        ));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: length,

@@ -6,26 +6,26 @@ use crate::utils::Buffer;
 
 use super::DeviceError;
 
-pub(super) trait CsrWriterProxy {
+pub(crate) trait CsrWriterProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError>;
     fn read_tail(&self) -> Result<u32, DeviceError>;
 }
 
-pub(super) trait CsrReaderProxy {
+pub(crate) trait CsrReaderProxy {
     fn write_tail(&self, data: u32) -> Result<(), DeviceError>;
     fn read_head(&self) -> Result<u32, DeviceError>;
 }
 
 /// The Ringbuf is a circular buffer used comunicate between the host and the card.
 #[derive(Debug)]
-pub(super) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
+pub(crate) struct Ringbuf<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize> {
     buf: Mutex<Buffer>,
     head: usize,
     tail: usize,
     proxy: T,
 }
 
-pub(super) struct RingbufWriter<
+pub(crate) struct RingbufWriter<
     'a,
     'proxy,
     T: CsrWriterProxy,
@@ -40,7 +40,7 @@ pub(super) struct RingbufWriter<
     proxy: &'proxy T,
 }
 
-pub(super) struct RingbufReader<
+pub(crate) struct RingbufReader<
     'a,
     'proxy,
     T: CsrReaderProxy,
@@ -79,7 +79,7 @@ impl<T, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
         clippy::arithmetic_side_effects,
         clippy::unwrap_used
     )] // we have allocate additional space in advance to avoid overflow
-    pub(super) fn new(proxy: T, buffer: Buffer) -> Self {
+    pub(crate) fn new(proxy: T, buffer: Buffer) -> Self {
         assert!(
             buffer.as_ptr() as usize % PAGE_SIZE == 0,
             "buffer should be aligned to PAGE_SIZE"
@@ -118,7 +118,7 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     /// Get space for writing `desc_cnt` descriptors to the ring buffer.
-    pub(super) fn write(&mut self) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
+    pub(crate) fn write(&mut self) -> RingbufWriter<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE> {
         RingbufWriter {
             buf: self.buf.lock(),
             head: &mut self.head,
@@ -133,7 +133,7 @@ impl<T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
     Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
     /// Prepare to read some descriptors from the ring buffer.
-    pub(super) fn read(
+    pub(crate) fn read(
         &mut self,
     ) -> Result<RingbufReader<'_, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>, DeviceError> {
         Ok(RingbufReader {

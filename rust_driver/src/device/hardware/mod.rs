@@ -69,6 +69,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
     pub(crate) fn new<P: AsRef<Path>>(
         device_path: P,
         strategy: Strat,
+        scheduler_size:usize
     ) -> Result<Self, DeviceError> {
         let csr_cli =
             CsrClient::new(device_path).map_err(|e| DeviceError::Device(e.to_string()))?;
@@ -108,6 +109,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
+            scheduler_size
         ));
         let dev = Self(Arc::new(HardwareDeviceInner {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb).into(),
