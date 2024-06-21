@@ -4,10 +4,8 @@
  * Copyright (c) 2015 System Fabric Works, Inc. All rights reserved.
  */
 
-#include "asm/io.h"
-#include "linux/errno.h"
+#include "dtld_param.h"
 #include "linux/gfp.h"
-#include "linux/panic.h"
 #include "linux/printk.h"
 #include "linux/slab.h"
 #include "linux/vmalloc.h"
@@ -21,7 +19,7 @@
 #include "dtld_verbs.h"
 #include "dtld-abi.h"
 
-static struct rdma_user_mmap_entry *
+struct rdma_user_mmap_entry *
 dtld_user_mmap_entry_insert(struct dtld_ucontext *uctx, void *address,
                  u32 size, u8 mmap_flag, u64 *mmap_offset)
 {
@@ -115,11 +113,19 @@ static int dtld_alloc_ucontext(struct ib_ucontext *ibuc, struct ib_udata *udata)
     int ret;
     pr_err("csr: %llu",rxe->csr_addr);
     pr_err("csr length:%llu",rxe->csr_length);
+    // TODO: check error
     uc->csr_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->csr_addr, rxe->csr_length, 0, &uresp.csr);
+    uc->cmdq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->cmdq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_sq);
+    uc->cmdq_rq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->cmdq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_rq);
+    uc->workq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->workq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_sq);
+    uc->workq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->workq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_rq);
     pr_err("uresp %lld\n",uresp.csr);
     ret = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 	if (ret)
 		goto err_put_mmap_entries;
+
+
+
     return 0;
 
 err_put_mmap_entries:

@@ -35,6 +35,16 @@ struct dtld_dev {
     u8* csr;
     resource_size_t csr_addr;
     resource_size_t csr_length;
+
+    dma_addr_t cmdq_sq;
+    void * cmdq_sq_buf;
+    dma_addr_t cmdq_rq;
+    void * cmdq_rq_buf;
+    dma_addr_t workq_sq;
+    void * workq_sq_buf;
+    dma_addr_t workq_rq;
+    void * workq_rq_buf;
+
 };
 
 enum dtld_qp_state {
@@ -59,6 +69,10 @@ struct dtld_ucontext {
     struct ib_ucontext ibuc;
     struct dtld_pool_elem elem;
     struct rdma_user_mmap_entry* csr_entry;
+    struct rdma_user_mmap_entry* cmdq_sq_entry;
+    struct rdma_user_mmap_entry* cmdq_rq_entry;
+    struct rdma_user_mmap_entry* workq_sq_entry;
+    struct rdma_user_mmap_entry* workq_rq_entry;
 };
 
 struct dtld_pd {

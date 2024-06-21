@@ -9,6 +9,8 @@
 
 #define DEFAULT_MAX_VALUE (1 << 20)
 
+#define DTLD_RINGBUF_SIZE 4096
+
 // TODO: change me
 #define DTLD_MAX_HDR_LENGTH 10
 

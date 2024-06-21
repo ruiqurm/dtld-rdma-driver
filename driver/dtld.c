@@ -1,9 +1,10 @@
 #include "asm/bug.h"
+#include "dtld_verbs.h"
 #include "linux/printk.h"
+#include "rdma/ib_verbs.h"
 #include <rdma/rdma_netlink.h>
 #include <net/addrconf.h>
 #include <linux/pci.h>
-#include "linux/container_of.h"
 #include "xdma.h"
 #include "dtld.h"
 
@@ -110,6 +111,32 @@ static void dtld_init_ports(struct dtld_dev *dtld)
     spin_lock_init(&port->port_lock);
 }
 
+int dtld_ringbuf_init(struct dtld_dev *dev)
+{
+    dev->cmdq_sq_buf =
+            dma_alloc_coherent(&dev->xdev->pdev->dev, DTLD_RINGBUF_SIZE,
+                               &dev->cmdq_sq, GFP_KERNEL);
+    if (!dev->cmdq_sq_buf)
+        return -ENOMEM;
+    dev->cmdq_rq_buf =
+            dma_alloc_coherent(&dev->xdev->pdev->dev, DTLD_RINGBUF_SIZE,
+                               &dev->cmdq_rq, GFP_KERNEL);
+    if (!dev->cmdq_rq_buf)
+        return -ENOMEM;
+    dev->workq_sq_buf =
+            dma_alloc_coherent(&dev->xdev->pdev->dev, DTLD_RINGBUF_SIZE,
+                               &dev->workq_sq, GFP_KERNEL);
+    if (!dev->workq_sq_buf)
+        return -ENOMEM;
+    dev->workq_rq_buf =
+            dma_alloc_coherent(&dev->xdev->pdev->dev, DTLD_RINGBUF_SIZE,
+                               &dev->workq_rq, GFP_KERNEL);
+    if (!dev->workq_rq_buf)
+        return -ENOMEM;
+
+    return 0;
+}
+
 static int dtld_dev_init_xdma(struct pci_dev *pdev,
                               const struct pci_device_id *id,
                               struct xdma_dev **xdev)
@@ -188,8 +215,20 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
 
     if (err) {
         pr_warn("%s failed with error %d\n", __func__, err);
-        ib_dealloc_device(&dtld->ib_dev);
+        goto err_register_device;
     }
+
+    // allocate ringbuf
+    err = dtld_ringbuf_init(dtld);
+    if (err){
+        pr_err("failed to allocate ringbuf: %d\n",err);
+
+    }
+
+    
+
+err_register_device:
+    ib_dealloc_device(&dtld->ib_dev);
 err_release_bars:
     devm_iounmap(&xdev->pdev->dev, dtld->csr);
 

@@ -10,5 +10,9 @@
 
 struct dtld_uresp_alloc_ctx {
 	__aligned_u64 csr;
+	__aligned_u64 cmdq_sq;
+	__aligned_u64 cmdq_rq;
+	__aligned_u64 workq_sq;
+	__aligned_u64 workq_rq;
 };
 #endif
