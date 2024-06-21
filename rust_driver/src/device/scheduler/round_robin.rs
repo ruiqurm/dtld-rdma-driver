@@ -69,15 +69,15 @@ impl SchedulerStrategy for RoundRobinStrategy {
                 // the front_mut is existed,so the pop_front will not return None
                 result[counter as usize] = Some(list.pop_front().unwrap()); // counter is always less than POP_BATCH_SIZE
                 counter += 1;
-                if counter as usize == POP_BATCH_SIZE {
-                    return Ok((result, counter));
-                }
             }
 
             // the front_mut is existed,so the pop_front will not return None
             let (qpn, list) = guard.pop_front().unwrap();
             if !list.is_empty() {
                 guard.push_back((qpn, list));
+            }
+            if counter as usize == POP_BATCH_SIZE {
+                return Ok((result, counter));
             }
         }
         Ok((result, counter))
