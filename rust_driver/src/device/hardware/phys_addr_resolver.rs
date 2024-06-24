@@ -33,7 +33,7 @@ impl PhysAddrResolver {
         let offset = vaddr % PAGE_SIZE;
         let pagemap_fd = self.pagemap_fd.as_raw_fd();
         let data: u64 = 0;
-        error!("query {:x}",vaddr);
+        log::info!("query {:x}",vaddr);
         let ret = unsafe{libc::lseek(pagemap_fd, (vpn * 8) as i64, libc::SEEK_SET)};
         if ret < 0{
             error!("lseek failed :{:?}",io::Error::last_os_error());

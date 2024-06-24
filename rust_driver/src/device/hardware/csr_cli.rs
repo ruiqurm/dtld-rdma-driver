@@ -1,11 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
-    io,
-    mem::size_of,
-    os::fd::AsRawFd,
-    path::Path,
-    slice::from_raw_parts_mut,
-    sync::Arc,
+    fs::{File, OpenOptions}, io, mem::size_of, os::fd::AsRawFd, path::Path,slice::from_raw_parts_mut, sync::Arc
 };
 
 use log::error;
@@ -26,6 +20,7 @@ const CSR_LENGTH: usize = 0x0010_0000;
 const CSR_WORD_LENGTH: usize = CSR_LENGTH / 4;
 
 #[repr(C)]
+#[derive(Debug)]
 struct RDMASyscallReq {
     length: u16,
     object_id: u16,
@@ -37,6 +32,7 @@ struct RDMASyscallReq {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 struct RDMASyscallReqAttr {
     attr_id: u16,
     len: u16,
@@ -46,6 +42,7 @@ struct RDMASyscallReqAttr {
 }
 
 #[repr(C)]
+#[derive(Debug)]
 struct RDMAGetUContextSyscallReq {
     req: RDMASyscallReq,
     attr: RDMASyscallReqAttr,
@@ -68,15 +65,20 @@ impl RDMAGetUContextSyscallReq {
             len: size_of::<RDMAGetUContextSyscallResp>() as u16,
             flags: 1,
             reserved: 0,
-            data: std::ptr::addr_of!(resp) as u64,
+            data: resp as *const _ as u64
         };
         Self { req, attr }
     }
 }
 
 #[repr(C)]
+#[derive(Debug,Default)]
 struct RDMAGetUContextSyscallResp {
-    pub(crate) data: i64,
+    pub(crate) csr: i64,
+    pub(crate) cmdq_sq: i64,
+    pub(crate) cmdq_rq: i64,
+    pub(crate) workq_sq: i64,
+    pub(crate) workq_rq: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -90,8 +92,8 @@ struct CsrClientInner {
 
 impl CsrClient {
     pub(crate) fn new<P: AsRef<Path>>(device_path: P) -> io::Result<Self> {
-        let resp = RDMAGetUContextSyscallResp { data: 0 };
-        let req = RDMAGetUContextSyscallReq::new_get_context(&resp);
+        let resp = RDMAGetUContextSyscallResp::default();
+        let mut req = RDMAGetUContextSyscallReq::new_get_context(&resp);
         let device_file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -108,7 +110,8 @@ impl CsrClient {
         if ret_val != 0_i32 {
             return Err(io::Error::last_os_error());
         }
-        let offset = resp.data;
+        let offset = resp.csr;
+        log::info!("{:?}",resp);
 
         let mapping = unsafe {
             libc::mmap(
