@@ -196,12 +196,13 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
     xdev->dtld = dtld;
     dtld->csr_addr = pci_resource_start(xdev->pdev, RDMA_CONFIG_BAR_IDX);
     dtld->csr_length = pci_resource_len(xdev->pdev, RDMA_CONFIG_BAR_IDX);
-    dtld->csr =
-            devm_ioremap(&xdev->pdev->dev, dtld->csr_addr, dtld->csr_length);
-    pr_err("%u\n", readl(dtld->csr + 0x0010));
-    pr_err("%u\n", readl(dtld->csr + 0x1010));
-    pr_err("%u\n", readl(dtld->csr + 0x2010));
-    pr_err("%u\n", readl(dtld->csr + 0x3010));
+    dtld->csr = xdev->bar[RDMA_CONFIG_BAR_IDX];    
+    // dtld->csr =
+    //         devm_ioremap(&xdev->pdev->dev, dtld->csr_addr, dtld->csr_length);
+    pr_info("%u\n", readl(dtld->csr + 0x0010));
+    pr_info("%u\n", readl(dtld->csr + 0x1010));
+    pr_info("%u\n", readl(dtld->csr + 0x2010));
+    pr_info("%u\n", readl(dtld->csr + 0x3010));
 
     if (!dtld->csr) {
         dev_err(&xdev->pdev->dev, "devm_ioremap failed.\n");
@@ -222,9 +223,9 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
     err = dtld_ringbuf_init(dtld);
     if (err){
         pr_err("failed to allocate ringbuf: %d\n",err);
-
     }
-
+    pr_info("allocate ringbuf %lld",dtld->cmdq_rq);
+    return 0;
     
 
 err_register_device:
@@ -241,7 +242,6 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
     struct xdma_dev *xdev = NULL;
     struct xdma_pci_dev *xpdev = NULL;
 
-    pr_info("dtld driver probe success");
 
     err = dtld_dev_init_xdma(pdev, id, &xdev);
     if (err)
@@ -253,6 +253,7 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
             xpdev_free(xpdev);
         return err;
     }
+    pr_info("dtld driver probe successfully");
 
     return 0;
 }

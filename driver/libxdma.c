@@ -204,6 +204,20 @@ static int is_config_bar(struct xdma_dev *xdev, int idx)
     return flag;
 }
 
+
+
+/*
+ * Unmap the BAR regions that had been mapped earlier using map_bars()
+ */
+static void unmap_bars(struct xdma_dev *xdev, struct pci_dev *dev)
+{
+    pci_iounmap(dev, xdev->bar[XDMA_CONFIG_BAR_IDX]);
+    xdev->bar[XDMA_CONFIG_BAR_IDX] = NULL;
+
+    pci_iounmap(dev, xdev->bar[RDMA_CONFIG_BAR_IDX]);
+    xdev->bar[RDMA_CONFIG_BAR_IDX] = NULL;
+}
+
 /* map_bars() -- map device regions into kernel virtual address space */
 static int map_bars(struct xdma_dev *xdev, struct pci_dev *dev)
 {
@@ -219,25 +233,18 @@ static int map_bars(struct xdma_dev *xdev, struct pci_dev *dev)
         goto fail;
     }
 
+    if (map_single_bar(xdev, dev, RDMA_CONFIG_BAR_IDX) == 0) {
+        goto fail;
+    }
+
+
     /* successfully mapped all required BAR regions */
     return 0;
 
 fail:
     /* unwind; unmap any BARs that we did map */
-    // TODO: unmap_bars(xdev, dev);
+    unmap_bars(xdev, dev);
     return rv;
-}
-
-/*
- * Unmap the BAR regions that had been mapped earlier using map_bars()
- */
-static void unmap_bars(struct xdma_dev *xdev, struct pci_dev *dev)
-{
-    pci_iounmap(dev, xdev->bar[XDMA_CONFIG_BAR_IDX]);
-    xdev->bar[XDMA_CONFIG_BAR_IDX] = NULL;
-
-    pci_iounmap(dev, xdev->bar[RDMA_CONFIG_BAR_IDX]);
-    xdev->bar[RDMA_CONFIG_BAR_IDX] = NULL;
 }
 
 static int set_dma_mask(struct pci_dev *pdev)
