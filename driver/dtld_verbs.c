@@ -107,35 +107,41 @@ static enum rdma_link_layer dtld_get_link_layer(struct ib_device *dev,
 
 static int dtld_alloc_ucontext(struct ib_ucontext *ibuc, struct ib_udata *udata)
 {
-    struct dtld_dev *rxe = dtld_from_ibdev(ibuc->device);
+    struct dtld_dev *dtld = dtld_from_ibdev(ibuc->device);
     struct dtld_ucontext *uc = to_dtld_uc(ibuc);
     struct dtld_uresp_alloc_ctx uresp = {};
     int ret = 0;
-    uc->csr_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->csr_addr, rxe->csr_length, 0, &uresp.csr);
+    uc->csr_entry = dtld_user_mmap_entry_insert(uc, (void*)dtld->csr_addr, dtld->csr_length, 0, &uresp.csr);
     if (!uc->csr_entry){
         pr_err("insert csr entry failed");
         goto err_put_csr_entry;
     }
-    uc->cmdq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->cmdq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_sq);
+    uc->cmdq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)dtld->cmdq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_sq);
     if (!uc->cmdq_sq_entry){
         pr_err("insert cmdq_sq_entry failed");
         goto err_put_cmdq_sq_entry;
     }
-    uc->cmdq_rq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->cmdq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_rq);
+    uc->cmdq_rq_entry = dtld_user_mmap_entry_insert(uc, (void*)dtld->cmdq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.cmdq_rq);
     if (!uc->cmdq_rq_entry){
         pr_err("insert cmdq_rq_entry failed");
         goto err_put_cmdq_rq_entry;
     }
-    uc->workq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->workq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_sq);
+    uc->workq_sq_entry = dtld_user_mmap_entry_insert(uc, (void*)dtld->workq_sq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_sq);
     if (!uc->workq_sq_entry){
         pr_err("insert workq_sq_entry failed");
         goto err_put_workq_sq_entry;
     }
-    uc->workq_rq_entry = dtld_user_mmap_entry_insert(uc, (void*)rxe->workq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_rq);
+    uc->workq_rq_entry = dtld_user_mmap_entry_insert(uc, (void*)dtld->workq_rq, DTLD_RINGBUF_SIZE, 0, &uresp.workq_rq);
     if (!uc->workq_rq_entry){
         pr_err("insert workq_rq_entry failed");
         goto err_put_workq_rq_entry;
     }
+
+    uresp.cmdq_sq_dma_addr = dtld->cmdq_sq;
+    uresp.cmdq_rq_dma_addr = dtld->cmdq_rq;
+    uresp.workq_sq_dma_addr = dtld->workq_sq;
+    uresp.workq_rq_dma_addr = dtld->workq_rq;
+
     ret = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
 	if (ret)
 		goto err_put_workq_rq_entry;
@@ -160,6 +166,7 @@ err_put_csr_entry:
 static void dtld_dealloc_ucontext(struct ib_ucontext *ibuc)
 {
     struct dtld_ucontext *uc = to_dtld_uc(ibuc);
+    pr_err("destory");
 	rdma_user_mmap_entry_remove(uc->csr_entry);
     rdma_user_mmap_entry_remove(uc->workq_rq_entry);
     rdma_user_mmap_entry_remove(uc->workq_sq_entry);
@@ -181,7 +188,7 @@ int dtld_mmap(struct ib_ucontext *context, struct vm_area_struct *vma)
     }
     entry = to_dtld_mmap_entry(rdma_entry);
     prot = pgprot_device(vma->vm_page_prot);
-    pr_err("entry->address :%llu\n",entry->address);
+    pr_info("entry->address :%llu\n",entry->address);
     err = rdma_user_mmap_io(context, vma, PFN_DOWN(entry->address),
                             entry->length, prot, rdma_entry);
     rdma_user_mmap_entry_put(rdma_entry);

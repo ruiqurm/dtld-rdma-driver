@@ -35,5 +35,5 @@ impl log::Log for SimpleLogger {
 }
 
 pub fn init_logging(file_path: &str) -> Result<(), SetLoggerError> {
-    log::set_boxed_logger(Box::new(SimpleLogger::new(file_path))).map(|()| log::set_max_level(LevelFilter::Debug))
+    log::set_boxed_logger(Box::new(SimpleLogger::new(file_path))).map(|()| log::set_max_level(LevelFilter::Info))
 }

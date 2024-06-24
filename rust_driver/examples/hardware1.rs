@@ -5,7 +5,7 @@ use open_rdma_driver::{
     qp::QpManager, types::{
         Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    }, Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RetryConfig, RoundRobinStrategy
+    }, Device, DeviceConfigBuilder, DeviceType, MmapMemory, Mr, Pd, RetryConfig, RoundRobinStrategy
 };
 use std::{
     io::{self, BufRead},
@@ -14,8 +14,8 @@ use std::{
 
 use crate::common::init_logging;
 
-const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT: usize = 1024 * 128;
+const BUFFER_LENGTH: usize = 1024 * 1024 * 128;
+const SEND_CNT: usize = 1024 * 1024 * 128;
 
 mod common;
 
@@ -24,7 +24,7 @@ fn create_and_init_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, HugePage) {
+) -> (Device, Pd, Mr, MmapMemory) {
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
         .device_type(DeviceType::Hardware {
@@ -45,7 +45,7 @@ fn create_and_init_card<'a>(
     let pd = dev.alloc_pd().unwrap();
     info!("[{}] PD allocated", card_id);
 
-    let mr_buffer = HugePage::new(BUFFER_LENGTH).unwrap();
+    let mr_buffer = MmapMemory::new(BUFFER_LENGTH).unwrap();
 
     let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
         | MemAccessTypeFlag::IbvAccessRemoteWrite
@@ -66,9 +66,10 @@ fn create_and_init_card<'a>(
         .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu1024)
+        .pmtu(Pmtu::Mtu4096)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
+        .peer_qpn(qpn)
         .build()
         .unwrap();
     dev.create_qp(&qp).unwrap();
@@ -111,21 +112,12 @@ fn main() {
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
         *item = idx as u8;
     }
-    // for item in mr_buffer_b[0..].iter_mut() {
-    //     *item = 0
-    // }
 
     let sge0 = Sge::new(
         &mr_buffer_a[0] as *const u8 as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
-    debug!("===========6====================");
-    // let sge1 = Sge::new(
-    //     &mr_buffer_a[SEND_CNT] as *const u8 as u64,
-    //     SEND_CNT.try_into().unwrap(),
-    //     mr_a.get_key(),
-    // );
 
     println!("please input peer memory info:");
     let stdin = io::stdin();
@@ -138,57 +130,12 @@ fn main() {
     let raddr = u64::from_str_radix(splited_params_strs[0], 16).unwrap();
     let rkey = Key::new(u32::from_str_radix(splited_params_strs[1], 16).unwrap());
 
-    // test write
+    // // test write
     let ctx1 = dev_a
         .write(dpqn, raddr, rkey, WorkReqSendFlag::IbvSendSignaled, sge0)
         .unwrap();
-    // let ctx2 = dev_a
-    //     .write(
-    //         dpqn,
-    //         &mr_buffer_b[SEND_CNT] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::empty(),
-    //         sge1,
-    //     )
-    //     .unwrap();
 
-    debug!("===========7====================");
-    let _ = ctx1.wait();
-    debug!("===========8====================");
-    // let _ = ctx2.wait();
-
-    // if mr_buffer_a[0..SEND_CNT * 2] != mr_buffer_b[0..SEND_CNT * 2] {
-    //     for i in 0..SEND_CNT * 2 {
-    //         if mr_buffer_a[i] != mr_buffer_b[i] {
-    //             panic!("{}: {} != {}", i, mr_buffer_a[i], mr_buffer_b[i]);
-    //         }
-    //     }
-    // }
-
-    // for item in mr_buffer_a.iter_mut() {
-    //     *item = 0;
-    // }
-    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-    //     *item = idx as u8;
-    // }
-
-    // // we read from b to a
-
-    // let sge_read = Sge::new(
-    //     &mr_buffer_a[SEND_CNT] as *const u8 as u64,
-    //     SEND_CNT.try_into().unwrap(),
-    //     mr_a.get_key(),
-    // );
-
-    // let ctx1 = dev_a
-    //     .read(
-    //         dpqn,
-    //         &mr_buffer_b[0] as *const u8 as u64,
-    //         mr_b.get_key(),
-    //         MemAccessTypeFlag::IbvAccessNoFlags,
-    //         sge_read,
-    //     )
-    //     .unwrap();
+    // info!("===========7====================");
+    // debug!("===========8====================");
     // let _ = ctx1.wait();
-    // info!("Read req sent");
 }

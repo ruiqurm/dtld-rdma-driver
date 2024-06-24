@@ -211,7 +211,7 @@ pub use device::scheduler::{SchedulerStrategy,SealedDesc,POP_BATCH_SIZE,BatchDes
 pub use device::scheduler::{round_robin::RoundRobinStrategy,testing::{TestingStrategy,TestingHandler}};
 pub use types::Error;
 pub use retry::RetryConfig;
-pub use utils::{HugePage,AlignedMemory};
+pub use utils::{MmapMemory,AlignedMemory};
 
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;

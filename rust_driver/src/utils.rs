@@ -1,7 +1,10 @@
 use std::{
     alloc::{alloc, dealloc, Layout},
+    fs::{File, OpenOptions},
     io,
     ops::{Deref, DerefMut, Index, IndexMut},
+    os::fd::AsRawFd,
+    path::Path,
     slice::from_raw_parts_mut,
 };
 
@@ -45,15 +48,42 @@ pub(crate) fn align_up<const PAGE: usize>(addr: usize) -> usize {
 
 /// A struct to manage hugepage memory
 #[derive(Debug)]
-pub struct HugePage {
+pub struct MmapMemory {
     size: usize,
     addr: usize,
 }
 
-impl HugePage {
+impl MmapMemory {
     /// size of the huge page
-    pub const HUGE_PAGE_SIZE: usize = PAGE_SIZE;
+    pub const HUGE_PAGE_SIZE: usize = 1024 * 1024 * 2;
 
+    pub(crate) fn new_ringbuf<const RINGBUF_SIZE: usize>(
+        device_file: &File,
+        ringbuf_slot_offset: i64,
+    ) -> io::Result<Self> {
+        let device_file_fd = device_file.as_raw_fd();
+
+        let ptr = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                RINGBUF_SIZE,
+                libc::PROT_WRITE| libc::PROT_READ,
+                libc::MAP_SHARED,
+                device_file_fd,
+                ringbuf_slot_offset,
+            )
+        };
+
+        if ptr == libc::MAP_FAILED {
+            log::error!("failed to allocate here {}",ringbuf_slot_offset);
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            size: RINGBUF_SIZE,
+            addr: ptr as usize,
+        })
+    }
     /// # Errors
     ///
     pub fn new(size: usize) -> io::Result<Self> {
@@ -76,7 +106,7 @@ impl HugePage {
         if ret != 0_i32 {
             return Err(io::Error::last_os_error());
         }
-        Ok(HugePage {
+        Ok(Self {
             size,
             addr: buffer as usize,
         })
@@ -103,20 +133,20 @@ impl HugePage {
     }
 }
 
-impl Deref for HugePage {
+impl Deref for MmapMemory {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-impl DerefMut for HugePage {
+impl DerefMut for MmapMemory {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
-impl Drop for HugePage {
+impl Drop for MmapMemory {
     fn drop(&mut self) {
         let result = unsafe { libc::munmap(self.addr as *mut libc::c_void, self.size) };
         if result != 0_i32 {
@@ -174,14 +204,14 @@ impl DerefMut for AlignedMemory<'_> {
 
 #[derive(Debug)]
 pub(crate) enum Buffer {
-    HugePage(HugePage),
+    DmaBuffer(MmapMemory),
     AlignedMemory(AlignedMemory<'static>),
 }
 
 impl Buffer {
     pub(crate) fn new(size: usize, is_huge_page: bool) -> io::Result<Self> {
         if is_huge_page {
-            HugePage::new(size).map(Buffer::HugePage)
+            MmapMemory::new(size).map(Buffer::DmaBuffer)
         } else {
             AlignedMemory::new(size).map(Buffer::AlignedMemory)
         }
@@ -189,21 +219,21 @@ impl Buffer {
 
     pub(crate) fn as_ptr(&self) -> *const u8 {
         match self {
-            Buffer::HugePage(huge_page) => huge_page.as_ptr(),
+            Buffer::DmaBuffer(huge_page) => huge_page.as_ptr(),
             Buffer::AlignedMemory(aligned_memory) => aligned_memory.as_ptr(),
         }
     }
 
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         match self {
-            Buffer::HugePage(huge_page) => huge_page.addr as *mut u8,
+            Buffer::DmaBuffer(huge_page) => huge_page.addr as *mut u8,
             Buffer::AlignedMemory(aligned_memory) => aligned_memory.0.as_mut_ptr(),
         }
     }
 
     pub(crate) fn size(&self) -> usize {
         match self {
-            Buffer::HugePage(huge_page) => huge_page.size(),
+            Buffer::DmaBuffer(huge_page) => huge_page.size(),
             Buffer::AlignedMemory(aligned_memory) => aligned_memory.len(),
         }
     }
@@ -211,12 +241,16 @@ impl Buffer {
 
 impl Index<usize> for Buffer {
     type Output = u64;
-    #[allow(clippy::ptr_as_ptr,clippy::cast_ptr_alignment,clippy::arithmetic_side_effects)]
+    #[allow(
+        clippy::ptr_as_ptr,
+        clippy::cast_ptr_alignment,
+        clippy::arithmetic_side_effects
+    )]
     fn index(&self, index: usize) -> &u64 {
         match self {
-            Buffer::HugePage(huge_page) => {
+            Buffer::DmaBuffer(buffer) => {
                 let ptr = unsafe {
-                    huge_page.as_ptr().add(index * std::mem::size_of::<u64>()) as *const u64
+                    buffer.as_ptr().add(index * std::mem::size_of::<u64>()) as *const u64
                 };
                 unsafe { &*ptr }
             }
@@ -233,14 +267,16 @@ impl Index<usize> for Buffer {
 }
 
 impl IndexMut<usize> for Buffer {
-    #[allow(clippy::ptr_as_ptr,clippy::cast_ptr_alignment,clippy::arithmetic_side_effects)]
+    #[allow(
+        clippy::ptr_as_ptr,
+        clippy::cast_ptr_alignment,
+        clippy::arithmetic_side_effects
+    )]
     fn index_mut(&mut self, index: usize) -> &mut u64 {
         match self {
-            Buffer::HugePage(huge_page) => {
+            Buffer::DmaBuffer(buffer) => {
                 let ptr = unsafe {
-                    huge_page
-                        .as_mut_ptr()
-                        .add(index * std::mem::size_of::<u64>()) as *mut u64
+                    buffer.as_mut_ptr().add(index * std::mem::size_of::<u64>()) as *mut u64
                 };
                 unsafe { &mut *ptr }
             }

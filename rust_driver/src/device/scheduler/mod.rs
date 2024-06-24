@@ -24,7 +24,7 @@ use crate::{
     utils::{calculate_packet_cnt, get_first_packet_max_length},
 };
 
-const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
+const SCHEDULER_SIZE_U32: u32 = 1024 * 1024 * 2; // 32KB
 const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
