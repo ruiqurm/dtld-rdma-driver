@@ -111,6 +111,8 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
+#[ignore] // FIXME: ci failed to allocate memory?
+#[test]
 fn test_emulated() {
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();
