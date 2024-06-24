@@ -54,30 +54,12 @@ static void dtld_init_device_param(struct dtld_dev *dtld)
     dtld->attr.max_fast_reg_page_list_len = DTLD_MAX_FMR_PAGE_LIST_LEN;
     dtld->attr.max_pkeys = DTLD_MAX_PKEYS;
     dtld->attr.local_ca_ack_delay = DTLD_LOCAL_CA_ACK_DELAY;
-    // addrconf_addr_eui48((unsigned char *)&dtld->attr.sys_image_guid,
-    //         dtld->ndev->dev_addr);
-
-    // dtld->max_ucontext            = DTLD_MAX_UCONTEXT;
-}
-
-/* init pools of managed objects */
-static void dtld_init_pools(struct dtld_dev *dtld)
-{
-    dtld_pool_init(dtld, &dtld->uc_pool, DTLD_TYPE_UC);
-    dtld_pool_init(dtld, &dtld->pd_pool, DTLD_TYPE_PD);
-    dtld_pool_init(dtld, &dtld->ah_pool, DTLD_TYPE_AH);
-    // dtld_pool_init(dtld, &dtld->srq_pool, DTLD_TYPE_SRQ);
-    dtld_pool_init(dtld, &dtld->qp_pool, DTLD_TYPE_QP);
-    dtld_pool_init(dtld, &dtld->cq_pool, DTLD_TYPE_CQ);
-    dtld_pool_init(dtld, &dtld->mr_pool, DTLD_TYPE_MR);
-    // dtld_pool_init(dtld, &dtld->mw_pool, DTLD_TYPE_MW);
 }
 
 /* initialize port attributes */
 static void dtld_init_port_param(struct dtld_port *port)
 {
     // TODO: change these attrs according to real hardware
-
     // port->attr.state        = IB_PORT_DOWN;
     // port->attr.max_mtu        = IB_MTU_4096;
     // port->attr.active_mtu        = IB_MTU_256;
@@ -145,8 +127,6 @@ static int dtld_dev_init_xdma(struct pci_dev *pdev,
     struct xdma_pci_dev *xpdev = NULL;
     void *hndl;
 
-    // TODO: why not move xpdev alloc into `xdma_device_open` and make it an atomic one?
-    // and why multi xdev may bind to the same pdev? I think we should refactor it soon.
     xpdev = xpdev_alloc(pdev);
     if (!xpdev)
         return -ENOMEM;
@@ -196,13 +176,10 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
     xdev->dtld = dtld;
     dtld->csr_addr = pci_resource_start(xdev->pdev, RDMA_CONFIG_BAR_IDX);
     dtld->csr_length = pci_resource_len(xdev->pdev, RDMA_CONFIG_BAR_IDX);
-    dtld->csr = xdev->bar[RDMA_CONFIG_BAR_IDX];    
-    // dtld->csr =
-    //         devm_ioremap(&xdev->pdev->dev, dtld->csr_addr, dtld->csr_length);
-    pr_info("%u\n", readl(dtld->csr + 0x0010));
-    pr_info("%u\n", readl(dtld->csr + 0x1010));
-    pr_info("%u\n", readl(dtld->csr + 0x2010));
-    pr_info("%u\n", readl(dtld->csr + 0x3010));
+    dtld->csr = xdev->bar[RDMA_CONFIG_BAR_IDX];
+    pr_info("rdma version: %u %u %u %u", readl(dtld->csr + 0x0010),
+            readl(dtld->csr + 0x1010), readl(dtld->csr + 0x2010),
+            readl(dtld->csr + 0x3010));
 
     if (!dtld->csr) {
         dev_err(&xdev->pdev->dev, "devm_ioremap failed.\n");
@@ -221,12 +198,12 @@ static int dtld_dev_init_rdma(struct xdma_dev *xdev)
 
     // allocate ringbuf
     err = dtld_ringbuf_init(dtld);
-    if (err){
-        pr_err("failed to allocate ringbuf: %d\n",err);
+    if (err) {
+        pr_err("failed to allocate ringbuf: %d\n", err);
     }
-    pr_info("allocate ringbuf %lld",dtld->cmdq_rq);
+    pr_info("allocate cmdq ringbuf at 0x%llx(sq) 0x%llx(rq),workq ringbuf at 0x%llx(sq), 0x%llx(rq)",
+            dtld->cmdq_sq, dtld->cmdq_rq, dtld->workq_sq, dtld->workq_rq);
     return 0;
-    
 
 err_register_device:
     ib_dealloc_device(&dtld->ib_dev);
@@ -241,7 +218,6 @@ static int probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
     int err;
     struct xdma_dev *xdev = NULL;
     struct xdma_pci_dev *xpdev = NULL;
-
 
     err = dtld_dev_init_xdma(pdev, id, &xdev);
     if (err)

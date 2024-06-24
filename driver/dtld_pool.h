@@ -7,6 +7,8 @@
 #ifndef DTLD_POOL_H
 #define DTLD_POOL_H
 
+#include "linux/kref.h"
+#include "linux/xarray.h"
 enum dtld_elem_type {
     DTLD_TYPE_UC,
     DTLD_TYPE_PD,

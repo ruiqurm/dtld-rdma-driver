@@ -6,7 +6,7 @@
 
 #ifndef DTLD_QUEUE_H
 #define DTLD_QUEUE_H
-
+#include <rdma/ib_verbs.h>
 /* for definition of shared struct dtld_queue_buf */
 #include "rdma/rdma_user_dtld.h"
 

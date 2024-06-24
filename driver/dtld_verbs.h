@@ -5,7 +5,7 @@
 #include "dtld_queue.h"
 #include "linux/types.h"
 #include "rdma/ib_verbs.h"
-
+#include "dtld_param.h"
 #include "libxdma.h"
 
 #include "linux/xarray.h"
@@ -23,13 +23,6 @@ struct dtld_dev {
     struct dtld_port port;
 
     int max_inline_data;
-
-    struct dtld_pool uc_pool;
-    struct dtld_pool ah_pool;
-    struct dtld_pool qp_pool;
-    struct dtld_pool cq_pool;
-    struct dtld_pool pd_pool;
-    struct dtld_pool mr_pool;
 
     struct xdma_dev *xdev;
     u8* csr;

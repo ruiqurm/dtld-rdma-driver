@@ -204,8 +204,6 @@ static int is_config_bar(struct xdma_dev *xdev, int idx)
     return flag;
 }
 
-
-
 /*
  * Unmap the BAR regions that had been mapped earlier using map_bars()
  */

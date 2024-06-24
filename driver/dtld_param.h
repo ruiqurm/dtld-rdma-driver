@@ -10,7 +10,7 @@
 #define DEFAULT_MAX_VALUE (1 << 20)
 
 #define DTLD_RINGBUF_SIZE 4096
-
+#include <rdma/ib_verbs.h>
 // TODO: change me
 #define DTLD_MAX_HDR_LENGTH 10
 
@@ -125,7 +125,6 @@ enum dtld_device_param {
 /* default/initial dtld port parameters */
 enum dtld_port_param {
     DTLD_PORT_GID_TBL_LEN = 1024,
-    DTLD_PORT_PORT_CAP_FLAGS = IB_PORT_CM_SUP,
     DTLD_PORT_MAX_MSG_SZ = 0x800000,
     DTLD_PORT_BAD_PKEY_CNTR = 0,
     DTLD_PORT_QKEY_VIOL_CNTR = 0,
