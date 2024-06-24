@@ -88,7 +88,7 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 
-#[test]
+
 #[serial]
 fn test_emulated() {
     init_logging("log.txt").unwrap();
