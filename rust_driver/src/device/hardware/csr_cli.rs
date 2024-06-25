@@ -43,7 +43,7 @@ impl CsrClient {
         #[allow(clippy::ptr_offset_with_cast)]
         let offset = unsafe { buf.as_ptr().offset(addr as isize) as *const u32 };
         // read only 4 bytes. Because it is a hardware resouce.
-        let val = unsafe { offset.read() };
+        let val = unsafe { offset.read_volatile() };
         Ok(val)
     }
 
@@ -54,7 +54,7 @@ impl CsrClient {
         let mut buf = self.0.mapping.lock();
         #[allow(clippy::ptr_offset_with_cast)]
         let offset = unsafe { buf.as_mut_ptr().offset(addr as isize) as *mut u32 };
-        unsafe { offset.write(data) }
+        unsafe { offset.write_volatile(data) }
         Ok(())
     }
 }

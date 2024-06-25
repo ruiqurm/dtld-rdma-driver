@@ -62,7 +62,7 @@ pub(crate) struct HardwareDeviceInner<Strat: SchedulerStrategy> {
     csr_cli: CsrClient,
     scheduler: Arc<DescriptorScheduler<Strat>>,
     phys_addr_resolver: PhysAddrResolver,
-    device_file: File,
+    _device_file: File,
 }
 
 impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
@@ -130,7 +130,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
             to_host_ctrl_rb: Mutex::new(to_host_ctrl_rb).into(),
             to_host_work_rb: Mutex::new(to_host_work_rb).into(),
             csr_cli,
-            device_file,
+            _device_file : device_file,
             scheduler: Arc::<DescriptorScheduler<Strat>>::clone(&scheduler),
             phys_addr_resolver,
         }));
