@@ -8,7 +8,7 @@ use open_rdma_driver::{
         Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
     },
-    Device, DeviceConfigBuilder, DeviceType, HugePage, Mr, Pd, RetryConfig, RoundRobinStrategy,
+    Device, DeviceConfigBuilder, DeviceType, MmapMemory, Mr, Pd, RetryConfig, RoundRobinStrategy,
 };
 use std::{net::Ipv4Addr, thread, time::Duration};
 
@@ -23,7 +23,7 @@ fn create_and_init_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, HugePage) {
+) -> (Device, Pd, Mr, MmapMemory) {
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
         .device_type(DeviceType::Hardware {
@@ -44,7 +44,7 @@ fn create_and_init_card<'a>(
     let pd = dev.alloc_pd().unwrap();
     info!("[{}] PD allocated", card_id);
 
-    let mr_buffer = HugePage::new(BUFFER_LENGTH).unwrap();
+    let mr_buffer = MmapMemory::new(BUFFER_LENGTH).unwrap();
 
     let access_flag = MemAccessTypeFlag::IbvAccessRemoteRead
         | MemAccessTypeFlag::IbvAccessRemoteWrite

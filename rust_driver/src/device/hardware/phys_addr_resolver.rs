@@ -53,7 +53,7 @@ impl PhysAddrResolver {
         #[allow(clippy::arithmetic_side_effects, clippy::cast_possible_truncation)]
         // copy from C code
         let phsy_addr = (pfn << PAGE_SHIFT | (offset as u64)) as usize;
-        error!("phsy_addr: {phsy_addr}");
+        log::debug!("phsy_addr: {phsy_addr}");
         Some(phsy_addr)
     }
 }

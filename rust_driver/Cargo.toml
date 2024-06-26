@@ -28,6 +28,7 @@ smoltcp = {version = "0.11.0", features = ["verbose"]}
 parking_lot = "0.12.2"
 flume = "0.11.0"
 atomic_enum = "0.3.0"
+core_affinity = "0.8.1"
 
 
 [dev-dependencies]

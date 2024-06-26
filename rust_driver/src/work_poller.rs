@@ -1,4 +1,5 @@
 use core::panic;
+use core_affinity::CoreId;
 use flume::Sender;
 use log::{debug, error, info};
 use std::sync::{
@@ -32,10 +33,17 @@ pub(crate) struct WorkDescPollerContext {
 unsafe impl Send for WorkDescPollerContext {}
 
 impl WorkDescPoller {
-    pub(crate) fn new(ctx: WorkDescPollerContext) -> Self {
+    pub(crate) fn new(ctx: WorkDescPollerContext,core_id:Option<CoreId>) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let thread_stop_flag = Arc::clone(&stop_flag);
         let thread = std::thread::spawn(move || {
+            if let Some(core_id) = core_id{
+                if !core_affinity::set_for_current(core_id) {
+                    log::error!("failed to set core_affinity {:?} in work queue poller", core_id);
+                }else{
+                    log::info!("set core_affinity in work queue poller successfully");
+                }
+            }
             WorkDescPollerContext::poll_working_thread(&ctx, &thread_stop_flag);
         });
         Self {

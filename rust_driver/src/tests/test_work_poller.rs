@@ -124,7 +124,7 @@ fn test_work_desc_poller() {
         checker_channel,
         nic_channel: notification_send_queue,
     };
-    let _poller = WorkDescPoller::new(work_ctx);
+    let _poller = WorkDescPoller::new(work_ctx,None);
     if let crate::checker::PacketCheckEvent::Write(w) = checker_recv_queue.recv().unwrap() {
         assert_eq!(w.psn.get(), 0);
     } else {

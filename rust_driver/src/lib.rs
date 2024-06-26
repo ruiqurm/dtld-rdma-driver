@@ -148,6 +148,7 @@ use crate::{
     pd::PdCtx,
 };
 use buf::{PacketBuf,NIC_PACKET_BUFFER_SLOT_SIZE};
+use core_affinity::CoreId;
 use derive_builder::Builder;
 use device::{
     ToCardCtrlRbDescCommon, ToCardCtrlRbDescSetNetworkParam, ToCardCtrlRbDescSetRawPacketReceiveMeta, ToCardWorkRbDesc, ToCardWorkRbDescBuilder, ToCardWorkRbDescOpcode
@@ -212,7 +213,6 @@ pub use device::scheduler::{round_robin::RoundRobinStrategy,testing::{TestingStr
 pub use types::Error;
 pub use retry::RetryConfig;
 pub use utils::{MmapMemory,AlignedMemory};
-
 
 const MR_KEY_IDX_BIT_CNT: usize = 8;
 const MR_TABLE_SIZE: usize = 64;
@@ -302,9 +302,11 @@ impl Device {
     ///
     /// Will return `Err` if the device failed to create the `adaptor` or the device failed to init.
     pub fn new<Strat:SchedulerStrategy>(config : DeviceConfig<Strat>) -> Result<Self, Error> {
+        let mut core_ids = core_affinity::get_core_ids();
+        let scheduler_core = core_ids.as_mut().and_then(|v|v.pop());
         let dev  = match config.device_type{
             DeviceType::Hardware{device_path} => {
-                let adaptor = HardwareDevice::new(device_path,config.strategy).map_err(|e| Error::Device(Box::new(e)))?;
+                let adaptor = HardwareDevice::new(device_path,config.strategy,scheduler_core).map_err(|e| Error::Device(Box::new(e)))?;
                     let use_hugepage =  adaptor.use_hugepage();
                 let pg_table_buf = Buffer::new(MR_PGT_LENGTH * MR_PGT_ENTRY_SIZE,use_hugepage).map_err(|e| Error::ResourceNoAvailable(format!("hugepage {e}")))?;
                 Self(Arc::new(DeviceInner {
@@ -370,7 +372,7 @@ impl Device {
                 }))
             }
         };
-        dev.init(config.retry_config)?;
+        dev.init(config.retry_config,core_ids)?;
 
         Ok(dev)
     }
@@ -518,13 +520,14 @@ impl Device {
     }
 
     #[allow(clippy::expect_used,clippy::unwrap_in_result)]
-    fn init(&self,retry_config:RetryConfig) -> Result<(), Error> {
+    fn init(&self,retry_config:RetryConfig,mut core_ids : Option<Vec<CoreId>>) -> Result<(), Error> {
         // enable ctrl desc poller module
         let ctrl_thread_ctx = ControlPollerContext{
             to_host_ctrl_rb: self.0.adaptor.to_host_ctrl_rb(),
             ctrl_op_ctx_map: Arc::<RwLock<HashMap<u32, CtrlOpCtx>>>::clone(&self.0.ctrl_op_ctx_map)
         };
-        let ctrl_desc_poller = ControlPoller::new(ctrl_thread_ctx);
+        let ctrl_queue_core = core_ids.as_mut().and_then(|v|v.pop());
+        let ctrl_desc_poller = ControlPoller::new(ctrl_thread_ctx,ctrl_queue_core);
         self.0.ctrl_desc_poller.set(ctrl_desc_poller).expect("ctrl_desc_poller has been set");
 
         let use_hugepage = self.0.adaptor.use_hugepage();
@@ -540,7 +543,9 @@ impl Device {
             nic_channel : nic_notify_send_queue,
             checker_channel: checker_send_queue,
         };
-        let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx);
+
+        let work_queue_core = core_ids.as_mut().and_then(|v|v.pop());
+        let work_desc_poller = WorkDescPoller::new(work_desc_poller_ctx,work_queue_core);
         self.0.work_desc_poller.set(work_desc_poller).expect("work descriptor poller has been set");
 
         // create nic send device, but we don't prepare receive buffer. So it won't work now.

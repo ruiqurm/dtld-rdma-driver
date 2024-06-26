@@ -9,7 +9,7 @@ use open_rdma_driver::{
 };
 use std::{
     io::{self, BufRead},
-    net::Ipv4Addr, time::Duration,
+    net::Ipv4Addr, time::{Duration, Instant},
 };
 
 use crate::common::init_logging;
@@ -131,11 +131,15 @@ fn main() {
     let rkey = Key::new(u32::from_str_radix(splited_params_strs[1], 16).unwrap());
 
     // // test write
+    let write_start = Instant::now();
     let ctx1 = dev_a
         .write(dpqn, raddr, rkey, WorkReqSendFlag::IbvSendSignaled, sge0)
         .unwrap();
-
+    let start_waiting = Instant::now();
     // info!("===========7====================");
     // debug!("===========8====================");
-    // let _ = ctx1.wait();
+    
+    let _ = ctx1.wait();
+    log::info!("write done.total:{:?}, {:?}",write_start.elapsed().as_millis(),start_waiting.elapsed().as_millis());
+
 }

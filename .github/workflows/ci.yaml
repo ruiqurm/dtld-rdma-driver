@@ -7,7 +7,7 @@ on:
 
 jobs:
   ci-check:
-    name: CI test
+    name: rust-driver test
     runs-on: self-hosted
     container:
       image: ghcr.io/myrfy001/hard_devcontainer:main

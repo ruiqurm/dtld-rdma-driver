@@ -107,6 +107,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
+            None
         ));
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),

@@ -9,6 +9,7 @@ use std::{
     thread::spawn,
 };
 
+use core_affinity::CoreId;
 use flume::{unbounded, Receiver, Sender, TryRecvError};
 use log::{debug, error};
 use parking_lot::Mutex;
@@ -24,7 +25,7 @@ use crate::{
     utils::{calculate_packet_cnt, get_first_packet_max_length},
 };
 
-const SCHEDULER_SIZE_U32: u32 = 1024 * 32; // 32KB
+const SCHEDULER_SIZE_U32: u32 = 1024 * 1024 * 2; // 32KB
 const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
@@ -183,6 +184,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
     >(
         strategy: Strat,
         ringbuf: Mutex<Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
+        core_id: Option<CoreId>,
     ) -> Self {
         let (sender, receiver) = unbounded();
         let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
@@ -190,6 +192,15 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
         let thread_stop_flag = Arc::clone(&stop_flag);
         let strategy_clone = strategy.clone();
         let thread_handler = spawn(move || {
+            // try set core_affinity, but not exit if set failed.
+            if let Some(core_id) = core_id{
+                if !core_affinity::set_for_current(core_id) {
+                    log::error!("failed to set core_affinity {:?} in scheduler", core_id);
+                }else{
+                    log::info!("set core_affinity in scheduler successfully");
+                }
+            }
+
             while !thread_stop_flag.load(Ordering::Relaxed) {
                 let desc = match thread_receiver.try_recv() {
                     Ok(desc) => Some(desc),
@@ -205,7 +216,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                 }
 
                 if let Ok((descs, len)) = strategy.pop_batch() {
-                    // avoid lock if no descriptor
+                    // avoid live lock if no descriptor
                     if len == 0 {
                         continue;
                     }
@@ -623,7 +634,7 @@ mod test {
         let buffer = Buffer::new(4096, false).unwrap();
         let proxy = Proxy::default();
         let ringbuf = Mutex::new(Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer));
-        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf, None));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: length,
