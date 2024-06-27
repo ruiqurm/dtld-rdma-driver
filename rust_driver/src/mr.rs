@@ -80,7 +80,7 @@ impl Device {
             // `mr_pgt.alloc(pgte_cnt)` has already checked that `pgt_offset + pgt_idx` is in range
             #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
             {
-                mr_pgt.table[pgt_offset + pgt_idx] = pa as u64;
+                mr_pgt.table[pgt_idx] = pa as u64;
             }
         }
 
@@ -95,8 +95,7 @@ impl Device {
                 .0
                 .adaptor
                 .get_phys_addr(mr_pgt.table.as_ptr() as usize)
-                .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))?
-                as u64,
+                .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))? as u64,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
         });

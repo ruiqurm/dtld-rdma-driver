@@ -1,4 +1,5 @@
 use crate::{utils::Buffer, MmapMemory, SchedulerStrategy};
+use core_affinity::CoreId;
 use csr_cli::CSR_LENGTH;
 use log::debug;
 use parking_lot::Mutex;
@@ -70,6 +71,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
     pub(crate) fn new<P: AsRef<Path>>(
         device_path: P,
         strategy: Strat,
+        core_id: Option<CoreId>,
     ) -> Result<Self, DeviceError> {
         let device_file = OpenOptions::new()
             .read(true)
@@ -124,6 +126,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
+            core_id
         ));
         let dev = Self(Arc::new(HardwareDeviceInner {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb).into(),

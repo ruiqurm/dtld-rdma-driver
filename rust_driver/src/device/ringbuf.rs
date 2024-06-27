@@ -171,7 +171,7 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
         let timeout_in_millis = timeout.map(|d|d.as_millis()).unwrap_or(0);
         let start = std::time::Instant::now();
         let idx = (*self.head + self.written_cnt)
-            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
+            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
 
         // currently, we not allow the writer to overflow
         // Instead, we wait and polling.
@@ -190,7 +190,7 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
-        let offset = idx * ELEM_SIZE; // ELEM_SIZE=32Byte, so offset < DEPTH * ELEM_SIZE, which will never flow
+        let offset = (idx % DEPTH) * ELEM_SIZE; // ELEM_SIZE=32Byte, so offset < DEPTH * ELEM_SIZE, which will never flow
         let ptr = unsafe { self.buf.as_mut_ptr().add(offset) };
 
         self.written_cnt += 1; // written_cnt < DEPTH
