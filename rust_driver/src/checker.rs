@@ -128,7 +128,7 @@ impl PacketCheckerContext {
             PacketCheckEvent::Ack(event) => {
                 let code = event.code;
                 let qpn = event.common.dqpn;
-                let msn = event.common.msn;
+                let msn = event.msn;
                 if matches!(code, ToHostWorkRbDescAethCode::Ack) {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 }
