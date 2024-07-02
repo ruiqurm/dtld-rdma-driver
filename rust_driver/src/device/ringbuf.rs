@@ -216,7 +216,7 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
     #[allow(clippy::arithmetic_side_effects)]
     fn next(&mut self) -> Option<Self::Item> {
         let idx = (*self.tail + self.read_cnt)
-            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_VALID_MASK;
+            & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK;
         if Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::is_empty(*self.head, idx) {
             loop {
                 let new_head = self.proxy.read_head();
@@ -237,7 +237,7 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
                 }
             }
         }
-        let offset = idx * ELEM_SIZE;
+        let offset = (idx % DEPTH) * ELEM_SIZE;
         let ptr = unsafe { self.buf.as_ptr().add(offset) };
 
         self.read_cnt += 1;
