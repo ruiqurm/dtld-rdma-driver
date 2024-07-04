@@ -136,5 +136,15 @@
         clippy::pedantic, 
         clippy::default_numeric_fallback,
         clippy::print_stderr,
+        unsafe_code,
     )
 )]
+
+/// adaptor device: hardware, software, emulated
+mod device;
+
+/// some useful types 
+pub mod types;
+
+/// utility functions
+mod utils;
