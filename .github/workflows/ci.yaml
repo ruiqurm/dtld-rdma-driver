@@ -44,12 +44,12 @@ jobs:
         with:
           toolchain: stable
       - name: run cargo build
-        working-directory: rust_driver
+        working-directory: rust-driver
         run : cargo build --verbose 
       - name: pre run emulator
         run : |
           cd blue-rdma
           ./run_system_test.sh
       - name: run cargo test
-        working-directory: rust_driver
+        working-directory: rust-driver
         run : cargo test --verbose
