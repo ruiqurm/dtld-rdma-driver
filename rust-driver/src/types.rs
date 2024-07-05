@@ -6,9 +6,6 @@ use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use thiserror::Error;
 
-/// page size is 2MB.
-pub const PAGE_SIZE: usize = 1024 * 1024 * 2;
-pub(crate) const PSN_MAX_WINDOW_SIZE: u32 = 1 << 23_i32;
 
 /// Protection Domain
 #[derive(Debug, Clone, Copy, Default)]
@@ -210,13 +207,6 @@ impl ThreeBytesStruct {
     }
 }
 
-/// Check if the current PSN is larger or equal to the PSN in the argument
-pub(crate) fn larger_in_psn(lhs: Psn, rhs: Psn) -> bool {
-    let diff = lhs.wrapping_sub(rhs).0;
-    // if diff < 2^23, then self is larger or equal to rhs
-    diff <= PSN_MAX_WINDOW_SIZE
-}
-
 impl From<u32> for ThreeBytesStruct {
     fn from(key: u32) -> Self {
         Self::new(key)
@@ -405,7 +395,11 @@ pub struct Qp {
 /// Error type for user
 #[non_exhaustive]
 #[derive(Debug, Error)]
-pub enum Error {}
+pub enum Error {
+    /// Invalid user input
+    #[error("Invalid: {0}")]
+    Invalid(Box<String>),
+}
 
 #[cfg(test)]
 mod tests {

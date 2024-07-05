@@ -2,6 +2,25 @@
 // Using the `#!` to suppress the warning of `clippy::indexing_slicing` in the generated code.
 use bitfield::bitfield;
 
+const OFFSET_OF_BTH_IN_META_REPORT_QUEUE_DESC_BTH_RETH: usize = 32;
+
+pub(super) const SIZE_OF_BTH_IN_BYTES: usize = 8;
+
+pub(super) const OFFSET_OF_BTH_IN_META_REPORT_QUEUE_DESC_BTH_RETH_IN_BYTES: usize =
+    OFFSET_OF_BTH_IN_META_REPORT_QUEUE_DESC_BTH_RETH / 8;
+
+const OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH: usize = 96;
+
+pub(super) const OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH_IN_BYTES: usize =
+    OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH / 8;
+
+pub(super) const OFFSET_OF_AETH_IN_META_REPORT_QUEUE_DESC_FRAG_IMM_DT_IN_BYTES: usize =
+    OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH_IN_BYTES;
+
+pub(super) const OFFSET_OF_IMM_IN_META_REPORT_QUEUE_DESC_FRAG_IMM_DT: usize = 28;
+
+pub(super) const SIZE_OF_IMM_IN_BYTES: usize = 4;
+
 bitfield! {
     pub struct CmdQueueDescCommonHead([u8]);
     u32;
@@ -171,11 +190,12 @@ bitfield! {
 
 bitfield! {
     pub struct MetaReportQueueDescBthReth([u8]);
+    impl Debug;
     u64;
     pub get_expected_psn, _: 23,0;      // 24bits
     pub get_req_status, _: 31,24;       // 8bit
-    pub get_bth, _: 95, 32;             // 64bits
-    pub get_reth, _: 223, 96;           // 128bits
+    pub get_bth, _: 95, OFFSET_OF_BTH_IN_META_REPORT_QUEUE_DESC_BTH_RETH;             // 64bits
+    pub get_reth, _: 223, OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH;           // 128bits
     pub get_msn, _: 247,224;            // 24bits
     reserved1,_ : 254, 248;             // 7bits
     pub get_can_auto_ack, _: 255;           // 1bit

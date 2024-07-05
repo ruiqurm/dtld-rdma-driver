@@ -140,11 +140,18 @@
     )
 )]
 
+mod rdma;
+
 /// adaptor device: hardware, software, emulated
 mod device;
 
 /// some useful types 
 pub mod types;
 
+/// A recycle buffer allocator for ack buffer
+mod recycle_allocator;
+
 /// utility functions
 mod utils;
+
+pub use device::PAGE_SIZE;

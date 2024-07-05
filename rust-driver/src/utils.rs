@@ -24,14 +24,29 @@ pub(crate) fn calculate_packet_cnt(pmtu: Pmtu, raddr: u64, total_len: u32) -> u3
     1 + (total_len - first_pkt_len).div_ceil(u32::from(pmtu))
 }
 
-/// convert an u8 slice to a u64
-#[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn u8_slice_to_u64(slice: &[u8]) -> u64 {
-    // this operation convert a [u8;8] to a u64. So it's safe to left shift
-    slice.iter().fold(0, |a, b| (a << 8_i32) + u64::from(*b))
-}
-/// align page up to `PAGE_SIZE`
-#[allow(clippy::arithmetic_side_effects)]
-pub(crate) fn align_up<const PAGE: usize>(addr: usize) -> usize {
-    (((addr) + ((PAGE) - 1)) / PAGE) * PAGE
+#[cfg(test)]
+mod tests {
+    use crate::types::Pmtu;
+
+    use super::{calculate_packet_cnt, get_first_packet_max_length};
+
+    #[test]
+    fn test_calculate_packet_cnt() {
+        let raddr = 0;
+        let total_len = 4096;
+        let packet_cnt = calculate_packet_cnt(Pmtu::Mtu1024, raddr, total_len);
+        assert_eq!(packet_cnt, 4);
+
+        for raddr in 1..1023 {
+            let packet_cnt = calculate_packet_cnt(Pmtu::Mtu1024, raddr, total_len);
+            assert_eq!(packet_cnt, 5);
+        }
+    }
+
+    #[test]
+    fn test_get_first_packet_max_length() {
+        for i in 0..4096{
+            assert_eq!(get_first_packet_max_length(i, 4096), (4096-i) as u32);
+        }
+    }
 }
