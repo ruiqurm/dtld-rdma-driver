@@ -12,7 +12,7 @@ use crate::{
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, thread::sleep, time::{Duration, Instant}};
 
 use super::layout::{
     CmdQueueDescCommonHead, MetaReportQueueDescBthReth, MetaReportQueueDescFragAETH,
@@ -979,7 +979,7 @@ impl ToHostWorkRbDesc {
         clippy::indexing_slicing,
         clippy::too_many_lines
     )]
-    pub(super) fn read(src: &[u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
+    pub(super) fn read(src: &mut [u8]) -> Result<ToHostWorkRbDesc, ToHostWorkRbDescError> {
         // typedef struct {
         //     ReservedZero#(8)                reserved1;      // 8
         //     MSN                             msn;            // 24
@@ -988,17 +988,28 @@ impl ToHostWorkRbDesc {
         //     RdmaReqStatus                   reqStatus;      // 8
         //     PSN                             expectedPSN;    // 24
         // } MetaReportQueueDescBthRethReth deriving(Bits, FShow);
-        let desc_bth = MetaReportQueueDescBthReth(&src[0..32]);
+        let mut desc_bth = MetaReportQueueDescBthReth(&mut src[0..32]);
 
         let expected_psn = Psn::new(desc_bth.get_expected_psn() as u32);
-
-        let status =
-            ToHostWorkRbDescStatus::try_from(desc_bth.get_req_status() as u8).map_err(|_| {
-                ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
-                    "ToHostWorkRbDescStatus = {} can not be parsed",
-                    desc_bth.get_req_status()
-                )))
-            })?;
+        let mut raw_status = desc_bth.get_req_status() as u8;
+        let start_time = Instant::now();
+        while raw_status == 0 {
+            raw_status = desc_bth.get_req_status() as u8;
+            sleep(Duration::from_millis(1));
+            if start_time.elapsed().as_millis() > 1000 {
+                log::error!("timeout in parsing status");
+                break;
+            }
+        }
+        desc_bth.set_req_status(0);
+        let status = ToHostWorkRbDescStatus::try_from(raw_status).map_err(|_| {
+            ToHostWorkRbDescError::DeviceError(DeviceError::ParseDesc(format!(
+                "ToHostWorkRbDescStatus = {} can not be parsed",
+                desc_bth.get_req_status()
+            )))
+        })?;
+        let msg_seq_number = Msn::new(desc_bth.get_msn() as u16);
+        let can_auto_ack = desc_bth.get_can_auto_ack();
 
         // typedef struct {
         //     ReservedZero#(4)                reserved1;    // 4
@@ -1028,7 +1039,6 @@ impl ToHostWorkRbDesc {
             })?;
         let dqpn = Qpn::new(desc_frag_bth.get_qpn());
         let psn = Psn::new(desc_frag_bth.get_psn());
-        let msg_seq_number = Msn::new(desc_bth.get_msn() as u16);
 
         let common = ToHostWorkRbDescCommon {
             status,
@@ -1053,7 +1063,6 @@ impl ToHostWorkRbDesc {
             | ToHostWorkRbDescOpcode::RdmaReadResponseLast
             | ToHostWorkRbDescOpcode::RdmaReadResponseOnly => {
                 let (addr, _, len) = Self::read_reth(src);
-                let can_auto_ack = desc_bth.get_can_auto_ack();
                 Ok(ToHostWorkRbDesc::WriteOrReadResp(
                     ToHostWorkRbDescWriteOrReadResp {
                         common,

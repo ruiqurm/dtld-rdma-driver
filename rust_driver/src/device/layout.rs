@@ -235,7 +235,7 @@ bitfield! {
     no default BitRange;
     u64;
     pub get_expected_psn, _: 23,0;      // 24bits
-    pub get_req_status, _: 31,24;       // 8bit
+    pub get_req_status, set_req_status: 31,24;       // 8bit
     pub get_bth, _: 95, 32;             // 64bits
     pub get_reth, _: 223, 96;           // 128bits
     pub get_msn, _: 247,224;            // 24bits

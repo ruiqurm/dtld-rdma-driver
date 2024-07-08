@@ -214,7 +214,7 @@ impl<T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_S
 impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PAGE_SIZE: usize>
     Iterator for RingbufReader<'a, '_, T, DEPTH, ELEM_SIZE, PAGE_SIZE>
 {
-    type Item = &'a [u8];
+    type Item = &'a mut [u8];
 
     #[allow(clippy::arithmetic_side_effects)]
     fn next(&mut self) -> Option<Self::Item> {
@@ -241,11 +241,11 @@ impl<'a, T: CsrReaderProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
             }
         }
         let offset = (idx % DEPTH) * ELEM_SIZE;
-        let ptr = unsafe { self.buf.as_ptr().add(offset) };
+        let ptr = unsafe { self.buf.as_mut_ptr().add(offset) };
 
         self.read_cnt += 1;
 
-        Some(unsafe { std::slice::from_raw_parts(ptr, ELEM_SIZE) })
+        Some(unsafe { std::slice::from_raw_parts_mut(ptr, ELEM_SIZE) })
     }
 }
 
