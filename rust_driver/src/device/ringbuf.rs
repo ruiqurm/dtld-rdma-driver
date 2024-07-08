@@ -167,8 +167,11 @@ impl<'a, T: CsrWriterProxy, const DEPTH: usize, const ELEM_SIZE: usize, const PA
     }
 
     #[allow(clippy::arithmetic_side_effects)]
-    pub(crate) fn next_timeout(&mut self,timeout: Option<Duration>) -> Result<&'a mut [u8], DeviceError> {
-        let timeout_in_millis = timeout.map(|d|d.as_millis()).unwrap_or(0);
+    pub(crate) fn next_timeout(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<&'a mut [u8], DeviceError> {
+        let timeout_in_millis = timeout.map(|d| d.as_millis()).unwrap_or(0);
         let start = std::time::Instant::now();
         let idx = (*self.head + self.written_cnt)
             & Ringbuf::<T, DEPTH, ELEM_SIZE, PAGE_SIZE>::PTR_IDX_MASK; // head < DEPTH and written_cnt < DEPTH, so the result is < 2 * DEPTH
@@ -271,7 +274,10 @@ mod test {
             Arc,
         },
         thread::{sleep, spawn},
+        time::Duration,
     };
+
+    use rand::Rng;
 
     use crate::{device::DeviceError, utils::Buffer};
 
@@ -292,12 +298,22 @@ mod test {
             self.0.tail.store(head, Ordering::Release);
         }
 
+        pub(crate) fn check(&self, max_value: u32) {
+            // move the tail to the head
+            let head = self.0.head.load(Ordering::Acquire);
+            let tail = self.0.head.load(Ordering::Acquire);
+            assert!(tail <= max_value && head <= max_value);
+            let diff = (head as i32 - tail as i32) as u32 & max_value;
+            assert!(diff <= max_value);
+        }
+
         pub(crate) fn produce<const DEPTH: usize>(&self, cnt: usize) {
             // move the head to the tail
             let head = self.0.head.load(Ordering::Acquire);
             let tail = self.0.tail.load(Ordering::Acquire);
-            if head == tail {
-                // push when empty
+            let cnt = cnt % (DEPTH + 1);
+            let is_full = ((head as i32 - tail as i32) as usize) == DEPTH;
+            if !is_full {
                 let new_head = (head + cnt as u32) % (DEPTH * 2) as u32;
                 self.0.head.store(new_head, Ordering::Release);
             }
@@ -323,17 +339,20 @@ mod test {
     }
     #[test]
     fn test_ringbuf_writer() {
+        const MAX_DEPTH: usize = 128;
+        const MAX_VALUE: u32 = 255;
         let proxy = Proxy(Arc::new(ProxyInner {
             head: AtomicU32::new(0),
             tail: AtomicU32::new(0),
         }));
         let thread_proxy = proxy.clone();
         let _ = spawn(move || loop {
-            sleep(std::time::Duration::from_millis(10));
+            sleep(std::time::Duration::from_millis(100));
             thread_proxy.consume();
+            thread_proxy.check(MAX_VALUE);
         });
         let buffer = Buffer::new(4096, false).unwrap();
-        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer);
+        let mut ringbuf = Ringbuf::<Proxy, MAX_DEPTH, 32, 4096>::new(proxy.clone(), buffer);
         let mut writer = ringbuf.write();
 
         for i in 0..128 {
@@ -343,7 +362,15 @@ mod test {
         drop(writer);
         assert!(proxy.0.head.load(Ordering::Relaxed) == 128);
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 0);
-        sleep(std::time::Duration::from_millis(20));
+        let mut writer = ringbuf.write();
+        assert!(writer
+            .next_timeout(Some(Duration::from_millis(10)))
+            .is_err());
+        assert!(writer
+            .next_timeout(Some(Duration::from_millis(10)))
+            .is_err());
+        drop(writer);
+        sleep(std::time::Duration::from_millis(100));
         assert!(proxy.0.head.load(Ordering::Relaxed) == 128);
         assert!(proxy.0.tail.load(Ordering::Relaxed) == 128);
         // test if blocking?
@@ -357,7 +384,45 @@ mod test {
     }
 
     #[test]
+    fn test_ringbuf_writer_random_write() {
+        // test if we write random number of descriptors, will it work correctly
+        const MAX_DEPTH: usize = 128;
+        const MAX_VALUE: u32 = 255;
+        let proxy = Proxy(Arc::new(ProxyInner {
+            head: AtomicU32::new(0),
+            tail: AtomicU32::new(0),
+        }));
+        let buffer = Buffer::new(4096, false).unwrap();
+        let mut ringbuf = Ringbuf::<Proxy, MAX_DEPTH, 32, 4096>::new(proxy.clone(), buffer);
+        let thread_proxy = proxy.clone();
+        let _ = spawn(move || {
+            let mut rng = rand::thread_rng();
+            sleep(std::time::Duration::from_millis(10));
+            loop {
+                // periodically and randomly consume the ringbuf
+                let sleep_time: u64 = rng.gen_range(1..10);
+                sleep(std::time::Duration::from_millis(sleep_time));
+                thread_proxy.consume();
+                thread_proxy.check(MAX_VALUE);
+            }
+        });
+
+        let mut rng = rand::thread_rng();
+        for _ in 0..1000 {
+            let mut writer = ringbuf.write();
+            let batch_to_write: u8 = rng.gen_range(3..128);
+            for _ in 0..batch_to_write {
+                let desc = writer.next().unwrap();
+                desc.fill(batch_to_write);
+            }
+            proxy.check(MAX_VALUE);
+        }
+    }
+
+    #[test]
     fn test_ringbuf_reader() {
+        const MAX_DEPTH: usize = 128;
+        const MAX_VALUE: u32 = 255;
         let proxy = Proxy(Arc::new(ProxyInner {
             head: AtomicU32::new(0),
             tail: AtomicU32::new(0),
@@ -366,9 +431,10 @@ mod test {
         let _ = spawn(move || loop {
             thread_proxy.produce::<128>(128);
             sleep(std::time::Duration::from_millis(10));
+            thread_proxy.check(MAX_VALUE);
         });
         let buffer = Buffer::new(4096, false).unwrap();
-        let mut ringbuf = Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer);
+        let mut ringbuf = Ringbuf::<Proxy, MAX_DEPTH, 32, 4096>::new(proxy.clone(), buffer);
         let mut reader = ringbuf.read().unwrap();
         sleep(std::time::Duration::from_millis(100));
         for _i in 0..128 {
@@ -385,5 +451,31 @@ mod test {
         }
         drop(reader);
         finish_flag.store(true, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn test_ringbuf_reader_random() {
+        const MAX_DEPTH: usize = 128;
+        const MAX_VALUE: u32 = 255;
+        let proxy = Proxy(Arc::new(ProxyInner {
+            head: AtomicU32::new(0),
+            tail: AtomicU32::new(0),
+        }));
+        let thread_proxy = proxy.clone();
+        let _ = spawn(move || {
+            let mut rng = rand::thread_rng();
+            loop {
+                thread_proxy.check(MAX_VALUE);
+                let produce: u8 = rng.gen_range(1..128);
+                thread_proxy.produce::<MAX_DEPTH>(produce.into());
+                sleep(std::time::Duration::from_millis(10));
+            }
+        });
+        let buffer = Buffer::new(4096, false).unwrap();
+        let mut ringbuf = Ringbuf::<Proxy, MAX_DEPTH, 32, 4096>::new(proxy.clone(), buffer);
+        let mut reader = ringbuf.read().unwrap();
+        for _i in 0..40960 {
+            let _desc = reader.next().unwrap();
+        }
     }
 }
