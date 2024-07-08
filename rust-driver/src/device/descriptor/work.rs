@@ -12,9 +12,12 @@ use super::{
         OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH_IN_BYTES, SIZE_OF_BTH_IN_BYTES,
         SIZE_OF_IMM_IN_BYTES,
     },
-    u8_slice_to_u64, DeviceError,
+    u8_slice_to_u64,
 };
-use crate::types::{Imm, Key, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag};
+use crate::{
+    device::DeviceError,
+    types::{Imm, Key, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
+};
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 

@@ -1,5 +1,5 @@
 use crate::{
-    device::descriptor::{u8_slice_to_u64, DeviceError},
+    device::{descriptor::u8_slice_to_u64, DeviceError},
     types::{Key, MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn},
 };
 use eui48::MacAddress;

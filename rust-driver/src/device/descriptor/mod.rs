@@ -21,17 +21,6 @@ fn u8_slice_to_u64(slice: &[u8]) -> u64 {
         .fold(0, |a, b| (a << 8_i32) + u64::from(*b))
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum DeviceError {
-    #[error("device error : {0}")]
-    Device(Box<dyn Error>),
-    #[error("scheduler : {0}")]
-    Scheduler(String),
-    #[error("parse descriptor error : {0}")]
-    ParseDesc(String),
-    #[error("Operation timeout")]
-    Timeout,
-}
 
 #[cfg(test)]
 mod tests {
