@@ -1,11 +1,8 @@
 use std::{
-    cell::{RefCell, RefMut},
-    collections::{BTreeMap, HashMap},
-    ops::Bound,
-    sync::{
+    cell::{RefCell, RefMut}, collections::{BTreeMap, HashMap}, ops::Bound, sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    },
+    }
 };
 
 use crate::{
@@ -106,6 +103,11 @@ impl PacketCheckerContext {
                     self.enter_qp_error_status(qpn, pmtu, expected_psn, psn);
                     is_normal = false;
                 }
+                // log::info!(
+                //     "psn={},expect={}",
+                //     event.psn.get(),
+                //     event.common.expected_psn.get()
+                // );
                 if is_normal {
                     self.handle_qp_normal(&event);
                 } else {
@@ -298,10 +300,10 @@ impl PacketCheckerContext {
             // set flag
             qp.status
                 .store(crate::qp::QpStatus::OutOfOrder, Ordering::Release);
+            log::error!("enter error");
         };
 
         // create context for all msn
-
         let mut per_qp_map = self
             .recv_ctx_map
             .get_or_create_per_qp_ctx_mut(qpn, recved_psn);

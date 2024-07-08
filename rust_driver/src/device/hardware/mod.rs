@@ -13,9 +13,7 @@ use self::{
 };
 
 use super::{
-    constants, ringbuf::Ringbuf, scheduler::DescriptorScheduler, DeviceAdaptor, DeviceError,
-    ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc,
-    ToHostWorkRbDescError,
+    constants, ringbuf::Ringbuf, scheduler::DescriptorScheduler, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError
 };
 use std::{fs::{File, OpenOptions}, path::Path, sync::Arc};
 

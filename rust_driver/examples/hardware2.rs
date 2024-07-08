@@ -10,11 +10,16 @@ use open_rdma_driver::{
     },
     Device, DeviceConfigBuilder, DeviceType, MmapMemory, Mr, Pd, RetryConfig, RoundRobinStrategy,
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{net::Ipv4Addr, thread, time::Duration};
 
 use crate::common::init_logging;
 
-const BUFFER_LENGTH: usize = 1024 * 1024 * 2;
+const BUFFER_LENGTH: usize = 1024 * 1024 * 128;
+const RAND_SEED: [u8; 32] = [
+    0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
+    0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
+];
 
 mod common;
 
@@ -65,7 +70,7 @@ fn create_and_init_card<'a>(
         .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu4096)
+        .pmtu(Pmtu::Mtu2048)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
         .build()
@@ -76,12 +81,12 @@ fn create_and_init_card<'a>(
     (dev, pd, mr, mr_buffer)
 }
 fn main() {
-    init_logging("log.txt").unwrap();
+    init_logging("new_log.txt").unwrap();
 
     let b_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 0, 0, 0))
-        .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
+        .ipaddr(Ipv4Addr::new(127, 0, 0, 3))
         .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFE]))
         .build()
         .unwrap();
@@ -92,7 +97,7 @@ fn main() {
     let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
         .netmask(Ipv4Addr::new(255, 0, 0, 0))
-        .ipaddr(Ipv4Addr::new(127, 0, 0, 3))
+        .ipaddr(Ipv4Addr::new(127, 0, 0, 2))
         .macaddr(MacAddress::new([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
         .build()
         .unwrap();
@@ -104,37 +109,36 @@ fn main() {
     debug!("===========4====================");
     let (dev_a, _pd_a, mr_a, mut mr_buffer_a) = create_and_init_card(0, qpn, a_network, &b_network);
     debug!("===========5====================");
-    // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
-    //     create_and_init_card(1, qpn, &b_network, &a_network);
+
     let dpqn = qpn;
     for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = 0;
+        *item = 0x1;
     }
-    // for item in mr_buffer_b[0..].iter_mut() {
-    //     *item = 0
-    // }
 
-    debug!(
+    eprintln!(
         "local_memory_info = \n {:x},{:x}",
         mr_buffer_a.as_ptr() as usize,
         mr_a.get_key().get()
     );
     debug!("===========6====================");
-    // let sge1 = Sge::new(
-    //     &mr_buffer_a[SEND_CNT] as *const u8 as u64,
-    //     SEND_CNT.try_into().unwrap(),
-    //     mr_a.get_key(),
-    // );
+  
 
     loop {
-        // for (idx, item) in mr_buffer_a.iter().enumerate() {
-        //     print!("{:x}", *item);
-        //     if idx > 16 {
-        //         break;
-        //     }
-        // }
-        thread::sleep(time::Duration::from_secs(5));
-        info!("tick");
+        let mut buffer = String::new();
+        std::io::stdin().read_line(&mut buffer).unwrap();
+        let mut rng = StdRng::from_seed(RAND_SEED);
+        let mut iter = mr_buffer_a.iter();
+        for chunk in 0..2048{
+            let mut mark_error = false;
+            for _ in 0..4096{
+                let v: u8 = rng.gen();
+                let item = iter.next().unwrap();
+                if !mark_error && *item!= v{
+                    log::error!("In chunk idx={:?}, {} != {}",chunk,*item,v);
+                    mark_error = true;
+                }
+            }
+        }
     }
 
     // test write

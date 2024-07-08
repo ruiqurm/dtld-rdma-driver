@@ -1,6 +1,8 @@
 #![allow(clippy::indexing_slicing)]
+use std::{mem::size_of, ptr};
+
 // Using the `#!` to suppress the warning of `clippy::indexing_slicing` in the generated code.
-use bitfield::bitfield;
+use bitfield::{bitfield, BitRange, BitRangeMut};
 
 bitfield! {
     pub struct CmdQueueDescCommonHead([u8]);
@@ -148,10 +150,39 @@ bitfield! {
 
 bitfield! {
     pub struct MetaReportQueueDescFragRETH([u8]);
+    no default BitRange;
     u64;
     pub get_va, set_va: 63, 0;          // 64bits
     pub get_rkey, set_rkey: 95, 64;     // 32bits
     pub get_dlen, set_dlen: 127, 96;    // 32bits
+}
+impl<T: AsRef<[u8]>> BitRange<u64> for MetaReportQueueDescFragRETH<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u64 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u64>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= ((v >> (i % bit_len)) & 1) as u64;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u64> for MetaReportQueueDescFragRETH<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u64) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= ((value & 1) as u8) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
 }
 
 bitfield! {
@@ -162,6 +193,7 @@ bitfield! {
 
 bitfield! {
     pub struct MetaReportQueueDescFragAETH([u8]);
+    no default BitRange;
     u32;
     pub get_psn, set_psn: 23, 0;          // 24bits
     pub get_msn, set_msn: 47, 24;         // 24bits
@@ -169,8 +201,38 @@ bitfield! {
     pub get_aeth_code, set_aeth_code: 55, 53;   // 3bits
 }
 
+impl<T: AsRef<[u8]>> BitRange<u32> for MetaReportQueueDescFragAETH<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u32 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u32>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= ((v >> (i % bit_len)) & 1) as u32;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u32> for MetaReportQueueDescFragAETH<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u32) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= ((value & 1) as u8) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
+}
+
 bitfield! {
     pub struct MetaReportQueueDescBthReth([u8]);
+    no default BitRange;
     u64;
     pub get_expected_psn, _: 23,0;      // 24bits
     pub get_req_status, _: 31,24;       // 8bit
@@ -181,8 +243,67 @@ bitfield! {
     pub get_can_auto_ack, _: 255;           // 1bit
 }
 
+impl<T: AsRef<[u8]>> BitRange<u8> for MetaReportQueueDescBthReth<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u8 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u8>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= (v >> (i % bit_len)) & 1;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u8> for MetaReportQueueDescBthReth<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u8) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= (value & 1) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
+}
+
+impl<T: AsRef<[u8]>> BitRange<u64> for MetaReportQueueDescBthReth<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u64 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u64>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= ((v >> (i % bit_len)) & 1) as u64;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u64> for MetaReportQueueDescBthReth<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u64) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= ((value & 1) as u8) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
+}
+
 bitfield! {
     pub struct MetaReportQueueDescFragBTH([u8]);
+    no default BitRange;
     u32;
     pub get_trans_type,set_trans_type: 2, 0; // 3bits
     pub get_opcode,set_opcode: 7, 3;         // 5bits
@@ -191,6 +312,64 @@ bitfield! {
     pub get_solicited,set_solicited: 56;     // 1bit
     pub get_ack_req,set_ack_req: 57;         // 1bit
     pub get_pad_cnt,set_pad_cnt: 63, 58;     // 4bits
+}
+
+impl<T: AsRef<[u8]>> BitRange<u8> for MetaReportQueueDescFragBTH<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u8 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u8>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= (v >> (i % bit_len)) & 1;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u8> for MetaReportQueueDescFragBTH<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u8) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= (value & 1) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
+}
+
+impl<T: AsRef<[u8]>> BitRange<u32> for MetaReportQueueDescFragBTH<T> {
+    #[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+    fn bit_range(&self, msb: usize, lsb: usize) -> u32 {
+        let bit_len = size_of::<u8>() * 8;
+        let value_bit_len = size_of::<u32>() * 8;
+        let mut value = 0;
+        for i in (lsb..=msb).rev() {
+            value <<= 1_i32;
+            let ptr = self.0.as_ref().as_ptr();
+            let v_ptr = unsafe { ptr.add(i / bit_len) };
+            let v = unsafe { ptr::read_volatile(v_ptr) };
+            value |= ((v >> (i % bit_len)) & 1) as u32;
+        }
+        value << (value_bit_len - (msb - lsb + 1)) >> (value_bit_len - (msb - lsb + 1))
+    }
+}
+#[allow(clippy::manual_bits, clippy::arithmetic_side_effects)]
+impl<T: AsMut<[u8]>> BitRangeMut<u32> for MetaReportQueueDescFragBTH<T> {
+    fn set_bit_range(&mut self, msb: usize, lsb: usize, value: u32) {
+        let bit_len = size_of::<u8>() * 8;
+        let mut value = value;
+        for i in lsb..=msb {
+            self.0.as_mut()[i / bit_len] &= !(1 << (i % bit_len));
+            self.0.as_mut()[i / bit_len] |= ((value & 1) as u8) << (i % bit_len);
+            value >>= 1_i32;
+        }
+    }
 }
 
 bitfield! {

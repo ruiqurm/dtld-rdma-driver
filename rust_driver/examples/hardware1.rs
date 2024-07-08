@@ -2,21 +2,30 @@
 use eui48::MacAddress;
 use log::{debug, info};
 use open_rdma_driver::{
-    qp::QpManager, types::{
+    qp::QpManager,
+    types::{
         Key, MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    }, Device, DeviceConfigBuilder, DeviceType, MmapMemory, Mr, Pd, RetryConfig, RoundRobinStrategy
+    },
+    Device, DeviceConfigBuilder, DeviceType, MmapMemory, Mr, Pd, RetryConfig, RoundRobinStrategy,
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     io::{self, BufRead},
-    net::Ipv4Addr, time::{Duration, Instant},
+    net::Ipv4Addr,
+    thread::sleep,
+    time::{Duration, Instant},
 };
 
 use crate::common::init_logging;
 
-const BUFFER_LENGTH: usize = 1024 * 1024 * 128;
-const SEND_CNT: usize = 1024 * 1024 * 128;
-
+const BUFFER_LENGTH: usize = 1024 * 1024 * 64;
+const SEND_CNT: usize = 1024 * 1024 * 8;
+const PMTU: Pmtu = Pmtu::Mtu4096;
+const RAND_SEED: [u8; 32] = [
+    0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
+    0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
+];
 mod common;
 
 fn create_and_init_card<'a>(
@@ -66,7 +75,7 @@ fn create_and_init_card<'a>(
         .peer_qpn(qpn)
         .qp_type(QpType::Rc)
         .rq_acc_flags(access_flag)
-        .pmtu(Pmtu::Mtu4096)
+        .pmtu(PMTU)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
         .peer_qpn(qpn)
@@ -109,17 +118,17 @@ fn main() {
     // let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
     //     create_and_init_card(1, qpn, &b_network, &a_network);
     let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
+    let mut rng = StdRng::from_seed(RAND_SEED);
+    for item in mr_buffer_a.iter_mut() {
+        *item = rng.gen();
     }
-
     let sge0 = Sge::new(
         &mr_buffer_a[0] as *const u8 as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
 
-    println!("please input peer memory info:");
+    eprintln!("please input peer memory info:");
     let stdin = io::stdin();
     let mut peer_mem_info_str = String::new();
     let _ = stdin
@@ -129,17 +138,25 @@ fn main() {
     let splited_params_strs = peer_mem_info_str.trim().split(",").collect::<Vec<_>>();
     let raddr = u64::from_str_radix(splited_params_strs[0], 16).unwrap();
     let rkey = Key::new(u32::from_str_radix(splited_params_strs[1], 16).unwrap());
+    let pmtu = u32::from(&PMTU);
 
     // // test write
+    // for i in 0..10 {
     let write_start = Instant::now();
     let ctx1 = dev_a
-        .write(dpqn, raddr, rkey, WorkReqSendFlag::IbvSendSignaled, sge0)
+        .read(dpqn, raddr, rkey, WorkReqSendFlag::empty(), sge0)
         .unwrap();
-    let start_waiting = Instant::now();
-    // info!("===========7====================");
-    // debug!("===========8====================");
-    
-    let _ = ctx1.wait();
-    log::info!("write done.total:{:?}, {:?}",write_start.elapsed().as_millis(),start_waiting.elapsed().as_millis());
-
+    loop {
+        let mut buffer = String::new();
+        std::io::stdin().read_line(&mut buffer).unwrap();
+    }
+    // let _ = ctx1.wait();
+    // log::info!(
+    //     "{},{},{},{}",
+    //     256,
+    //     SEND_CNT / 1024 / 1024,
+    //     pmtu,
+    //     write_start.elapsed().as_micros()
+    // );
+    // }
 }
