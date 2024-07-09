@@ -94,7 +94,7 @@ impl Device {
             start_addr: self
                 .0
                 .adaptor
-                .get_phys_addr(mr_pgt.table.as_ptr() as usize)
+                .get_phys_addr(mr_pgt.table.as_ref().as_ptr() as usize)
                 .map_err(|e| Error::GetPhysAddrFailed(e.to_string()))? as u64,
             pgt_idx: pgt_offset as u32,
             pgte_cnt: pgte_cnt as u32,
@@ -217,7 +217,7 @@ impl Device {
         buffer: &mut Buffer,
         buffer_size: usize,
     ) -> Result<PacketBuf<SLOT_SIZE>, Error> {
-        let buffer_addr = buffer.as_ptr() as usize;
+        let buffer_addr = buffer.as_ref().as_ptr() as usize;
         let pd = self.alloc_pd()?;
 
         // the `PAGE_SIZE` and `ACKNOWLEDGE_BUFFER_SIZE` is guaranteed to smaller than u32
@@ -300,7 +300,7 @@ impl MrPgt {
             next: ptr::null_mut(),
         }));
         assert!(
-            buffer.as_ptr() as usize % PAGE_SIZE == 0,
+            buffer.as_ref().as_ptr() as usize % PAGE_SIZE == 0,
             "buffer should be aligned to PAGE_SIZE"
         );
         Self {

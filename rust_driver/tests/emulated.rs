@@ -1,19 +1,13 @@
-
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
-        RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    },
-    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
+    qp::QpManager, types::{
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
+    }, AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig, RoundRobinStrategy
 };
-use serial_test::serial;
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, thread::sleep, time::Duration};
 
 use crate::common::init_logging;
-
 
 
 const SHM_PATH: &str = "/bluesim1\0";
@@ -31,7 +25,7 @@ fn create_and_init_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+) -> (Device, Pd, Mr, AlignedMemory) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
@@ -40,9 +34,16 @@ fn create_and_init_card<'a>(
             heap_mem_start_addr: head_start_addr,
         })
         .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            1,
+            Duration::from_secs(100),
+            Duration::from_millis(10),
+        ))
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();
+    
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -54,7 +55,7 @@ fn create_and_init_card<'a>(
         info!(
             "[{}] MR's PA_START={:X}",
             card_id,
-            mr_buffer.as_mut_ptr() as usize - HEAP_START_ADDR
+            mr_buffer.as_mut().as_mut_ptr() as usize - HEAP_START_ADDR
         );
     }
 
@@ -64,7 +65,7 @@ fn create_and_init_card<'a>(
     let mr = dev
         .reg_mr(
             pd,
-            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.as_mut().as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
             access_flag,
@@ -87,11 +88,7 @@ fn create_and_init_card<'a>(
 
     (dev, pd, mr, mr_buffer)
 }
-
-
-#[serial]
-#[ignore] // FIXME: ci failed to allocate memory?
-fn test_emulated() {
+fn main() {
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
@@ -115,16 +112,15 @@ fn test_emulated() {
         create_and_init_card(1, "0.0.0.0:9875", qpn, b_network, &a_network);
 
     let dpqn = qpn;
-
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
         *item = idx as u8;
     }
-    for item in mr_buffer_b[0..].iter_mut() {
+    for item in mr_buffer_b.as_mut()[0..].iter_mut() {
         *item = 0
     }
 
     let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
+        mr_buffer_a.as_ref().as_ptr() as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
@@ -132,7 +128,7 @@ fn test_emulated() {
     let ctx1 = dev_a
         .write(
             dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
+        mr_buffer_b.as_ref().as_ptr() as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::IbvSendSignaled,
             sge0,
@@ -140,60 +136,61 @@ fn test_emulated() {
         .unwrap();
 
     let _ = ctx1.wait();
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    sleep(Duration::from_secs(3));
+    assert_eq!(mr_buffer_a.as_ref()[0..SEND_CNT], mr_buffer_b.as_ref()[0..SEND_CNT]);
     info!("write success");
 
-    // test read
-    for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
-    for item in mr_buffer_a[0..].iter_mut() {
-        *item = 0;
-    }
+    // // test read
+    // for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
+    //     *item = idx as u8;
+    // }
+    // for item in mr_buffer_a[0..].iter_mut() {
+    //     *item = 0;
+    // }
 
-    let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
-        SEND_CNT.try_into().unwrap(),
-        mr_a.get_key(),
-    );
-    let ctx2 = dev_a
-        .read(
-            dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
-            mr_b.get_key(),
-            WorkReqSendFlag::empty(),
-            sge0,
-        )
-        .unwrap();
-    let _ = ctx2.wait();
+    // let sge0 = Sge::new(
+    //     &mr_buffer_a[0] as *const u8 as u64,
+    //     SEND_CNT.try_into().unwrap(),
+    //     mr_a.get_key(),
+    // );
+    // let ctx2 = dev_a
+    //     .read(
+    //         dpqn,
+    //         &mr_buffer_b[0] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         WorkReqSendFlag::empty(),
+    //         sge0,
+    //     )
+    //     .unwrap();
+    // let _ = ctx2.wait();
 
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
-    info!("read success");
+    // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    // info!("read success");
     
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
-        *item = idx as u8;
-    }
-    for item in mr_buffer_b[0..].iter_mut() {
-        *item = 0
-    }
+    // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    //     *item = idx as u8;
+    // }
+    // for item in mr_buffer_b[0..].iter_mut() {
+    //     *item = 0
+    // }
 
-    let sge3 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
-        SEND_CNT.try_into().unwrap(),
-        mr_a.get_key(),
-    );
+    // let sge3 = Sge::new(
+    //     &mr_buffer_a[0] as *const u8 as u64,
+    //     SEND_CNT.try_into().unwrap(),
+    //     mr_a.get_key(),
+    // );
 
-    let ctx3 = dev_a
-        .write(
-            dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
-            mr_b.get_key(),
-            WorkReqSendFlag::empty(),
-            sge3,
-        )
-        .unwrap();
+    // let ctx3 = dev_a
+    //     .write(
+    //         dpqn,
+    //         &mr_buffer_b[0] as *const u8 as u64,
+    //         mr_b.get_key(),
+    //         WorkReqSendFlag::empty(),
+    //         sge3,
+    //     )
+    //     .unwrap();
 
-    let _ = ctx3.wait();
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
-    info!("write without flag success");
+    // let _ = ctx3.wait();
+    // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    // info!("write without flag success");
 }

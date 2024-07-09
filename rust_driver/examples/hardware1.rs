@@ -19,9 +19,9 @@ use std::{
 
 use crate::common::init_logging;
 
-const BUFFER_LENGTH: usize = 1024 * 1024 * 64;
-const SEND_CNT: usize = 1024 * 1024 * 8;
-const PMTU: Pmtu = Pmtu::Mtu4096;
+const BUFFER_LENGTH: usize = 1024 * 1024 * 4;
+const SEND_CNT: usize = 1024 * 1024 *4;
+const PMTU: Pmtu = Pmtu::Mtu512;
 const RAND_SEED: [u8; 32] = [
     0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
     0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
@@ -41,9 +41,9 @@ fn create_and_init_card<'a>(
         })
         .strategy(RoundRobinStrategy::new())
         .retry_config(RetryConfig::new(
-            false,
-            1,
-            Duration::from_secs(100),
+            true,
+            5,
+            Duration::from_secs(5),
             Duration::from_millis(10),
         ))
         .build()
@@ -119,11 +119,11 @@ fn main() {
     //     create_and_init_card(1, qpn, &b_network, &a_network);
     let dpqn = qpn;
     let mut rng = StdRng::from_seed(RAND_SEED);
-    for item in mr_buffer_a.iter_mut() {
+    for item in mr_buffer_a.as_mut().iter_mut() {
         *item = rng.gen();
     }
     let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
+        mr_buffer_a.as_ref().as_ptr() as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
@@ -144,12 +144,9 @@ fn main() {
     // for i in 0..10 {
     let write_start = Instant::now();
     let ctx1 = dev_a
-        .read(dpqn, raddr, rkey, WorkReqSendFlag::empty(), sge0)
+        .write(dpqn, raddr, rkey, WorkReqSendFlag::IbvSendSignaled, sge0)
         .unwrap();
-    loop {
-        let mut buffer = String::new();
-        std::io::stdin().read_line(&mut buffer).unwrap();
-    }
+    ctx1.wait();
     // let _ = ctx1.wait();
     // log::info!(
     //     "{},{},{},{}",

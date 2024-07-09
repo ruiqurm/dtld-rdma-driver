@@ -62,7 +62,7 @@ fn create_and_init_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+) -> (Device, Pd, Mr, AlignedMemory) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
@@ -92,7 +92,7 @@ fn create_and_init_card<'a>(
         info!(
             "[{}] MR's PA_START={:X}",
             card_id,
-            mr_buffer.as_mut_ptr() as usize - HEAP_START_ADDR
+            mr_buffer.as_mut().as_mut_ptr() as usize - HEAP_START_ADDR
         );
     }
 
@@ -102,7 +102,7 @@ fn create_and_init_card<'a>(
     let mr = dev
         .reg_mr(
             pd,
-            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.as_mut().as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
             access_flag,
@@ -149,15 +149,15 @@ fn main() {
         create_and_init_card(1, "0.0.0.0:9875", qpn, b_network, &a_network);
 
     let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
         *item = idx as u8;
     }
-    for item in mr_buffer_b[0..].iter_mut() {
+    for item in mr_buffer_b.as_mut()[0..].iter_mut() {
         *item = 0
     }
 
     let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
+        mr_buffer_a.as_ref().as_ptr() as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
@@ -165,7 +165,7 @@ fn main() {
     let ctx1 = dev_a
         .write(
             dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
+        mr_buffer_b.as_ref().as_ptr() as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::IbvSendSignaled,
             sge0,
@@ -174,7 +174,7 @@ fn main() {
 
     let _ = ctx1.wait();
     sleep(Duration::from_secs(3));
-    assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+    assert_eq!(mr_buffer_a.as_ref()[0..SEND_CNT], mr_buffer_b.as_ref()[0..SEND_CNT]);
     info!("write success");
 
     // // test read

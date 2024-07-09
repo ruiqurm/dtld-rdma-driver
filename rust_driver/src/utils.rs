@@ -67,7 +67,7 @@ impl MmapMemory {
             libc::mmap(
                 core::ptr::null_mut(),
                 RINGBUF_SIZE,
-                libc::PROT_WRITE| libc::PROT_READ,
+                libc::PROT_WRITE | libc::PROT_READ,
                 libc::MAP_SHARED,
                 device_file_fd,
                 ringbuf_slot_offset,
@@ -75,7 +75,7 @@ impl MmapMemory {
         };
 
         if ptr == libc::MAP_FAILED {
-            log::error!("failed to allocate here {}",ringbuf_slot_offset);
+            log::error!("failed to allocate here {}", ringbuf_slot_offset);
             return Err(io::Error::last_os_error());
         }
 
@@ -133,15 +133,14 @@ impl MmapMemory {
     }
 }
 
-impl Deref for MmapMemory {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
+impl AsRef<[u8]> for MmapMemory {
+    fn as_ref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
-impl DerefMut for MmapMemory {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+impl AsMut<[u8]> for MmapMemory {
+    fn as_mut(&mut self) -> &mut [u8] {
         self.as_mut_slice()
     }
 }
@@ -172,40 +171,45 @@ fn deallocate_aligned_memory(buf: &mut [u8], size: usize) {
 
 /// An aligned memory buffer.
 #[derive(Debug)]
-pub struct AlignedMemory<'a>(&'a mut [u8]);
+pub struct AlignedMemory(&'static mut [u8]);
 
-impl AlignedMemory<'_> {
+impl AlignedMemory {
     /// # Errors
     /// Return an error if the size is too large.
     pub fn new(size: usize) -> io::Result<Self> {
         Ok(AlignedMemory(allocate_aligned_memory(size)?))
     }
+
+    /// Length of the buffer
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize{
+        self.0.len()
+    }
 }
 
-impl Drop for AlignedMemory<'_> {
+impl AsRef<[u8]> for AlignedMemory {
+    fn as_ref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+impl AsMut<[u8]> for AlignedMemory {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.0
+    }
+}
+
+
+impl Drop for AlignedMemory {
     fn drop(&mut self) {
         deallocate_aligned_memory(self.0, self.0.len());
-    }
-}
-
-impl Deref for AlignedMemory<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
-
-impl DerefMut for AlignedMemory<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
     }
 }
 
 #[derive(Debug)]
 pub(crate) enum Buffer {
     DmaBuffer(MmapMemory),
-    AlignedMemory(AlignedMemory<'static>),
+    AlignedMemory(AlignedMemory),
 }
 
 impl Buffer {
@@ -217,24 +221,10 @@ impl Buffer {
         }
     }
 
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        match self {
-            Buffer::DmaBuffer(huge_page) => huge_page.as_ptr(),
-            Buffer::AlignedMemory(aligned_memory) => aligned_memory.as_ptr(),
-        }
-    }
-
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
-        match self {
-            Buffer::DmaBuffer(huge_page) => huge_page.addr as *mut u8,
-            Buffer::AlignedMemory(aligned_memory) => aligned_memory.0.as_mut_ptr(),
-        }
-    }
-
     pub(crate) fn size(&self) -> usize {
         match self {
             Buffer::DmaBuffer(huge_page) => huge_page.size(),
-            Buffer::AlignedMemory(aligned_memory) => aligned_memory.len(),
+            Buffer::AlignedMemory(aligned_memory) => aligned_memory.0.len(),
         }
     }
 }
@@ -257,6 +247,7 @@ impl Index<usize> for Buffer {
             Buffer::AlignedMemory(aligned_memory) => {
                 let ptr = unsafe {
                     aligned_memory
+                        .as_ref()
                         .as_ptr()
                         .add(index * std::mem::size_of::<u64>()) as *const u64
                 };
@@ -275,19 +266,37 @@ impl IndexMut<usize> for Buffer {
     fn index_mut(&mut self, index: usize) -> &mut u64 {
         match self {
             Buffer::DmaBuffer(buffer) => {
-                let ptr = unsafe {
-                    buffer.as_mut_ptr().add(index * std::mem::size_of::<u64>()) as *mut u64
-                };
+                let ptr =
+                    unsafe { buffer.as_ptr().add(index * std::mem::size_of::<u64>()) as *mut u64 };
                 unsafe { &mut *ptr }
             }
             Buffer::AlignedMemory(aligned_memory) => {
                 let ptr = unsafe {
                     aligned_memory
+                        .as_mut()
                         .as_mut_ptr()
                         .add(index * std::mem::size_of::<u64>()) as *mut u64
                 };
                 unsafe { &mut *ptr }
             }
+        }
+    }
+}
+
+impl AsRef<[u8]> for Buffer {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::AlignedMemory(a) => a.as_ref(),
+            Self::DmaBuffer(b) => b.as_ref(),
+        }
+    }
+}
+
+impl AsMut<[u8]> for Buffer {
+    fn as_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::AlignedMemory(a) => a.as_mut(),
+            Self::DmaBuffer(b) => b.as_mut(),
         }
     }
 }

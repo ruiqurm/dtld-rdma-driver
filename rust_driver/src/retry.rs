@@ -170,6 +170,8 @@ impl RetryMonitorContext {
                     ctx.next_timeout = now + self.config.retry_timeout;
                     if self.device.send_work_desc(ctx.descriptor.clone()).is_err() {
                         log::error!("Retry send work descriptor failed")
+                    }else{
+                        log::warn!("Retry desc:{:?}",ctx.descriptor);
                     }
                 } else {
                     // Encounter max retry, remove it and tell user the error
@@ -290,25 +292,5 @@ mod test {
             device.0.lock().clear();
             std::thread::sleep(std::time::Duration::from_millis(1000));
         }
-
-        // sender
-        //     .send(RetryEvent::Retry(super::RetryRecord {
-        //         descriptor: desc,
-        //         qpn: Qpn::default(),
-        //         msn: Msn::default(),
-        //     }))
-        //     .unwrap();
-        // std::thread::sleep(std::time::Duration::from_millis(120));
-
-        // // should send first retry
-        // assert_eq!(device.0.lock().len(), 1);
-        // sender
-        //     .send(RetryEvent::Cancel(super::RetryCancel {
-        //         qpn: Qpn::default(),
-        //         msn: Msn::default(),
-        //     }))
-        //     .unwrap();
-        // std::thread::sleep(std::time::Duration::from_millis(105));
-        // assert_eq!(device.0.lock().len(), 1);
     }
 }

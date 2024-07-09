@@ -64,7 +64,7 @@ fn create_and_init_emulated_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+) -> (Device, Pd, Mr, AlignedMemory) {
     let head_start_addr = unsafe { HEAP_START_ADDR };
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
@@ -87,7 +87,7 @@ fn create_and_init_emulated_card<'a>(
         info!(
             "[{}] MR's PA_START={:X}",
             card_id,
-            mr_buffer.as_mut_ptr() as usize - HEAP_START_ADDR
+            mr_buffer.as_mut().as_mut_ptr() as usize - HEAP_START_ADDR
         );
     }
 
@@ -97,7 +97,7 @@ fn create_and_init_emulated_card<'a>(
     let mr = dev
         .reg_mr(
             pd,
-            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.as_mut().as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
             access_flag,
@@ -125,7 +125,7 @@ fn create_and_init_software_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+) -> (Device, Pd, Mr, AlignedMemory) {
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
         .device_type(DeviceType::Software)
@@ -146,7 +146,7 @@ fn create_and_init_software_card<'a>(
     let mr = dev
         .reg_mr(
             pd,
-            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.as_mut().as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
             access_flag,
@@ -199,23 +199,23 @@ fn main() {
 
     // emulator write to software
     {
-        for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
             *item = idx as u8;
         }
-        for item in mr_buffer_b.iter_mut() {
+        for item in mr_buffer_b.as_mut().iter_mut() {
             *item = 0
         }
 
         // emulator write to software
         let sge0 = Sge::new(
-            &mr_buffer_a[0] as *const u8 as u64,
+            mr_buffer_a.as_ref().as_ptr() as usize as u64,
             SEND_CNT.try_into().unwrap(),
             mr_a.get_key(),
         );
         let ctx1 = dev_a
             .write(
                 dpqn,
-                &mr_buffer_b[0] as *const u8 as u64,
+                mr_buffer_b.as_ref().as_ptr() as usize as u64,
                 mr_b.get_key(),
                 WorkReqSendFlag::IbvSendSignaled,
                 sge0,
@@ -223,29 +223,32 @@ fn main() {
             .unwrap();
 
         let _ = ctx1.wait();
-        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        assert_eq!(
+            mr_buffer_a.as_ref()[0..SEND_CNT],
+            mr_buffer_b.as_ref()[0..SEND_CNT]
+        );
         info!("Emulator write to software success");
     }
 
     // emulator read from software
     {
-        for item in mr_buffer_a.iter_mut() {
+        for item in mr_buffer_a.as_mut().iter_mut() {
             *item = 0
         }
 
-        for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
+        for (idx, item) in mr_buffer_b.as_mut().iter_mut().enumerate() {
             *item = idx as u8;
         }
 
         let sge0 = Sge::new(
-            &mr_buffer_a[0] as *const u8 as u64,
+            mr_buffer_a.as_ref().as_ptr() as usize as u64,
             SEND_CNT.try_into().unwrap(),
             mr_a.get_key(),
         );
         let ctx1 = dev_a
             .read(
                 dpqn,
-                &mr_buffer_b[0] as *const u8 as u64,
+                mr_buffer_b.as_ref().as_ptr() as usize as u64,
                 mr_b.get_key(),
                 WorkReqSendFlag::IbvSendSignaled,
                 sge0,
@@ -253,28 +256,31 @@ fn main() {
             .unwrap();
 
         let _ = ctx1.wait();
-        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        assert_eq!(
+            mr_buffer_a.as_ref()[0..SEND_CNT],
+            mr_buffer_b.as_ref()[0..SEND_CNT]
+        );
         info!("Emulator read from software success");
     }
 
     // Software write to emulator
     {
-        for (idx, item) in mr_buffer_b.iter_mut().enumerate() {
+        for (idx, item) in mr_buffer_b.as_mut().iter_mut().enumerate() {
             *item = idx as u8;
         }
-        for item in mr_buffer_a.iter_mut() {
+        for item in mr_buffer_a.as_mut().iter_mut() {
             *item = 0
         }
 
         let sge0 = Sge::new(
-            &mr_buffer_b[0] as *const u8 as u64,
+            mr_buffer_b.as_ref().as_ptr() as usize as u64,
             SEND_CNT.try_into().unwrap(),
             mr_b.get_key(),
         );
         let ctx1 = dev_b
             .write(
                 dpqn,
-                &mr_buffer_a[0] as *const u8 as u64,
+                mr_buffer_a.as_ref().as_ptr() as usize as u64,
                 mr_a.get_key(),
                 WorkReqSendFlag::IbvSendSignaled,
                 sge0,
@@ -282,28 +288,31 @@ fn main() {
             .unwrap();
 
         let _ = ctx1.wait();
-        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        assert_eq!(
+            mr_buffer_a.as_ref()[0..SEND_CNT],
+            mr_buffer_b.as_ref()[0..SEND_CNT]
+        );
         info!("Software write to emulator success");
     }
 
     // Software read from emulator
     {
-        for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+        for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
             *item = idx as u8;
         }
-        for item in mr_buffer_b.iter_mut() {
+        for item in mr_buffer_b.as_mut().iter_mut() {
             *item = 0
         }
 
         let sge0 = Sge::new(
-            &mr_buffer_b[0] as *const u8 as u64,
+            mr_buffer_b.as_ref().as_ptr() as usize as u64,
             SEND_CNT.try_into().unwrap(),
             mr_b.get_key(),
         );
         let ctx1 = dev_b
             .read(
                 dpqn,
-                &mr_buffer_a[0] as *const u8 as u64,
+                mr_buffer_a.as_ref().as_ptr() as usize as u64,
                 mr_a.get_key(),
                 WorkReqSendFlag::IbvSendSignaled,
                 sge0,
@@ -311,7 +320,7 @@ fn main() {
             .unwrap();
 
         let _ = ctx1.wait();
-        assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
+        assert_eq!(mr_buffer_a.as_ref()[0..SEND_CNT], mr_buffer_b.as_ref()[0..SEND_CNT]);
         info!("Software read from emulator success");
     }
 }

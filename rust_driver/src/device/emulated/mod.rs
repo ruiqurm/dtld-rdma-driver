@@ -1,17 +1,15 @@
 use log::debug;
 use parking_lot::Mutex;
 
-use crate::{utils::Buffer, SchedulerStrategy};
+use crate::{utils::Buffer, AlignedMemory, SchedulerStrategy};
 
 use self::rpc_cli::{
     RpcClient, ToCardCtrlRbCsrProxy, ToCardWorkRbCsrProxy, ToHostCtrlRbCsrProxy,
     ToHostWorkRbCsrProxy,
 };
 use super::{
-    constants,
-    ringbuf::Ringbuf,
-    DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb, ToCardWorkRbDesc, ToHostCtrlRbDesc,
-    ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
+    constants, ringbuf::Ringbuf, DeviceAdaptor, DeviceError, ToCardCtrlRbDesc, ToCardRb,
+    ToCardWorkRbDesc, ToHostCtrlRbDesc, ToHostRb, ToHostWorkRbDesc, ToHostWorkRbDescError,
 };
 use std::{fmt::Debug, net::SocketAddr, sync::Arc};
 
@@ -21,6 +19,7 @@ mod rpc_cli;
 
 type ToCardCtrlRb = Ringbuf<
     ToCardCtrlRbCsrProxy,
+    Buffer,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -28,6 +27,7 @@ type ToCardCtrlRb = Ringbuf<
 
 type ToHostCtrlRb = Ringbuf<
     ToHostCtrlRbCsrProxy,
+    Buffer,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -35,6 +35,7 @@ type ToHostCtrlRb = Ringbuf<
 
 type ToCardWorkRb = Ringbuf<
     ToCardWorkRbCsrProxy,
+    Buffer,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -42,6 +43,7 @@ type ToCardWorkRb = Ringbuf<
 
 type ToHostWorkRb = Ringbuf<
     ToHostWorkRbCsrProxy,
+    Buffer,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -76,7 +78,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
 
         let to_card_ctrl_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
             .map_err(|e| DeviceError::Device(e.to_string()))?;
-        let to_card_ctrl_rb_addr = to_card_ctrl_rb_buffer.as_ptr() as usize;
+        let to_card_ctrl_rb_addr = to_card_ctrl_rb_buffer.as_ref().as_ptr() as usize;
         let to_card_ctrl_rb = ToCardCtrlRb::new(
             ToCardCtrlRbCsrProxy::new(rpc_cli.clone()),
             to_card_ctrl_rb_buffer,
@@ -84,13 +86,13 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
 
         let to_host_ctrl_rb = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
             .map_err(|e| DeviceError::Device(e.to_string()))?;
-        let to_host_ctrl_rb_addr = to_host_ctrl_rb.as_ptr() as usize;
+        let to_host_ctrl_rb_addr = to_host_ctrl_rb.as_ref().as_ptr() as usize;
         let to_host_ctrl_rb =
             ToHostCtrlRb::new(ToHostCtrlRbCsrProxy::new(rpc_cli.clone()), to_host_ctrl_rb);
 
         let to_card_work_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
             .map_err(|e| DeviceError::Device(e.to_string()))?;
-        let to_card_work_rb_addr = to_card_work_rb_buffer.as_ptr() as usize;
+        let to_card_work_rb_addr = to_card_work_rb_buffer.as_ref().as_ptr() as usize;
         let to_card_work_rb = ToCardWorkRb::new(
             ToCardWorkRbCsrProxy::new(rpc_cli.clone()),
             to_card_work_rb_buffer,
@@ -98,7 +100,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
 
         let to_host_work_rb_buffer = Buffer::new(constants::RINGBUF_PAGE_SIZE, false)
             .map_err(|e| DeviceError::Device(e.to_string()))?;
-        let to_host_work_rb_addr = to_host_work_rb_buffer.as_ptr() as usize;
+        let to_host_work_rb_addr = to_host_work_rb_buffer.as_ref().as_ptr() as usize;
         let to_host_work_rb = ToHostWorkRb::new(
             ToHostWorkRbCsrProxy::new(rpc_cli.clone()),
             to_host_work_rb_buffer,
@@ -107,7 +109,7 @@ impl<Strat: SchedulerStrategy> EmulatedDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
-            None
+            None,
         ));
         let dev = Arc::new(Self {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb),
@@ -223,7 +225,7 @@ impl<Strat: SchedulerStrategy> DeviceAdaptor for Arc<EmulatedDevice<Strat>> {
     }
 }
 
-#[allow(clippy::unwrap_used,clippy::unwrap_in_result)]
+#[allow(clippy::unwrap_used, clippy::unwrap_in_result)]
 impl<Strat: SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Strat> {
     fn push(&self, desc: ToCardCtrlRbDesc) -> Result<(), DeviceError> {
         let mut guard = self.to_card_ctrl_rb.lock();
@@ -240,10 +242,8 @@ impl<Strat: SchedulerStrategy> ToCardRb<ToCardCtrlRbDesc> for EmulatedDevice<Str
 impl<Strat: SchedulerStrategy> ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice<Strat> {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
         let mut guard = self.to_host_ctrl_rb.lock();
-        let mut reader = guard.read()?;
-        let mem = reader.next().ok_or(DeviceError::Device(
-            "Failed to read from ringbuf".to_owned(),
-        ))?;
+        let mut reader = guard.read();
+        let mem = reader.next()?;
         let desc = ToHostCtrlRbDesc::read(mem)?;
         debug!("{:?}", &desc);
         Ok(desc)
@@ -275,11 +275,9 @@ impl<Strat: SchedulerStrategy> ToHostRb<ToHostCtrlRbDesc> for EmulatedDevice<Str
 impl<Strat: SchedulerStrategy> ToHostRb<ToHostWorkRbDesc> for EmulatedDevice<Strat> {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
         let mut guard = self.to_host_work_rb.lock();
-        let mut reader = guard.read()?;
+        let mut reader = guard.read();
 
-        let mem = reader.next().ok_or(DeviceError::Device(
-            "Failed to read from ringbuf".to_owned(),
-        ))?;
+        let mem = reader.next()?;
         let mut read_res = ToHostWorkRbDesc::read(mem);
 
         loop {
@@ -289,9 +287,7 @@ impl<Strat: SchedulerStrategy> ToHostRb<ToHostWorkRbDesc> for EmulatedDevice<Str
                     return Err(e);
                 }
                 Err(ToHostWorkRbDescError::Incomplete(incomplete_desc)) => {
-                    let next_mem = reader.next().ok_or(DeviceError::Device(
-                        "Failed to read from ringbuf".to_owned(),
-                    ))?;
+                    let next_mem = reader.next()?;
                     read_res = incomplete_desc.read(next_mem);
                 }
             }

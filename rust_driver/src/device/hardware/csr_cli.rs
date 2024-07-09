@@ -12,7 +12,7 @@ use crate::{
             CSR_ADDR_CMD_RESP_QUEUE_TAIL, CSR_ADDR_META_REPORT_QUEUE_HEAD,
             CSR_ADDR_META_REPORT_QUEUE_TAIL, CSR_ADDR_SEND_QUEUE_HEAD, CSR_ADDR_SEND_QUEUE_TAIL,
         },
-        ringbuf::{CsrReaderProxy, CsrWriterProxy},
+        ringbuf::{CsrReaderAdaptor, CsrWriterAdaptor},
         DeviceError,
     },
     MmapMemory,
@@ -53,7 +53,7 @@ impl CsrClient {
         }
         let mut buf = self.0.mapping.lock();
         #[allow(clippy::ptr_offset_with_cast)]
-        let offset = unsafe { buf.as_mut_ptr().offset(addr as isize) as *mut u32 };
+        let offset = unsafe { buf.as_ptr().offset(addr as isize) as *mut u32 };
         unsafe { offset.write_volatile(data) }
         Ok(())
     }
@@ -68,7 +68,7 @@ impl ToCardCtrlRbCsrProxy {
         Self(client)
     }
 }
-impl CsrWriterProxy for ToCardCtrlRbCsrProxy {
+impl CsrWriterAdaptor for ToCardCtrlRbCsrProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::HEAD_CSR, data)
     }
@@ -88,7 +88,7 @@ impl ToHostCtrlRbCsrProxy {
     }
 }
 
-impl CsrReaderProxy for ToHostCtrlRbCsrProxy {
+impl CsrReaderAdaptor for ToHostCtrlRbCsrProxy {
     fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::TAIL_CSR, data)
     }
@@ -108,7 +108,7 @@ impl ToCardWorkRbCsrProxy {
     }
 }
 
-impl CsrWriterProxy for ToCardWorkRbCsrProxy {
+impl CsrWriterAdaptor for ToCardWorkRbCsrProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::HEAD_CSR, data)
     }
@@ -128,7 +128,7 @@ impl ToHostWorkRbCsrProxy {
     }
 }
 
-impl CsrReaderProxy for ToHostWorkRbCsrProxy {
+impl CsrReaderAdaptor for ToHostWorkRbCsrProxy {
     fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::TAIL_CSR, data)
     }

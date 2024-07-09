@@ -15,17 +15,17 @@ use log::{debug, error};
 use parking_lot::Mutex;
 
 use super::{
-    ringbuf::{CsrWriterProxy, Ringbuf},
+    ringbuf::{CsrWriterAdaptor, Ringbuf},
     software::BlueRDMALogic,
     DescSge, DeviceError, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
 };
 
 use crate::{
     types::{Msn, Pmtu, Psn, Qpn},
-    utils::{calculate_packet_cnt, get_first_packet_max_length},
+    utils::{calculate_packet_cnt, get_first_packet_max_length, Buffer},
 };
 
-const SCHEDULER_SIZE_U32: u32 = 1024 * 1024 * 2; // 32KB
+const SCHEDULER_SIZE_U32: u32 = 1024 * 1024 * 8; // 32KB
 const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
@@ -177,13 +177,13 @@ impl Default for SGList {
 
 impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
     pub(super) fn new<
-        T: CsrWriterProxy + Send + 'static,
+        T: CsrWriterAdaptor + Send + 'static,
         const DEPTH: usize,
         const ELEM_SIZE: usize,
         const PAGE_SIZE: usize,
     >(
         strategy: Strat,
-        ringbuf: Mutex<Ringbuf<T, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
+        ringbuf: Mutex<Ringbuf<T, Buffer, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
         core_id: Option<CoreId>,
     ) -> Self {
         let (sender, receiver) = unbounded();
@@ -193,10 +193,10 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
         let strategy_clone = strategy.clone();
         let thread_handler = spawn(move || {
             // try set core_affinity, but not exit if set failed.
-            if let Some(core_id) = core_id{
+            if let Some(core_id) = core_id {
                 if !core_affinity::set_for_current(core_id) {
                     log::error!("failed to set core_affinity {:?} in scheduler", core_id);
-                }else{
+                } else {
                     log::info!("set core_affinity in scheduler successfully");
                 }
             }
@@ -534,7 +534,7 @@ mod test {
 
     use parking_lot::lock_api::Mutex;
 
-    use crate::device::ringbuf::{CsrWriterProxy, Ringbuf};
+    use crate::device::ringbuf::{CsrWriterAdaptor, Ringbuf};
     use crate::device::{
         DescSge, DeviceError, ToCardRb, ToCardWorkRbDesc, ToCardWorkRbDescCommon,
         ToCardWorkRbDescWrite, ToCardWorkRbDescWriteWithImm,
@@ -617,7 +617,7 @@ mod test {
         head: AtomicU32,
         tail: AtomicU32,
     }
-    impl CsrWriterProxy for Proxy {
+    impl CsrWriterAdaptor for Proxy {
         fn write_head(&self, data: u32) -> Result<(), DeviceError> {
             self.0.head.store(data, Ordering::Release);
             Ok(())
@@ -633,7 +633,10 @@ mod test {
         let strategy = super::round_robin::RoundRobinStrategy::new();
         let buffer = Buffer::new(4096, false).unwrap();
         let proxy = Proxy::default();
-        let ringbuf = Mutex::new(Ringbuf::<Proxy, 128, 32, 4096>::new(proxy.clone(), buffer));
+        let ringbuf = Mutex::new(Ringbuf::<Proxy, Buffer, 128, 32, 4096>::new(
+            proxy.clone(),
+            buffer,
+        ));
         let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf, None));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {

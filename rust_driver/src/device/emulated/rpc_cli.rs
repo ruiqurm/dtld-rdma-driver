@@ -11,7 +11,7 @@ use crate::device::{
         CSR_ADDR_CMD_RESP_QUEUE_TAIL, CSR_ADDR_META_REPORT_QUEUE_HEAD,
         CSR_ADDR_META_REPORT_QUEUE_TAIL, CSR_ADDR_SEND_QUEUE_HEAD, CSR_ADDR_SEND_QUEUE_TAIL,
     },
-    ringbuf::{CsrReaderProxy, CsrWriterProxy},
+    ringbuf::{CsrReaderAdaptor, CsrWriterAdaptor},
     DeviceError,
 };
 
@@ -44,7 +44,7 @@ impl RpcClient {
 
         let mut recv_buf = [0; 128];
         let recv_cnt = self.0.recv(&mut recv_buf)?;
-        // the length of CsrAccessRpcMessage is fixed, 
+        // the length of CsrAccessRpcMessage is fixed,
         #[allow(clippy::indexing_slicing)]
         let response = serde_json::from_slice::<CsrAccessRpcMessage>(&recv_buf[..recv_cnt])?;
 
@@ -76,7 +76,7 @@ impl ToCardCtrlRbCsrProxy {
         Self(client)
     }
 }
-impl CsrWriterProxy for ToCardCtrlRbCsrProxy {
+impl CsrWriterAdaptor for ToCardCtrlRbCsrProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::HEAD_CSR, data)
     }
@@ -96,7 +96,7 @@ impl ToHostCtrlRbCsrProxy {
     }
 }
 
-impl CsrReaderProxy for ToHostCtrlRbCsrProxy {
+impl CsrReaderAdaptor for ToHostCtrlRbCsrProxy {
     fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::TAIL_CSR, data)
     }
@@ -116,7 +116,7 @@ impl ToCardWorkRbCsrProxy {
     }
 }
 
-impl CsrWriterProxy for ToCardWorkRbCsrProxy {
+impl CsrWriterAdaptor for ToCardWorkRbCsrProxy {
     fn write_head(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::HEAD_CSR, data)
     }
@@ -136,7 +136,7 @@ impl ToHostWorkRbCsrProxy {
     }
 }
 
-impl CsrReaderProxy for ToHostWorkRbCsrProxy {
+impl CsrReaderAdaptor for ToHostWorkRbCsrProxy {
     fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
         self.0.write_csr(Self::TAIL_CSR, data)
     }

@@ -995,7 +995,6 @@ impl ToHostWorkRbDesc {
         let start_time = Instant::now();
         while raw_status == 0 {
             raw_status = desc_bth.get_req_status() as u8;
-            sleep(Duration::from_millis(1));
             if start_time.elapsed().as_millis() > 1000 {
                 log::error!("timeout in parsing status");
                 break;

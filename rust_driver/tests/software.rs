@@ -21,7 +21,7 @@ fn create_and_init_card<'a>(
     qpn: Qpn,
     local_network: RdmaDeviceNetworkParam,
     remote_network: &RdmaDeviceNetworkParam,
-) -> (Device, Pd, Mr, AlignedMemory<'a>) {
+) -> (Device, Pd, Mr, AlignedMemory) {
     let config = DeviceConfigBuilder::default()
         .network_config(local_network)
         .device_type(DeviceType::Software)
@@ -42,7 +42,7 @@ fn create_and_init_card<'a>(
     let mr = dev
         .reg_mr(
             pd,
-            mr_buffer.as_mut_ptr() as u64,
+            mr_buffer.as_mut().as_mut_ptr() as u64,
             mr_buffer.len() as u32,
             PAGE_SIZE as u32,
             access_flag,
@@ -85,26 +85,25 @@ fn test_software_write_and_read() {
         .unwrap();
     let qp_manager = QpManager::new();
     let qpn = qp_manager.alloc().unwrap();
-    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) =
-        create_and_init_card(0, qpn, a_network, &b_network);
+    let (dev_a, _pd_a, mr_a, mut mr_buffer_a) = create_and_init_card(0, qpn, a_network, &b_network);
     let (_dev_b, _pd_b, mr_b, mut mr_buffer_b) =
         create_and_init_card(1, qpn, b_network, &a_network);
     let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
         *item = idx as u8;
     }
-    for item in mr_buffer_b[0..].iter_mut() {
+    for item in mr_buffer_b.as_mut()[0..].iter_mut() {
         *item = 0
     }
 
     let sge0 = Sge::new(
-        &mr_buffer_a[0] as *const u8 as u64,
+        mr_buffer_a.as_ref().as_ptr() as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
 
     let sge1 = Sge::new(
-        &mr_buffer_a[SEND_CNT] as *const u8 as u64,
+        &mr_buffer_a.as_ref()[SEND_CNT] as *const u8 as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
@@ -113,7 +112,7 @@ fn test_software_write_and_read() {
     let ctx1 = dev_a
         .write(
             dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
+            mr_buffer_b.as_ref().as_ptr() as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::empty(),
             sge0,
@@ -122,7 +121,7 @@ fn test_software_write_and_read() {
     let ctx2 = dev_a
         .write(
             dpqn,
-            &mr_buffer_b[SEND_CNT] as *const u8 as u64,
+            &mr_buffer_b.as_ref()[SEND_CNT] as *const u8 as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::empty(),
             sge1,
@@ -132,26 +131,30 @@ fn test_software_write_and_read() {
     let _ = ctx1.wait();
     let _ = ctx2.wait();
 
-    if mr_buffer_a[0..SEND_CNT * 2] != mr_buffer_b[0..SEND_CNT * 2] {
+    if mr_buffer_a.as_ref()[0..SEND_CNT * 2] != mr_buffer_b.as_ref()[0..SEND_CNT * 2] {
         for i in 0..SEND_CNT * 2 {
-            if mr_buffer_a[i] != mr_buffer_b[i] {
-                panic!("{}: {} != {}", i, mr_buffer_a[i], mr_buffer_b[i]);
+            if mr_buffer_a.as_ref()[i] != mr_buffer_b.as_ref()[i] {
+                panic!(
+                    "{}: {} != {}",
+                    i,
+                    mr_buffer_a.as_ref()[i],
+                    mr_buffer_b.as_ref()[i]
+                );
             }
         }
     }
     info!("Write succ");
     // test read
 
-    for item in mr_buffer_a.iter_mut() {
+    for item in mr_buffer_a.as_mut().iter_mut() {
         *item = 0;
     }
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
         *item = idx as u8;
     }
 
-
     let sge_read = Sge::new(
-        &mr_buffer_a[SEND_CNT] as *const u8 as u64,
+        mr_buffer_a.as_ref().as_ptr() as usize as u64,
         SEND_CNT.try_into().unwrap(),
         mr_a.get_key(),
     );
@@ -159,7 +162,7 @@ fn test_software_write_and_read() {
     let ctx1 = dev_a
         .read(
             dpqn,
-            &mr_buffer_b[0] as *const u8 as u64,
+            mr_buffer_b.as_ref().as_ptr() as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::empty(),
             sge_read,

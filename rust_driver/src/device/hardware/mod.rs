@@ -23,6 +23,7 @@ mod phys_addr_resolver;
 
 type ToCardCtrlRb = Ringbuf<
     ToCardCtrlRbCsrProxy,
+    MmapMemory,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -30,6 +31,7 @@ type ToCardCtrlRb = Ringbuf<
 
 type ToHostCtrlRb = Ringbuf<
     ToHostCtrlRbCsrProxy,
+    MmapMemory,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -37,6 +39,7 @@ type ToHostCtrlRb = Ringbuf<
 
 type ToCardWorkRb = Ringbuf<
     ToCardWorkRbCsrProxy,
+    Buffer,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -44,6 +47,7 @@ type ToCardWorkRb = Ringbuf<
 
 type ToHostWorkRb = Ringbuf<
     ToHostWorkRbCsrProxy,
+    MmapMemory,
     { constants::RINGBUF_DEPTH },
     { constants::RINGBUF_ELEM_SIZE },
     { constants::RINGBUF_PAGE_SIZE },
@@ -86,7 +90,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         .map_err(|e| DeviceError::Device(e.to_string()))?;
         let to_card_ctrl_rb = ToCardCtrlRb::new(
             ToCardCtrlRbCsrProxy::new(csr_cli.clone()),
-            Buffer::DmaBuffer(to_card_ctrl_rb_buffer),
+            to_card_ctrl_rb_buffer,
         );
 
         let to_host_ctrl_rb = MmapMemory::new_ringbuf::<{ constants::RINGBUF_PAGE_SIZE }>(
@@ -96,7 +100,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         .map_err(|e| DeviceError::Device(e.to_string()))?;
         let to_host_ctrl_rb = ToHostCtrlRb::new(
             ToHostCtrlRbCsrProxy::new(csr_cli.clone()),
-            Buffer::DmaBuffer(to_host_ctrl_rb),
+            to_host_ctrl_rb,
         );
 
         let to_card_work_rb_buffer = MmapMemory::new_ringbuf::<{ constants::RINGBUF_PAGE_SIZE }>(
@@ -116,7 +120,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         .map_err(|e| DeviceError::Device(e.to_string()))?;
         let to_host_work_rb = ToHostWorkRb::new(
             ToHostWorkRbCsrProxy::new(csr_cli.clone()),
-            Buffer::DmaBuffer(to_host_work_rb_buffer),
+            to_host_work_rb_buffer,
         );
 
         let phys_addr_resolver =
@@ -237,10 +241,8 @@ impl ToCardRb<ToCardCtrlRbDesc> for Mutex<ToCardCtrlRb> {
 impl ToHostRb<ToHostCtrlRbDesc> for Mutex<ToHostCtrlRb> {
     fn pop(&self) -> Result<ToHostCtrlRbDesc, DeviceError> {
         let mut guard = self.lock();
-        let mut reader = guard.read()?;
-        let mem = reader.next().ok_or(DeviceError::Device(
-            "Failed to read from ringbuf".to_owned(),
-        ))?;
+        let mut reader = guard.read();
+        let mem = reader.next()?;
         let desc = ToHostCtrlRbDesc::read(mem)?;
         debug!("{:?}", &desc);
         Ok(desc)
@@ -250,11 +252,9 @@ impl ToHostRb<ToHostCtrlRbDesc> for Mutex<ToHostCtrlRb> {
 impl ToHostRb<ToHostWorkRbDesc> for Mutex<ToHostWorkRb> {
     fn pop(&self) -> Result<ToHostWorkRbDesc, DeviceError> {
         let mut guard = self.lock();
-        let mut reader = guard.read()?;
+        let mut reader = guard.read();
 
-        let mem = reader.next().ok_or(DeviceError::Device(
-            "Failed to read from ringbuf".to_owned(),
-        ))?;
+        let mem = reader.next()?;
         let mut read_res = ToHostWorkRbDesc::read(mem);
 
         loop {
@@ -264,9 +264,7 @@ impl ToHostRb<ToHostWorkRbDesc> for Mutex<ToHostWorkRb> {
                     return Err(e);
                 }
                 Err(ToHostWorkRbDescError::Incomplete(incomplete_desc)) => {
-                    let next_mem = reader.next().ok_or(DeviceError::Device(
-                        "Failed to read from ringbuf".to_owned(),
-                    ))?;
+                    let next_mem = reader.next()?;
                     read_res = incomplete_desc.read(next_mem);
                 }
             }

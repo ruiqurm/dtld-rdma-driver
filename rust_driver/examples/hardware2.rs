@@ -111,7 +111,7 @@ fn main() {
     debug!("===========5====================");
 
     let dpqn = qpn;
-    for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
+    for (idx, item) in mr_buffer_a.as_mut().iter_mut().enumerate() {
         *item = 0x1;
     }
 
@@ -127,7 +127,7 @@ fn main() {
         let mut buffer = String::new();
         std::io::stdin().read_line(&mut buffer).unwrap();
         let mut rng = StdRng::from_seed(RAND_SEED);
-        let mut iter = mr_buffer_a.iter();
+        let mut iter = mr_buffer_a.as_ref().iter();
         for chunk in 0..2048{
             let mut mark_error = false;
             for _ in 0..4096{
