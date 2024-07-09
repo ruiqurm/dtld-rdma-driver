@@ -73,6 +73,7 @@ fn create_and_init_emulated_card<'a>(
             heap_mem_start_addr: head_start_addr,
         })
         .strategy(RoundRobinStrategy::new())
+        .scheduler_size(1024 * 32)
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();

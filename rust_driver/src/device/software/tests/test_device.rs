@@ -35,7 +35,8 @@ fn test_loopback_software_device_write_and_read() {
         Arc::<BlueRDMALogic>::clone(&device),
         Ipv4Addr::LOCALHOST,
         4791,
-    ).unwrap();
+    )
+    .unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;
@@ -220,7 +221,13 @@ fn test_loopback_software_device_write_and_read() {
 #[test]
 #[serial]
 fn test_loopback_software_device_with_scheudler() {
-    let device = SoftwareDevice::new(Ipv4Addr::LOCALHOST, 4791,RoundRobinStrategy::new()).unwrap();
+    let device = SoftwareDevice::new(
+        Ipv4Addr::LOCALHOST,
+        4791,
+        RoundRobinStrategy::new(),
+        1024 * 32,
+    )
+    .unwrap();
     let mr1_rkey = 1234_u32;
     let mr2_rkey = 4321_u32;
     let dqpn = 5;

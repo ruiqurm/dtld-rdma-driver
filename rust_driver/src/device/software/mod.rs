@@ -52,7 +52,7 @@ struct ToHostCtrlRb(Receiver<ToHostCtrlRbDesc>);
 
 impl<Strat: SchedulerStrategy> SoftwareDevice<Strat> {
     /// Initializing an software device.
-    pub(crate) fn new(addr: Ipv4Addr, port: u16, strategy: Strat) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn new(addr: Ipv4Addr, port: u16, strategy: Strat,scheduler_size:u32) -> Result<Self, Box<dyn Error>> {
         let send_agent = UDPSendAgent::new(addr, port)?;
         let (ctrl_sender, ctrl_receiver) = unbounded();
         let (work_sender, work_receiver) = unbounded();
@@ -69,6 +69,7 @@ impl<Strat: SchedulerStrategy> SoftwareDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new_with_software(
             strategy,
             this_device,
+            scheduler_size
         ));
         let to_card_work_rb = ToCardWorkRb(scheduler);
         Ok(Self {

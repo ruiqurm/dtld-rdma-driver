@@ -20,7 +20,7 @@ use std::{
 use crate::common::init_logging;
 
 const BUFFER_LENGTH: usize = 1024 * 1024 * 4;
-const SEND_CNT: usize = 1024 * 1024 *4;
+const SEND_CNT: usize = 1024 * 1024 * 4;
 const PMTU: Pmtu = Pmtu::Mtu512;
 const RAND_SEED: [u8; 32] = [
     0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
@@ -46,6 +46,7 @@ fn create_and_init_card<'a>(
             Duration::from_secs(5),
             Duration::from_millis(10),
         ))
+        .scheduler_size(1024 * 32)
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();

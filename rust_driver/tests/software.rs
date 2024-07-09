@@ -1,15 +1,13 @@
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager,
-    types::{
+    qp::QpManager, types::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
-    },
-    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
+    }, AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig, RoundRobinStrategy
 };
 use serial_test::serial;
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, time::Duration};
 
 const BUFFER_LENGTH: usize = 1024 * 128;
 const SEND_CNT: usize = 1024 * 64;
@@ -26,6 +24,13 @@ fn create_and_init_card<'a>(
         .network_config(local_network)
         .device_type(DeviceType::Software)
         .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            1,
+            Duration::from_secs(100),
+            Duration::from_millis(10),
+        ))
+        .scheduler_size(1024 * 32)
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();

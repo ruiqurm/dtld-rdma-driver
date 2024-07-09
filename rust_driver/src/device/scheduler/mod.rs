@@ -25,8 +25,6 @@ use crate::{
     utils::{calculate_packet_cnt, get_first_packet_max_length, Buffer},
 };
 
-const SCHEDULER_SIZE_U32: u32 = 1024 * 1024 * 8; // 32KB
-const SCHEDULER_SIZE: usize = SCHEDULER_SIZE_U32 as usize;
 const MAX_SGL_LENGTH: usize = 1;
 
 pub(crate) mod round_robin;
@@ -185,6 +183,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
         strategy: Strat,
         ringbuf: Mutex<Ringbuf<T, Buffer, DEPTH, ELEM_SIZE, PAGE_SIZE>>,
         core_id: Option<CoreId>,
+        scheduler_size: u32,
     ) -> Self {
         let (sender, receiver) = unbounded();
         let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
@@ -209,7 +208,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                 };
                 if let Some(desc) = desc {
                     let dqpn = get_to_card_desc_common(&desc).dqpn;
-                    let splited_descs = split_descriptor(desc);
+                    let splited_descs = split_descriptor(desc, scheduler_size);
                     if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
                         error!("failed to push descriptors: {:?}", e);
                     }
@@ -248,7 +247,11 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
         }
     }
 
-    pub(crate) fn new_with_software(strategy: Strat, device: Arc<BlueRDMALogic>) -> Self {
+    pub(crate) fn new_with_software(
+        strategy: Strat,
+        device: Arc<BlueRDMALogic>,
+        scheduler_size: u32,
+    ) -> Self {
         let (sender, receiver) = unbounded();
         let thread_receiver: Receiver<Box<ToCardWorkRbDesc>> = receiver.clone();
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -263,7 +266,7 @@ impl<Strat: SchedulerStrategy> DescriptorScheduler<Strat> {
                 };
                 if let Some(desc) = desc {
                     let dqpn = get_to_card_desc_common(&desc).dqpn;
-                    let splited_descs = split_descriptor(desc);
+                    let splited_descs = split_descriptor(desc, scheduler_size);
                     if let Err(e) = strategy.push(dqpn, splited_descs.into_iter()) {
                         error!("failed to push descriptors: {:?}", e);
                     }
@@ -345,13 +348,13 @@ impl From<Box<ToCardWorkRbDesc>> for SealedDesc {
     }
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
-fn get_first_schedule_segment_length(va: u64) -> u32 {
-    let offset = va.wrapping_rem(SCHEDULER_SIZE as u64);
+#[allow(clippy::arithmetic_side_effects)]
+fn get_first_schedule_segment_length(va: u64, scheduler_size: u32) -> u32 {
+    let offset = va.wrapping_rem(scheduler_size.into());
     // the `SCHEDULER_SIZE` is in range of u32 and offset is less than `SCHEDULER_SIZE`
     // So is safe to convert
     // And the offset is less than `SCHEDULER_SIZE`, which will never downflow
-    (SCHEDULER_SIZE as u32) - offset as u32
+    scheduler_size.wrapping_sub(offset as u32)
 }
 
 fn get_to_card_desc_common(desc: &ToCardWorkRbDesc) -> &ToCardWorkRbDescCommon {
@@ -415,13 +418,16 @@ fn get_total_len(desc: &ToCardWorkRbDesc) -> u32 {
     }
 }
 
-/// Split the descriptor into multiple descriptors if it is greater than the `SCHEDULER_SIZE` size.
+/// Split the descriptor into multiple descriptors if it is greater than the `scheduler_size` size.
 #[allow(clippy::linkedlist)]
-pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<SealedDesc> {
+pub(crate) fn split_descriptor(
+    desc: Box<ToCardWorkRbDesc>,
+    scheduler_size: u32,
+) -> LinkedList<SealedDesc> {
     let is_read = matches!(*desc, ToCardWorkRbDesc::Read(_));
     let total_len = get_total_len(&desc);
     #[allow(clippy::cast_possible_truncation)]
-    if is_read || total_len < SCHEDULER_SIZE as u32 {
+    if is_read || total_len < scheduler_size {
         let mut list = LinkedList::new();
         list.push_back(SealedDesc(desc));
         return list;
@@ -440,7 +446,7 @@ pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<Sealed
     let mut sg_list = SGList::new_from_sge(sge);
 
     let mut descs = LinkedList::new();
-    let mut this_length = get_first_schedule_segment_length(raddr);
+    let mut this_length = get_first_schedule_segment_length(raddr, scheduler_size);
     let mut remain_data_length = total_len;
     let mut current_va = raddr;
     let mut base_psn = psn;
@@ -470,8 +476,8 @@ pub(crate) fn split_descriptor(desc: Box<ToCardWorkRbDesc>) -> LinkedList<Sealed
         descs.push_back(SealedDesc(new_desc));
         current_va = current_va.wrapping_add(u64::from(this_length));
         remain_data_length = remain_data_length.wrapping_sub(this_length);
-        this_length = if remain_data_length > SCHEDULER_SIZE_U32 {
-            SCHEDULER_SIZE_U32
+        this_length = if remain_data_length > scheduler_size {
+            scheduler_size
         } else {
             remain_data_length
         };
@@ -581,13 +587,15 @@ mod test {
 
     #[test]
     fn test_helper_function_first_length() {
-        let length = super::get_first_schedule_segment_length(0);
+        const SCHEDULER_SIZE: u32 = 1024 * 32;
+        let length = super::get_first_schedule_segment_length(0, SCHEDULER_SIZE);
         assert_eq!(length, 1024 * 32);
-        let length = super::get_first_schedule_segment_length(1024 * 29);
+        let length = super::get_first_schedule_segment_length(1024 * 29, SCHEDULER_SIZE);
         assert_eq!(length, 1024 * 3);
-        let length = super::get_first_schedule_segment_length(1024 * 32 + 1);
+        let length = super::get_first_schedule_segment_length(1024 * 32 + 1, SCHEDULER_SIZE);
         assert_eq!(length, 1024 * 32 - 1);
     }
+
     #[test]
     fn test_cut_from_sgl() {
         let mut sgl = SGListBuilder::new()
@@ -637,7 +645,12 @@ mod test {
             proxy.clone(),
             buffer,
         ));
-        let scheduler = Arc::new(super::DescriptorScheduler::new(strategy, ringbuf, None));
+        let scheduler = Arc::new(super::DescriptorScheduler::new(
+            strategy,
+            ringbuf,
+            None,
+            1024 * 32,
+        ));
         let desc = ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 total_len: length,

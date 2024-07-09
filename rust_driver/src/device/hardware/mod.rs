@@ -74,6 +74,7 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         device_path: P,
         strategy: Strat,
         core_id: Option<CoreId>,
+        scheduler_size : u32,
     ) -> Result<Self, DeviceError> {
         let device_file = OpenOptions::new()
             .read(true)
@@ -128,7 +129,8 @@ impl<Strat: SchedulerStrategy> HardwareDevice<Strat> {
         let scheduler = Arc::new(DescriptorScheduler::new(
             strategy,
             Mutex::new(to_card_work_rb),
-            core_id
+            core_id,
+            scheduler_size
         ));
         let dev = Self(Arc::new(HardwareDeviceInner {
             to_card_ctrl_rb: Mutex::new(to_card_ctrl_rb).into(),

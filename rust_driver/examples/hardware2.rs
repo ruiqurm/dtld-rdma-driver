@@ -41,6 +41,7 @@ fn create_and_init_card<'a>(
             Duration::from_secs(100),
             Duration::from_millis(10),
         ))
+        .scheduler_size(1024 * 32)
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();
