@@ -3,11 +3,20 @@ use buddy_system_allocator::LockedHeap;
 use eui48::MacAddress;
 use log::info;
 use open_rdma_driver::{
-    qp::QpManager, types::{
-        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
-    }, AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig, RoundRobinStrategy
+    qp::QpManager,
+    types::{
+        MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
+        RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
+    },
+    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig,
+    RoundRobinStrategy,
 };
-use std::{ffi::c_void, net::Ipv4Addr, thread::sleep, time::Duration};
+use std::{
+    ffi::{c_void, CStr},
+    net::Ipv4Addr,
+    thread::sleep,
+    time::Duration,
+};
 
 use crate::common::init_logging;
 
@@ -22,7 +31,7 @@ extern crate ctor;
 static HEAP_ALLOCATOR: LockedHeap<ORDER> = LockedHeap::<ORDER>::new();
 const HEAP_BLOCK_SIZE: usize = 1024 * 1024 * 64;
 const BUFFER_LENGTH: usize = 1024 * 128;
-const SEND_CNT : usize = 1024 * 6;
+const SEND_CNT: usize = 1024 * 6;
 static mut HEAP_START_ADDR: usize = 0;
 
 mod common;
@@ -30,11 +39,34 @@ mod common;
 #[ctor]
 fn init_global_allocator() {
     unsafe {
+        let pid = libc::fork();
+        match pid.cmp(&0) {
+            std::cmp::Ordering::Equal => {
+                libc::chdir("../blue-rdma\0".as_bytes().as_ptr() as *const i8);
+                let script = CStr::from_bytes_with_nul_unchecked("run_system_test.sh\0".as_bytes());
+
+                let args = [script.as_ptr(), core::ptr::null()];
+
+                libc::execvp(script.as_ptr(), args.as_ptr());
+                std::process::exit(1);
+            }
+            std::cmp::Ordering::Greater => {
+                let mut status = 0;
+                libc::waitpid(pid, &mut status, 0);
+            }
+            _ => {
+                panic!("fork failed");
+            }
+        }
+    }
+    unsafe {
         let shm_fd = libc::shm_open(
             SHM_PATH.as_ptr() as *const libc::c_char,
             libc::O_RDWR,
             0o600,
         );
+
+        assert!(shm_fd != -1, "shm_open failed");
 
         let heap = libc::mmap(
             0x7f7e8e600000 as *mut c_void,
@@ -81,7 +113,7 @@ fn create_and_init_card<'a>(
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();
-    
+
     info!("[{}] Device created", card_id);
 
     let pd = dev.alloc_pd().unwrap();
@@ -166,7 +198,7 @@ fn main() {
     let ctx1 = dev_a
         .write(
             dpqn,
-        mr_buffer_b.as_ref().as_ptr() as usize as u64,
+            mr_buffer_b.as_ref().as_ptr() as usize as u64,
             mr_b.get_key(),
             WorkReqSendFlag::IbvSendSignaled,
             sge0,
@@ -175,7 +207,10 @@ fn main() {
 
     let _ = ctx1.wait();
     sleep(Duration::from_secs(3));
-    assert_eq!(mr_buffer_a.as_ref()[0..SEND_CNT], mr_buffer_b.as_ref()[0..SEND_CNT]);
+    assert_eq!(
+        mr_buffer_a.as_ref()[0..SEND_CNT],
+        mr_buffer_b.as_ref()[0..SEND_CNT]
+    );
     info!("write success");
 
     // // test read
@@ -204,7 +239,7 @@ fn main() {
 
     // assert_eq!(mr_buffer_a[0..SEND_CNT], mr_buffer_b[0..SEND_CNT]);
     // info!("read success");
-    
+
     // for (idx, item) in mr_buffer_a.iter_mut().enumerate() {
     //     *item = idx as u8;
     // }

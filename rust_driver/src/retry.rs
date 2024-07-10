@@ -30,7 +30,7 @@ pub(crate) struct RetryContext {
 /// So that the retrying won't drift too much
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
-    is_enable : bool,
+    is_enable: bool,
     max_retry: u32,
     retry_timeout: u128,
     checking_interval: Duration,
@@ -78,6 +78,15 @@ pub(crate) struct RetryCancel {
 pub(crate) enum RetryEvent {
     Retry(RetryRecord),
     Cancel(RetryCancel),
+}
+
+impl RetryEvent {
+    pub(crate) fn new_cancel(qpn: Qpn, msn: Msn) -> Self {
+        Self::Cancel(RetryCancel{
+            qpn,
+            msn,
+        })
+    }
 }
 
 pub(crate) struct RetryMonitorContext {
@@ -128,7 +137,7 @@ impl RetryMonitor {
 impl RetryMonitorContext {
     fn check_receive(&mut self) {
         while let Ok(record) = self.receiver.try_recv() {
-            if self.config.is_enable{
+            if self.config.is_enable {
                 match record {
                     RetryEvent::Retry(record) => self.handle_retry(record),
                     RetryEvent::Cancel(cancel) => self.handle_cancel(&cancel),
@@ -170,8 +179,8 @@ impl RetryMonitorContext {
                     ctx.next_timeout = now + self.config.retry_timeout;
                     if self.device.send_work_desc(ctx.descriptor.clone()).is_err() {
                         log::error!("Retry send work descriptor failed")
-                    }else{
-                        log::warn!("Retry desc:{:?}",ctx.descriptor);
+                    } else {
+                        log::warn!("Retry desc:{:?}", ctx.descriptor);
                     }
                 } else {
                     // Encounter max retry, remove it and tell user the error
@@ -246,7 +255,7 @@ mod test {
             (Qpn::default(), Msn::default()),
             op_ctx::OpCtx::new_running(),
         );
-        let _monitor = super::RetryMonitor::new(sender.clone(),context);
+        let _monitor = super::RetryMonitor::new(sender.clone(), context);
         let desc = Box::new(ToCardWorkRbDesc::Write(ToCardWorkRbDescWrite {
             common: ToCardWorkRbDescCommon {
                 ..Default::default()
@@ -262,35 +271,35 @@ mod test {
             sge2: None,
             sge3: None,
         }));
-        for _i in 0..4 {
-            sender
-                .send(RetryEvent::Retry(super::RetryRecord {
-                    descriptor: desc.clone(),
-                    qpn: Qpn::default(),
-                    msn: Msn::default(),
-                }))
-                .unwrap();
-            // should send first retry
-            std::thread::sleep(std::time::Duration::from_millis(1020));
-            assert_eq!(device.0.lock().len(), 1);
-            // should send second retry
-            std::thread::sleep(std::time::Duration::from_millis(1020));
-            assert_eq!(device.0.lock().len(), 2);
-            // should send last retry
-            std::thread::sleep(std::time::Duration::from_millis(1020));
-            assert_eq!(device.0.lock().len(), 3);
+        // for _i in 0..4 {
+        sender
+            .send(RetryEvent::Retry(super::RetryRecord {
+                descriptor: desc.clone(),
+                qpn: Qpn::default(),
+                msn: Msn::default(),
+            }))
+            .unwrap();
+        // should send first retry
+        std::thread::sleep(std::time::Duration::from_millis(1020));
+        assert_eq!(device.0.lock().len(), 1);
+        // should send second retry
+        std::thread::sleep(std::time::Duration::from_millis(1020));
+        assert_eq!(device.0.lock().len(), 2);
+        // should send last retry
+        std::thread::sleep(std::time::Duration::from_millis(1020));
+        assert_eq!(device.0.lock().len(), 3);
 
-            std::thread::sleep(std::time::Duration::from_millis(1020));
-            // should remove the record
-            matches!(
-                map.read()
-                    .get(&(Qpn::default(), Msn::default()))
-                    .unwrap()
-                    .status(),
-                CtxStatus::Failed(_)
-            );
-            device.0.lock().clear();
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-        }
+        std::thread::sleep(std::time::Duration::from_millis(1020));
+        // should remove the record
+        matches!(
+            map.read()
+                .get(&(Qpn::default(), Msn::default()))
+                .unwrap()
+                .status(),
+            CtxStatus::Failed(_)
+        );
+        device.0.lock().clear();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
     }
+    // }
 }

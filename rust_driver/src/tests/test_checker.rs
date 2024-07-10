@@ -35,6 +35,7 @@ macro_rules! construct_context {
 
         // we don't use the channel, so we don't care if it is closed
         let (_send_channel, desc_poller_channel) = unbounded();
+        let (_retry_send_channel, _retry_recv_channel) = unbounded();
         let $context = PacketCheckerContext {
             desc_poller_channel,
             recv_ctx_map: RecvContextMap::default(),
@@ -43,6 +44,7 @@ macro_rules! construct_context {
             ctrl_desc_sender,
             work_desc_sender,
             ack_buffers,
+            retry_monitor_channel : _retry_send_channel
         };
         let $qpn = Qpn::new($qpn_val);
         $context.qp_table.write().insert(

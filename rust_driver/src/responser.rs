@@ -34,10 +34,10 @@ pub(crate) fn make_nack(
     qp_table: &ThreadSafeHashmap<Qpn, QpContext>,
     qpn: Qpn,
     msn: Msn,
-    psn: Psn,
-    expected_psn: Psn,
+    start_psn: Psn,
+    end_psn: Psn,
 ) -> Result<Box<ToCardWorkRbDesc>, Error> {
-    make_ack_or_nack(ack_buf, qp_table, qpn, msn, psn, Some(expected_psn))
+    make_ack_or_nack(ack_buf, qp_table, qpn, msn, start_psn, Some(end_psn))
 }
 
 fn make_ack_or_nack(

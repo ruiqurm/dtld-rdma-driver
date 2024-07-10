@@ -1,8 +1,11 @@
 use std::{
-    cell::{RefCell, RefMut}, collections::{BTreeMap, HashMap}, ops::Bound, sync::{
+    cell::{RefCell, RefMut},
+    collections::{BTreeMap, HashMap},
+    ops::Bound,
+    sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
-    }
+    },
 };
 
 use crate::{
@@ -14,13 +17,14 @@ use crate::{
     },
     op_ctx::OpCtx,
     qp::QpContext,
-    responser::{make_ack, make_read_resp},
+    responser::{make_ack, make_nack, make_read_resp},
+    retry::RetryEvent,
     types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE},
     utils::calculate_packet_cnt,
     CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
-use flume::{Receiver, TryRecvError};
+use flume::{Receiver, Sender, TryRecvError};
 
 use log::{error, info};
 use parking_lot::RwLock;
@@ -41,6 +45,7 @@ pub(crate) struct PacketCheckerContext {
     pub(crate) ctrl_desc_sender: Arc<dyn CtrlDescriptorSender>,
     pub(crate) work_desc_sender: Arc<dyn WorkDescriptorSender>,
     pub(crate) ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
+    pub(crate) retry_monitor_channel: Sender<RetryEvent>,
 }
 
 impl PacketChecker {
@@ -49,6 +54,7 @@ impl PacketChecker {
         let thread_stop_flag = Arc::clone(&stop_flag);
         let thread = std::thread::spawn(move || {
             working_thread(&mut context, &thread_stop_flag);
+            log::info!("exit checker");
         });
         Self {
             thread: Some(thread),
@@ -128,11 +134,20 @@ impl PacketCheckerContext {
                 }
             }
             PacketCheckEvent::Ack(event) => {
+                log::info!("{:?}", event);
                 let code = event.code;
                 let qpn = event.common.dqpn;
                 let msn = event.msn;
-                if matches!(code, ToHostWorkRbDescAethCode::Ack) {
-                    wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
+                match code {
+                    ToHostWorkRbDescAethCode::Ack => {
+                        wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
+                    }
+                    ToHostWorkRbDescAethCode::Nak => {
+                        log::info!("receive nak");
+                    }
+                    ToHostWorkRbDescAethCode::Rnr | ToHostWorkRbDescAethCode::Rsvd => {
+                        // reserved
+                    }
                 }
             }
         }
@@ -152,11 +167,14 @@ impl PacketCheckerContext {
             }
             ToHostWorkRbDescWriteType::Last => {
                 self.recv_ctx_map.remove_ctx(qpn, msn);
-                #[allow(clippy::else_if_without_else)]
-                if event.is_read_resp {
+                if !event.is_read_resp {
+                    if !event.can_auto_ack {
+                        self.send_ack(qpn, msn, event.psn);
+                    }
+                    let msg = RetryEvent::new_cancel(qpn, msn);
+                    let _ignore = self.retry_monitor_channel.send(msg);
+                } else {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
-                } else if !event.can_auto_ack {
-                    self.send_ack(qpn, msn, event.psn);
                 }
             }
             ToHostWorkRbDescWriteType::Only => {
@@ -181,6 +199,17 @@ impl PacketCheckerContext {
             }
         } else {
             error!("send ack failed");
+        }
+    }
+
+    fn send_nack(&self, qpn: Qpn, msn: Msn, start_psn: Psn, end_psn: Psn) {
+        let slot = self.ack_buffers.recycle_buf();
+        if let Ok(desc) = make_nack(slot, &self.qp_table, qpn, msn, start_psn, end_psn) {
+            if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
+                error!("Send nack failed {:?}", e);
+            }
+        } else {
+            error!("create nack failed");
         }
     }
 
@@ -214,6 +243,9 @@ impl PacketCheckerContext {
                         recv_map.insert(continous_range);
                     }
                     recv_map.insert((recved_psn, recved_psn));
+                    if let Some((start_psn,end_psn)) = recv_map.get_recent_gap(){
+                        self.send_nack(qpn, msn, start_psn, end_psn)
+                    }
                     need_check_completed_or_try_recover = true;
                 }
                 // otherwise, we ignore this packet,but we should record its psn
@@ -266,6 +298,8 @@ impl PacketCheckerContext {
             } else {
                 // we should manually send ack the packet
                 self.send_ack(qpn, msn, last_psn);
+                let msg = RetryEvent::new_cancel(qpn, msn);
+                self.retry_monitor_channel.send(msg);
             }
         }
 
@@ -390,7 +424,7 @@ impl PerQpContextMap {
     }
 
     pub(crate) fn update_largest_psn_recved(&mut self, psn: Psn) {
-        if !self.largest_psn_recved.larger_in_psn(psn){
+        if !self.largest_psn_recved.larger_in_psn(psn) {
             self.largest_psn_recved = psn;
         }
     }
@@ -590,8 +624,19 @@ impl SlidingWindow {
         }
     }
 
+    #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]
+    fn get_recent_gap(&self) -> Option<(Psn, Psn)> {
+        if self.intervals.len() <= 1 {
+            return None;
+        }
+        let mut iter = self.intervals.range(..).rev();
+        let (last_left, _) = iter.next().unwrap();
+        let (_, second_last_right) = iter.next().unwrap();
+        Some((Psn::new(*second_last_right), Psn::new(*last_left)))
+    }
+
     #[allow(clippy::arithmetic_side_effects, clippy::unwrap_used)]
-    pub(crate) fn insert(&mut self, (from, to): (Psn, Psn)) {
+    fn insert(&mut self, (from, to): (Psn, Psn)) {
         if self.is_complete() {
             return;
         }

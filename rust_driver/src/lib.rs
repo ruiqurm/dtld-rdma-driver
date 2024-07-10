@@ -560,6 +560,7 @@ impl Device {
         *guard = Some(nic_interface);  
 
         // enable packet checker module
+        let (retry_send_channel, retry_recv_channel) = unbounded();
         let packet_checker_ctx = PacketCheckerContext{
             desc_poller_channel: checker_recv_queue,
             user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
@@ -568,12 +569,12 @@ impl Device {
             ctrl_desc_sender: Arc::new(self.clone()),
             work_desc_sender: Arc::new(self.clone()),
             ack_buffers: ack_buf,
+            retry_monitor_channel: retry_send_channel.clone(),
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).expect("pkt_checker_thread has been set");
 
         // install retry monitor
-        let (retry_send_channel, retry_recv_channel) = unbounded();
         let retry_context = RetryMonitorContext{
             map: HashMap::new(),
             receiver: retry_recv_channel,

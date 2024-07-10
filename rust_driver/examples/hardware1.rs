@@ -21,7 +21,7 @@ use crate::common::init_logging;
 
 const BUFFER_LENGTH: usize = 1024 * 1024 * 4;
 const SEND_CNT: usize = 1024 * 1024 * 4;
-const PMTU: Pmtu = Pmtu::Mtu512;
+const PMTU: Pmtu = Pmtu::Mtu256;
 const RAND_SEED: [u8; 32] = [
     0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
     0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef, 0xbe, 0xef,
@@ -42,7 +42,7 @@ fn create_and_init_card<'a>(
         .strategy(RoundRobinStrategy::new())
         .retry_config(RetryConfig::new(
             true,
-            5,
+            100,
             Duration::from_secs(5),
             Duration::from_millis(10),
         ))
@@ -147,7 +147,7 @@ fn main() {
     let ctx1 = dev_a
         .write(dpqn, raddr, rkey, WorkReqSendFlag::IbvSendSignaled, sge0)
         .unwrap();
-    ctx1.wait();
+    ctx1.wait_result().unwrap();
     // let _ = ctx1.wait();
     // log::info!(
     //     "{},{},{},{}",

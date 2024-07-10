@@ -95,7 +95,7 @@ impl WorkDescPollerContext {
         let msg = PacketCheckEvent::from(desc);
         self.checker_channel
             .send(msg)
-            .map_err(|_| Error::PipeBroken("work polling thread to responser"))
+            .map_err(|_| Error::PipeBroken("work polling thread to checker"))
     }
 
     fn handle_work_desc_write_with_imm(

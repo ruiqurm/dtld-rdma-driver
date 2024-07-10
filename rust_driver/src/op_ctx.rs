@@ -120,6 +120,9 @@ impl<Payload> OpCtx<Payload> {
     /// Returns an error if the operation context is poisoned.
     pub fn wait_result(&self) -> Result<Option<&Payload>, Error> {
         self.wait()?;
+        if let CtxStatus::Failed(reason) = self.0.inner.lock().status{
+            return Err(Error::Device(reason.into()))
+        }
         Ok(self.0.payload.get())
     }
 
