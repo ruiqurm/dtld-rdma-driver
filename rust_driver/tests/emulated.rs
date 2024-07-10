@@ -5,6 +5,7 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam, RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE
     }, AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig, RoundRobinStrategy
 };
+use serial_test::serial;
 use std::{net::Ipv4Addr, thread::sleep, time::Duration};
 
 use crate::common::init_logging;
@@ -19,7 +20,7 @@ mod common;
 
 setup_emulator!(0x7f7e8e600000, HEAP_BLOCK_SIZE, SHM_PATH, "../blue-rdma\0","run_system_test.sh\0");
 
-fn create_and_init_card<'a>(
+fn create_and_init_card(
     card_id: usize,
     mock_server_addr: &str,
     qpn: Qpn,
@@ -89,6 +90,9 @@ fn create_and_init_card<'a>(
 
     (dev, pd, mr, mr_buffer)
 }
+
+#[test]
+#[serial]
 fn main() {
     init_logging("log.txt").unwrap();
     let qp_manager = QpManager::new();

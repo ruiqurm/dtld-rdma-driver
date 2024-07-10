@@ -72,8 +72,6 @@ macro_rules! setup_emulator {
                 }
             }
             unsafe {
-                // libc::shm_unlink($shm_path.as_ptr() as *const libc::c_char);
-
                 let shm_fd = libc::shm_open(
                     $shm_path.as_ptr() as *const libc::c_char,
                     libc::O_RDWR,

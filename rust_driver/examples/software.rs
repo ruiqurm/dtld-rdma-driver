@@ -72,10 +72,7 @@ fn create_and_init_card(
     (dev, pd, mr, mr_buffer)
 }
 
-// FIXME: currently software adaptor return wrong expected_psn
-// #[serial]
-// #[test]
-fn test_software_write_and_read() {
+fn main() {
     init_logging("log.txt").unwrap();
     let a_network = RdmaDeviceNetworkParamBuilder::default()
         .gateway(Ipv4Addr::new(127, 0, 0, 0x1))
