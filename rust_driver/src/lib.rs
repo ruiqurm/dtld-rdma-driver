@@ -161,7 +161,7 @@ use checker::{PacketChecker, PacketCheckerContext, RecvContextMap};
 use ctrl_poller::{ControlPoller, ControlPollerContext};
 use work_poller::{WorkDescPoller, WorkDescPollerContext};
 use qp::QpContext;
-use retry::{RetryEvent, RetryMonitor, RetryMonitorContext, RetryRecord};
+use retry::{RetryMap, RetryMonitor, RetryMonitorContext, RetryRecord};
 use std::{
     collections::HashMap, fmt::Debug, net::{Ipv4Addr, SocketAddr}, sync::{
         atomic::{AtomicU32, Ordering},
@@ -245,6 +245,7 @@ struct DeviceInner<D: ?Sized> {
     local_network : RdmaDeviceNetworkParam,
     nic_device : Mutex<Option<NicInterface>>,
     buffer_keeper : Mutex<Vec<Buffer>>,
+    retry_map: RetryMap,
     adaptor: D,
 }
 
@@ -328,6 +329,7 @@ impl Device {
                     nic_device : Mutex::new(None),
                     buffer_keeper : Vec::new().into(),
                     local_network : config.network_config,
+                    retry_map: RetryMap::new(config.retry_config.max_retry, config.retry_config.retry_timeout)
                 }))
             },
             DeviceType::Emulated{rpc_server_addr,heap_mem_start_addr} => {
@@ -350,6 +352,7 @@ impl Device {
                     nic_device : Mutex::new(None),
                     buffer_keeper : Vec::new().into(),
                     local_network : config.network_config,
+                    retry_map: RetryMap::new(config.retry_config.max_retry, config.retry_config.retry_timeout)
                 }))
             }
             DeviceType::Software => {
@@ -372,6 +375,7 @@ impl Device {
                     nic_device : Mutex::new(None),
                     buffer_keeper : Vec::new().into(),
                     local_network : config.network_config,
+                    retry_map: RetryMap::new(config.retry_config.max_retry, config.retry_config.retry_timeout)
                 }))
             }
         };
@@ -439,9 +443,7 @@ impl Device {
                 .user_op_ctx_map
                 .write()
                 .insert(key, ctx.clone()).map_or_else(||Ok(()),|_|Err(Error::CreateOpCtxFailed))?;
-            if let Some(monitor) =self.0.retry_monitor.get(){
-                monitor.subscribe(RetryEvent::Retry(RetryRecord::new(clone_desc, dqpn, key.1)))?;
-            }
+            let _ignore = self.0.retry_map.add((dqpn, key.1), clone_desc, !is_read);
             Ok(ctx)
     }
     
@@ -560,7 +562,6 @@ impl Device {
         *guard = Some(nic_interface);  
 
         // enable packet checker module
-        let (retry_send_channel, retry_recv_channel) = unbounded();
         let packet_checker_ctx = PacketCheckerContext{
             desc_poller_channel: checker_recv_queue,
             user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
@@ -569,20 +570,19 @@ impl Device {
             ctrl_desc_sender: Arc::new(self.clone()),
             work_desc_sender: Arc::new(self.clone()),
             ack_buffers: ack_buf,
-            retry_monitor_channel: retry_send_channel.clone(),
+            retry_map: self.0.retry_map.clone()
         };
         let pkt_checker_thread = PacketChecker::new(packet_checker_ctx);
         self.0.pkt_checker_thread.set(pkt_checker_thread).expect("pkt_checker_thread has been set");
 
         // install retry monitor
         let retry_context = RetryMonitorContext{
-            map: HashMap::new(),
-            receiver: retry_recv_channel,
+            map: self.0.retry_map.clone(),
             config: retry_config,
             user_op_ctx_map: Arc::clone(&self.0.user_op_ctx_map),
             device: Arc::new(self.clone()),
         };  
-        let retry_monitor = retry::RetryMonitor::new(retry_send_channel,retry_context);
+        let retry_monitor = retry::RetryMonitor::new(retry_context);
         self.0.retry_monitor.set(retry_monitor).expect("double init");
 
         // set card network

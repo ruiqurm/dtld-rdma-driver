@@ -9,22 +9,14 @@ use std::{
 };
 
 use crate::{
-    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
-    device::{
+    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE}, device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateErrPsnRecoverPoint,
         ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescRead,
         ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-    },
-    op_ctx::OpCtx,
-    qp::QpContext,
-    responser::{make_ack, make_nack, make_read_resp},
-    retry::RetryEvent,
-    types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE},
-    utils::calculate_packet_cnt,
-    CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
+    }, op_ctx::OpCtx, qp::QpContext, responser::{make_ack, make_nack, make_read_resp}, retry::RetryMap, types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE}, utils::calculate_packet_cnt, CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender
 };
 
-use flume::{Receiver, Sender, TryRecvError};
+use flume::{Receiver, TryRecvError};
 
 use log::{error, info};
 use parking_lot::RwLock;
@@ -45,7 +37,7 @@ pub(crate) struct PacketCheckerContext {
     pub(crate) ctrl_desc_sender: Arc<dyn CtrlDescriptorSender>,
     pub(crate) work_desc_sender: Arc<dyn WorkDescriptorSender>,
     pub(crate) ack_buffers: PacketBuf<RDMA_ACK_BUFFER_SLOT_SIZE>,
-    pub(crate) retry_monitor_channel: Sender<RetryEvent>,
+    pub(crate) retry_map: RetryMap,
 }
 
 impl PacketChecker {
@@ -171,8 +163,7 @@ impl PacketCheckerContext {
                     if !event.can_auto_ack {
                         self.send_ack(qpn, msn, event.psn);
                     }
-                    let msg = RetryEvent::new_cancel(qpn, msn);
-                    let _ignore = self.retry_monitor_channel.send(msg);
+                    let _ignore = self.retry_map.cancel((qpn, msn));
                 } else {
                     wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                 }
@@ -298,8 +289,7 @@ impl PacketCheckerContext {
             } else {
                 // we should manually send ack the packet
                 self.send_ack(qpn, msn, last_psn);
-                let msg = RetryEvent::new_cancel(qpn, msn);
-                self.retry_monitor_channel.send(msg);
+                let _ignore = self.retry_map.cancel((qpn, msn));
             }
         }
 
