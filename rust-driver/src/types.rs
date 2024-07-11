@@ -6,6 +6,16 @@ use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use thiserror::Error;
 
+macro_rules! reverse_byte_order_helper {
+    ($val:expr) => {
+        if cfg!(target_endian = "little") {
+            $val.to_be()
+        } else {
+            $val.to_le()
+        }
+    };
+}
+
 /// Protection Domain
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Pd {
@@ -29,19 +39,7 @@ impl Imm {
     }
 
     pub(crate) fn into_ne(self) -> u32 {
-        if cfg!(target_endian = "little") {
-            self.0.to_be()
-        } else {
-            self.0.to_le()
-        }
-    }
-
-    pub(crate) fn from_ne(val: u32) -> Self {
-        if cfg!(target_endian = "little") {
-            Self::new(val.to_be())
-        } else {
-            Self::new(val.to_le())
-        }
+        reverse_byte_order_helper!(self.0)
     }
 }
 
@@ -68,11 +66,7 @@ impl Msn {
 
     /// Convert the value of `Msn` to big endian.
     fn into_ne(self) -> u16 {
-        if cfg!(target_endian = "little") {
-            self.0.to_be()
-        } else {
-            self.0.to_le()
-        }
+        reverse_byte_order_helper!(self.0)
     }
 }
 
@@ -95,12 +89,12 @@ impl Key {
     const MR_KEY_IDX_BIT_CNT: usize = 8;
 
     /// Create a new `Key` with the given value.
-    pub(crate) fn new(mr_idx: u32,key_secret:u32) -> Self {
+    pub(crate) fn new(mr_idx: u32, key_secret: u32) -> Self {
         let key_idx = mr_idx << ((u32::BITS as usize).wrapping_sub(Self::MR_KEY_IDX_BIT_CNT));
         let key_secret = key_secret >> Self::MR_KEY_IDX_BIT_CNT;
         Self(key_idx | key_secret)
     }
-    
+
     pub(crate) fn new_unchecked(key: u32) -> Self {
         Self(key)
     }
@@ -113,23 +107,7 @@ impl Key {
 
     /// Convert the value of `Key` to network endian.
     pub(crate) fn into_ne(self) -> u32 {
-        if cfg!(target_endian = "little") {
-            self.0.to_be()
-        } else {
-            self.0.to_le()
-        }
-    }
-
-    /// Convert a network endian value to `Key`.
-    pub(crate) fn from_ne(val: u32) -> Self {
-        // the val is already in network endian
-        // So we need to convert it to local endian,
-        //  use `to_be()` in little endian machine, vice versa
-        if cfg!(target_endian = "little") {
-            Self::new_unchecked(val.to_be())
-        } else {
-            Self::new_unchecked(val.to_le())
-        }
+        reverse_byte_order_helper!(self.0)
     }
 }
 
@@ -152,6 +130,12 @@ impl Qpn {
     pub fn get(&self) -> u32 {
         self.0
     }
+
+    /// Convert the value of `qpn` to net endian.
+    pub(crate) fn into_ne(self) -> u32 {
+        let key = self.0.to_ne_bytes();
+        u32::from_le_bytes([key[2], key[1], key[0], 0])
+    }
 }
 
 /// In RDMA spec, some structs are defined as 24 bits.
@@ -164,7 +148,7 @@ pub struct Psn(u32);
 impl Psn {
     const WIDTH_IN_BITS: usize = 24;
     const MASK: u32 = u32::MAX >> (32 - Self::WIDTH_IN_BITS);
-    const MAX_PSN_RANGE : u32 = 1 << 23_i32;
+    const MAX_PSN_RANGE: u32 = 1 << 23_i32;
 
     /// Create a new `Psn` with the given value.
     ///
@@ -182,17 +166,10 @@ impl Psn {
         self.0
     }
 
-    /// Convert the value of `psn` to big endian.
+    /// Convert the value of `psn` to net endian.
     pub(crate) fn into_ne(self) -> u32 {
-        // In little endian machine, to_le_bytes() is a no-op. Just get the layout.
-        let key = self.0.to_le_bytes();
+        let key = self.0.to_ne_bytes();
         u32::from_le_bytes([key[2], key[1], key[0], 0])
-    }
-
-    /// Convert a big endian value to `psn`.
-    pub(crate) fn from_ne(val: u32) -> Self {
-        let key = val.to_le_bytes();
-        Self::new(u32::from_le_bytes([key[2], key[1], key[0], 0]))
     }
 
     /// wrapping add the current value with rhs
@@ -202,7 +179,6 @@ impl Psn {
     }
 
     /// Get the difference between two PSN
-    #[must_use]
     pub(crate) fn wrapping_sub(self, rhs: Self) -> u32 {
         self.0.wrapping_sub(rhs.0) & Self::MASK
     }
@@ -422,13 +398,11 @@ mod tests {
         let mem = psn.into_ne();
         let buf = unsafe { from_raw_parts(&mem as *const _ as *const u8, 4) };
         assert_eq!(buf, &[0x12, 0x34, 0x56, 0]);
-        assert_eq!(Psn::from_ne(mem).get(), 0x123456);
 
         let key = crate::types::Key::new_unchecked(0x12345678);
         let mem = key.into_ne();
         let buf = unsafe { from_raw_parts(&mem as *const _ as *const u8, 4) };
         assert_eq!(buf, &[0x12, 0x34, 0x56, 0x78]);
-        assert_eq!(crate::types::Key::from_ne(mem).get(), 0x12345678);
     }
 
     #[test]
@@ -439,11 +413,11 @@ mod tests {
 
         let psn = Psn::new(0x800001);
         let diff = psn.wrapping_sub(0.into());
-        assert_eq!(diff,0x800001);
+        assert_eq!(diff, 0x800001);
 
         let psn = Psn::new(0);
         let diff = psn.wrapping_sub(0x800001.into());
-        assert_eq!(diff,0x7fffff);
+        assert_eq!(diff, 0x7fffff);
     }
 
     #[test]
