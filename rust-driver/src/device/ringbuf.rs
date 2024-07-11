@@ -13,84 +13,87 @@ pub(super) trait PollDescriptor {
     fn poll(&self, buf: &mut [u8]) -> Result<bool, DeviceError>;
 }
 
-/// An adaptor to read the tail pointer and write the head pointer, using by writer.
-pub(super) trait CsrWriterAdaptor {
+/// An adaptor to read the tail pointer and write the head pointer.
+/// In this case, the host act as an producer to generate descriptors. 
+pub(super) trait ProducerRbMetaAdaptor {
+    /// Write the head pointer to the some where can be read by the device.
     fn write_head(&self, data: u32) -> Result<(), DeviceError>;
+
+    /// Read the tail pointer from the device.
     fn read_tail(&self) -> Result<u32, DeviceError>;
 }
 
-/// An adaptor to read the head pointer and write the tail pointer, using by reader.
-pub(super) trait CsrReaderAdaptor {
+/// An adaptor to read the head pointer and write the tail pointer.
+/// In this case, the host act as an customer to read descriptors. 
+pub(super) trait CustomerRbMetaAdaptor {
+    /// Write the tail pointer.
     fn write_tail(&self, data: u32) -> Result<(), DeviceError>;
+
+    /// Read the head pointer.
     fn read_head(&self) -> Result<u32, DeviceError>;
 }
 
-/// The Ringbuf is a circular buffer used comunicate between the host and the card.
+/// The Ringbuf is a circular buffer used to communicate between the host and the card.
 ///
-/// `T` is an adaptor to provide meta data of the queue(like head pointer or is it ready)
+/// `ADP` is an adaptor to provide meta data of the queue(like head pointer or is it ready)
 /// `BUF` is the buffer.
 /// `DEPTH` is the max capacity of the ringbuf.
 /// `ELEM_SIZE` is the size of each descriptor.
 /// `PAGE_SIZE` is the size of the page. In real hardware, the buffer should be aligned to `PAGE_SIZE`.
 #[derive(Debug)]
-pub(super) struct Ringbuf<
-    T,
-    BUF,
-    const DEPTH: usize,
-    const ELEM_SIZE: usize,
-    const PAGE_SIZE: usize,
-> {
+pub(super) struct Ringbuf<ADP, BUF> {
     buf: Mutex<BUF>,
     head: usize,
     tail: usize,
-    adaptor: T,
+    adaptor: ADP,
+
+    // constant value or mask
+    depth: usize,
+    elem_size: usize,
+    hardware_idx_mask: usize,
+    hardware_idx_guard_mask: usize,
+    memory_idx_mask: usize,
 }
 
 /// A writer for host to write descriptors to the ring buffer.
-pub(super) struct RingbufWriter<
-    'a,
-    'adaptor,
-    T: CsrWriterAdaptor,
-    BUF: AsMut<[u8]>,
-    const DEPTH: usize,
-    const ELEM_SIZE: usize,
-> {
-    buf: MutexGuard<'a, BUF>,
-    head: &'a mut usize,
-    tail: &'a mut usize,
+pub(super) struct RingbufWriter<'ringbuf, 'adaptor, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> {
+    buf: MutexGuard<'ringbuf, BUF>,
+    head: &'ringbuf mut usize,
+    tail: &'ringbuf mut usize,
     written_cnt: usize,
-    adaptor: &'adaptor T,
+    adaptor: &'adaptor ADP,
+    depth: usize,
+    elem_size: usize,
+    hardware_idx_mask: &'ringbuf usize,
+    hardware_idx_guard_mask: &'ringbuf usize,
+    memory_idx_mask: &'ringbuf usize,
 }
 
-impl<
-        T,
-        BUF: AsMut<[u8]> + AsRef<[u8]>,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Ringbuf<T, BUF, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
-    const _IS_DEPTH_POWER_OF_2: () = assert!(_is_power_of_2(DEPTH), "invalid ringbuf depth");
-    const _IS_ELEM_SIZE_POWER_OF_2: () = assert!(_is_power_of_2(ELEM_SIZE), "invalid element size");
-    const _IS_RINGBUF_SIZE_VALID: () =
-        assert!(DEPTH * ELEM_SIZE >= PAGE_SIZE, "invalid ringbuf size");
-
-    /// Return (ringbuf, ringbuf virtual memory address)
+impl<ADP, BUF: AsMut<[u8]> + AsRef<[u8]>> Ringbuf<ADP, BUF> {
     #[allow(clippy::arithmetic_side_effects)] // false positive in assert
-    pub(super) fn new(adaptor: T, buffer: BUF) -> Self {
+    pub(super) fn new(
+        adaptor: ADP,
+        buffer: BUF,
+        depth: usize,
+        elem_size: usize,
+        page_size: usize,
+    ) -> Self {
+        assert!(_is_power_of_2(depth), "invalid ringbuf depth");
+        assert!(_is_power_of_2(elem_size), "invalid element size");
+        assert!(depth * elem_size >= page_size, "invalid ringbuf size");
         #[cfg(not(test))]
         {
             assert!(
-                (buffer.as_ref().as_ptr() as usize).wrapping_rem(PAGE_SIZE) == 0,
-                "buffer should be aligned to PAGE_SIZE"
+                (buffer.as_ref().as_ptr() as usize).wrapping_rem(page_size) == 0,
+                "buffer should be aligned to page_size"
             );
             assert!(
-                buffer.as_ref().len().wrapping_rem(PAGE_SIZE) == 0,
-                "buffer size should be multiple of PAGE_SIZE"
+                buffer.as_ref().len().wrapping_rem(page_size) == 0,
+                "buffer size should be multiple of page_size"
             );
         }
         assert!(
-            buffer.as_ref().len() >= DEPTH.wrapping_mul(ELEM_SIZE),
+            buffer.as_ref().len() >= depth.wrapping_mul(elem_size),
             "buffer is too small"
         );
         Self {
@@ -98,77 +101,70 @@ impl<
             head: 0,
             tail: 0,
             adaptor,
+            depth,
+            elem_size,
+            hardware_idx_mask: gen_hardware_idx_mask(depth),
+            hardware_idx_guard_mask: gen_hardware_idx_guard_mask(depth),
+            memory_idx_mask: gen_memory_idx_mask(depth),
         }
     }
 }
 
-impl<
-        T: CsrWriterAdaptor,
-        BUF: AsMut<[u8]>,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Ringbuf<T, BUF, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
+impl<ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> Ringbuf<ADP, BUF> {
     /// Return a writer to write descriptors to the ring buffer.
-    pub(super) fn write(&mut self) -> RingbufWriter<'_, '_, T, BUF, DEPTH, ELEM_SIZE> {
+    pub(super) fn get_writer(&mut self) -> RingbufWriter<'_, '_, ADP, BUF> {
         RingbufWriter {
             buf: self.buf.lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             written_cnt: 0,
             adaptor: &self.adaptor,
+            depth: self.depth,
+            elem_size: self.elem_size,
+            hardware_idx_mask: &self.hardware_idx_mask,
+            hardware_idx_guard_mask: &self.hardware_idx_guard_mask,
+            memory_idx_mask: &self.memory_idx_mask,
         }
     }
 }
 
-impl<
-        T: CsrReaderAdaptor,
-        BUF: AsRef<[u8]>,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Ringbuf<T, BUF, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
+impl<ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> Ringbuf<ADP, BUF> {
     /// Get a reader to read descriptors from the ring buffer.
-    pub(super) fn read(&mut self) -> RingbufReader<'_, '_, T, BUF, DEPTH, ELEM_SIZE> {
+    pub(super) fn get_reader(&mut self) -> RingbufReader<'_, '_, ADP, BUF> {
         RingbufReader {
             buf: self.buf.lock(),
             head: &mut self.head,
             tail: &mut self.tail,
             read_cnt: 0,
             adaptor: &self.adaptor,
+            depth: self.depth,
+            elem_size: self.elem_size,
+            hardware_idx_mask: &self.hardware_idx_mask,
+            hardware_idx_guard_mask: &self.hardware_idx_guard_mask,
+            memory_idx_mask: &self.memory_idx_mask,
         }
     }
 }
 
-impl<
-        T: PollDescriptor,
-        BUF: AsMut<[u8]>,
-        const DEPTH: usize,
-        const ELEM_SIZE: usize,
-        const PAGE_SIZE: usize,
-    > Ringbuf<T, BUF, DEPTH, ELEM_SIZE, PAGE_SIZE>
-{
-    pub(super) fn read_via_poll_descriptor(
+impl<ADP: PollDescriptor, BUF: AsMut<[u8]>> Ringbuf<ADP, BUF> {
+    pub(super) fn get_polling_descriptor_reader(
         &mut self,
-    ) -> RingbufPollDescriptorReader<'_, '_, T, BUF, DEPTH, ELEM_SIZE> {
+    ) -> RingbufPollDescriptorReader<'_, '_, ADP, BUF> {
         RingbufPollDescriptorReader {
             buf: self.buf.lock(),
             adaptor: &self.adaptor,
             head: &mut self.head,
             tail: &mut self.tail,
+            depth: self.depth,
+            elem_size: self.elem_size,
+            hardware_idx_mask: &self.hardware_idx_mask,
+            hardware_idx_guard_mask: &self.hardware_idx_guard_mask,
+            memory_idx_mask: &self.memory_idx_mask,
         }
     }
 }
 
-impl<'a, T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZE: usize>
-    RingbufWriter<'a, '_, T, BUF, DEPTH, ELEM_SIZE>
-{
-    const HARDWARE_IDX_MASK: usize = gen_hardware_idx_mask(DEPTH);
-    const HARDWARE_IDX_GUARD_MASK: usize = gen_hardware_idx_guard_mask(DEPTH);
-    const MEMORY_IDX_MASK: usize = gen_memory_idx_mask(DEPTH);
-
+impl<'a, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> RingbufWriter<'a, '_, ADP, BUF> {
     /// get a buffer to write a descriptor to the ring buffer
     pub(crate) fn next(&mut self) -> Result<&'a mut [u8], DeviceError> {
         self.next_timeout(None)
@@ -205,8 +201,12 @@ impl<'a, T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_S
             }
         }
 
-        let buf =
-            get_descriptor_mut_helper(self.buf.as_mut(), idx, ELEM_SIZE, Self::MEMORY_IDX_MASK);
+        let buf = get_descriptor_mut_helper(
+            self.buf.as_mut(),
+            idx,
+            self.elem_size,
+            *self.memory_idx_mask,
+        );
         self.written_cnt = self.written_cnt.wrapping_add(1);
         Ok(buf)
     }
@@ -221,13 +221,13 @@ impl<'a, T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_S
         is_full_helper(
             new_head,
             new_tail,
-            Self::MEMORY_IDX_MASK,         // the mask for the rest bits
-            Self::HARDWARE_IDX_GUARD_MASK, // the mask for the highest bit
+            *self.memory_idx_mask,         // the mask for the rest bits
+            *self.hardware_idx_guard_mask, // the mask for the highest bit
         )
     }
 
     fn next_head_idx(&self) -> usize {
-        wrapping_add_helper(*self.head, self.written_cnt, Self::HARDWARE_IDX_MASK)
+        wrapping_add_helper(*self.head, self.written_cnt, *self.hardware_idx_mask)
     }
 
     fn advance_head(&mut self) -> Result<(), DeviceError> {
@@ -242,9 +242,7 @@ impl<'a, T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_S
 }
 
 /// Drop the writer to update the head pointer.
-impl<T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZE: usize> Drop
-    for RingbufWriter<'_, '_, T, BUF, DEPTH, ELEM_SIZE>
-{
+impl<ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> Drop for RingbufWriter<'_, '_, ADP, BUF> {
     fn drop(&mut self) {
         if let Err(e) = self.advance_head() {
             log::error!("failed to advance head pointer: {:?}", e);
@@ -253,30 +251,22 @@ impl<T: CsrWriterAdaptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZE:
 }
 
 /// A reader for host to read descriptors from the ring buffer.
-pub(super) struct RingbufReader<
-    'a,
-    'adaptor,
-    T: CsrReaderAdaptor,
-    BUF: AsRef<[u8]>,
-    const DEPTH: usize,
-    const ELEM_SIZE: usize,
-> {
-    buf: MutexGuard<'a, BUF>,
-    head: &'a mut usize,
-    tail: &'a mut usize,
+pub(super) struct RingbufReader<'ringbuf, 'adaptor, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> {
+    buf: MutexGuard<'ringbuf, BUF>,
+    head: &'ringbuf mut usize,
+    tail: &'ringbuf mut usize,
     read_cnt: usize,
-    adaptor: &'adaptor T,
+    adaptor: &'adaptor ADP,
+    depth: usize,
+    elem_size: usize,
+    hardware_idx_mask: &'ringbuf usize,
+    hardware_idx_guard_mask: &'ringbuf usize,
+    memory_idx_mask: &'ringbuf usize,
 }
 
-impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_SIZE: usize>
-    RingbufReader<'a, '_, T, BUF, DEPTH, ELEM_SIZE>
-{
-    const HARDWARE_IDX_MASK: usize = gen_hardware_idx_mask(DEPTH);
-    const HARDWARE_IDX_GUARD_MASK: usize = gen_hardware_idx_guard_mask(DEPTH);
-    const MEMORY_IDX_MASK: usize = gen_memory_idx_mask(DEPTH);
-
+impl<'ringbuf, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> RingbufReader<'ringbuf, '_, ADP, BUF> {
     /// read a descriptor from the ring buffer
-    pub(crate) fn next(&mut self) -> Result<&'a [u8], DeviceError> {
+    pub(crate) fn next(&mut self) -> Result<&'ringbuf [u8], DeviceError> {
         self.next_timeout(None)
     }
 
@@ -291,7 +281,7 @@ impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_S
     pub(crate) fn next_timeout(
         &mut self,
         timeout: Option<Duration>,
-    ) -> Result<&'a [u8], DeviceError> {
+    ) -> Result<&'ringbuf [u8], DeviceError> {
         let timeout_in_millis = timeout.map_or(0, |d| d.as_millis());
         let start = std::time::Instant::now();
         if self.is_full() {
@@ -314,8 +304,8 @@ impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_S
         let buf = get_descriptor_helper(
             self.buf.as_ref(),
             next_tail_idx,
-            ELEM_SIZE,
-            Self::MEMORY_IDX_MASK,
+            self.elem_size,
+            *self.memory_idx_mask,
         );
         Ok(buf)
     }
@@ -326,7 +316,7 @@ impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_S
     }
 
     fn next_tail_idx(&self) -> usize {
-        wrapping_add_helper(*self.tail, self.read_cnt, Self::HARDWARE_IDX_MASK)
+        wrapping_add_helper(*self.tail, self.read_cnt, *self.hardware_idx_mask)
     }
 
     fn would_it_empty(new_head: usize, new_tail: usize) -> bool {
@@ -337,8 +327,8 @@ impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_S
         is_full_helper(
             *self.head,
             *self.tail,
-            Self::MEMORY_IDX_MASK,         // the mask for the rest bits
-            Self::HARDWARE_IDX_GUARD_MASK, // the mask for the highest bit
+            *self.memory_idx_mask,         // the mask for the rest bits
+            *self.hardware_idx_guard_mask, // the mask for the highest bit
         )
     }
 
@@ -352,9 +342,7 @@ impl<'a, T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_S
     }
 }
 
-impl<T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_SIZE: usize> Drop
-    for RingbufReader<'_, '_, T, BUF, DEPTH, ELEM_SIZE>
-{
+impl<ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> Drop for RingbufReader<'_, '_, ADP, BUF> {
     fn drop(&mut self) {
         if let Err(e) = self.advance_tail() {
             log::error!("failed to advance tail pointer: {:?}", e);
@@ -364,30 +352,30 @@ impl<T: CsrReaderAdaptor, BUF: AsRef<[u8]>, const DEPTH: usize, const ELEM_SIZE:
 
 /// A polling reader for host to read descriptors from the ring buffer.
 pub(super) struct RingbufPollDescriptorReader<
-    'a,
+    'ringbuf,
     'adaptor,
-    T: PollDescriptor,
+    ADP: PollDescriptor,
     BUF: AsMut<[u8]>,
-    const DEPTH: usize,
-    const ELEM_SIZE: usize,
 > {
-    buf: MutexGuard<'a, BUF>,
-    adaptor: &'adaptor T,
-    head: &'a mut usize,
-    tail: &'a mut usize,
+    buf: MutexGuard<'ringbuf, BUF>,
+    adaptor: &'adaptor ADP,
+    head: &'ringbuf mut usize,
+    tail: &'ringbuf mut usize,
+    depth: usize,
+    elem_size: usize,
+    hardware_idx_mask: &'ringbuf usize,
+    hardware_idx_guard_mask: &'ringbuf usize,
+    memory_idx_mask: &'ringbuf usize,
 }
 
-impl<'a, T: PollDescriptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZE: usize>
-    RingbufPollDescriptorReader<'_, '_, T, BUF, DEPTH, ELEM_SIZE>
+impl<'ringbuf, ADP: PollDescriptor, BUF: AsMut<[u8]>>
+    RingbufPollDescriptorReader<'_, '_, ADP, BUF>
 {
-    const HARDWARE_IDX_MASK: usize = gen_hardware_idx_mask(DEPTH);
-    const MEMORY_IDX_MASK: usize = gen_memory_idx_mask(DEPTH);
-
-    pub(crate) fn next(&mut self) -> Result<&'a [u8], DeviceError> {
+    pub(crate) fn next(&mut self) -> Result<&'ringbuf [u8], DeviceError> {
         self.next_timeout(None)
     }
 
-    fn next_timeout(&mut self, timeout: Option<Duration>) -> Result<&'a [u8], DeviceError> {
+    fn next_timeout(&mut self, timeout: Option<Duration>) -> Result<&'ringbuf [u8], DeviceError> {
         let timeout_in_millis = timeout.map_or(0, |d| d.as_millis());
         let start = std::time::Instant::now();
         let current = self.current_idx();
@@ -396,8 +384,8 @@ impl<'a, T: PollDescriptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZ
             let buf = get_descriptor_mut_helper(
                 self.buf.as_mut(),
                 current,
-                ELEM_SIZE,
-                Self::MEMORY_IDX_MASK,
+                self.elem_size,
+                *self.memory_idx_mask,
             );
             if self.adaptor.poll(buf)? {
                 self.advance_idx();
@@ -414,7 +402,7 @@ impl<'a, T: PollDescriptor, BUF: AsMut<[u8]>, const DEPTH: usize, const ELEM_SIZ
     }
 
     fn advance_idx(&mut self) {
-        let next_idx = wrapping_add_helper(self.current_idx(), 1, Self::HARDWARE_IDX_MASK);
+        let next_idx = wrapping_add_helper(self.current_idx(), 1, *self.hardware_idx_mask);
         *self.head = next_idx;
         *self.tail = next_idx;
     }
@@ -500,7 +488,7 @@ mod test {
 
     use rand::Rng;
 
-    use crate::{device::DeviceError, PAGE_SIZE};
+    use crate::device::DeviceError;
 
     use super::{PollDescriptor, Ringbuf};
 
@@ -548,7 +536,7 @@ mod test {
             self.0.tail.load(Ordering::Acquire)
         }
     }
-    impl super::CsrWriterAdaptor for Adaptor {
+    impl super::ProducerRbMetaAdaptor for Adaptor {
         fn write_head(&self, data: u32) -> Result<(), DeviceError> {
             self.0.head.store(data, Ordering::Release);
             Ok(())
@@ -557,7 +545,7 @@ mod test {
             Ok(self.0.tail.load(Ordering::Acquire))
         }
     }
-    impl super::CsrReaderAdaptor for Adaptor {
+    impl super::CustomerRbMetaAdaptor for Adaptor {
         fn write_tail(&self, data: u32) -> Result<(), DeviceError> {
             self.0.tail.store(data, Ordering::Release);
             Ok(())
@@ -566,6 +554,9 @@ mod test {
             Ok(self.0.head.load(Ordering::Acquire))
         }
     }
+
+    const PAGE_SIZE: usize = 4096;
+
     #[test]
     fn test_ringbuf_writer() {
         const MAX_DEPTH: usize = 128;
@@ -581,9 +572,8 @@ mod test {
             thread_proxy.check(MAX_VALUE);
         });
         let buffer = vec![0u8; PAGE_SIZE];
-        let mut ringbuf =
-            Ringbuf::<Adaptor, Vec<u8>, MAX_DEPTH, 32, 4096>::new(adaptor.clone(), buffer);
-        let mut writer = ringbuf.write();
+        let mut ringbuf = Ringbuf::new(adaptor.clone(), buffer, MAX_DEPTH, 32, PAGE_SIZE);
+        let mut writer = ringbuf.get_writer();
 
         for i in 0..128 {
             let desc = writer.next().unwrap();
@@ -592,7 +582,7 @@ mod test {
         drop(writer);
         assert!(adaptor.head() == 128);
         assert!(adaptor.tail() == 0);
-        let mut writer = ringbuf.write();
+        let mut writer = ringbuf.get_writer();
         assert!(writer
             .next_timeout(Some(Duration::from_millis(10)))
             .is_err());
@@ -605,7 +595,7 @@ mod test {
         assert!(adaptor.tail() == 128);
         // test if blocking?
 
-        let mut writer = ringbuf.write();
+        let mut writer = ringbuf.get_writer();
         for i in 0..=256 {
             let desc = writer.next().unwrap();
             desc.fill(i as u8);
@@ -623,8 +613,7 @@ mod test {
             tail: AtomicU32::new(0),
         }));
         let buffer = vec![0u8; PAGE_SIZE];
-        let mut ringbuf =
-            Ringbuf::<Adaptor, Vec<u8>, MAX_DEPTH, 32, 4096>::new(adaptor.clone(), buffer);
+        let mut ringbuf = Ringbuf::new(adaptor.clone(), buffer, MAX_DEPTH, 32, PAGE_SIZE);
         let thread_proxy = adaptor.clone();
         let _ = spawn(move || {
             let mut rng = rand::thread_rng();
@@ -640,7 +629,7 @@ mod test {
 
         let mut rng = rand::thread_rng();
         for _ in 0..500 {
-            let mut writer = ringbuf.write();
+            let mut writer = ringbuf.get_writer();
             let batch_to_write: u8 = rng.gen_range(3..200);
             for _ in 0..batch_to_write {
                 let desc = writer.next().unwrap();
@@ -665,9 +654,8 @@ mod test {
             thread_proxy.check(MAX_VALUE);
         });
         let buffer = vec![0u8; PAGE_SIZE];
-        let mut ringbuf =
-            Ringbuf::<Adaptor, Vec<u8>, MAX_DEPTH, 32, 4096>::new(adaptor.clone(), buffer);
-        let mut reader = ringbuf.read();
+        let mut ringbuf = Ringbuf::new(adaptor.clone(), buffer, MAX_DEPTH, 32, PAGE_SIZE);
+        let mut reader = ringbuf.get_reader();
         sleep(std::time::Duration::from_millis(100));
         for _i in 0..128 {
             let _desc = reader.next().unwrap();
@@ -675,7 +663,7 @@ mod test {
         drop(reader);
         assert!(adaptor.tail() == 128);
 
-        let mut reader = ringbuf.read();
+        let mut reader = ringbuf.get_reader();
 
         let finish_flag = Arc::new(AtomicBool::new(false));
         for _i in 0..130 {
@@ -710,9 +698,8 @@ mod test {
                 buffer[i * 32 + j] = i as u8;
             }
         }
-        let mut ringbuf =
-            Ringbuf::<Adaptor, Vec<u8>, MAX_DEPTH, 32, 4096>::new(adaptor.clone(), buffer);
-        let mut reader = ringbuf.read();
+        let mut ringbuf = Ringbuf::new(adaptor.clone(), buffer, MAX_DEPTH, 32, PAGE_SIZE);
+        let mut reader = ringbuf.get_reader();
         for i in 0..4096 {
             let desc = reader.next().unwrap();
             assert!(desc[0] == (i % 128) as u8);
@@ -771,9 +758,8 @@ mod test {
         let mut dma = MockDma::new(dma_buf);
 
         let adaptor = PollingAdaptor;
-        let mut ringbuf =
-            Ringbuf::<PollingAdaptor, Vec<u8>, MAX_DEPTH, 32, 4096>::new(adaptor, buffer);
-        let mut reader = ringbuf.read_via_poll_descriptor();
+        let mut ringbuf = Ringbuf::new(adaptor, buffer, MAX_DEPTH, 32, PAGE_SIZE);
+        let mut reader = ringbuf.get_polling_descriptor_reader();
         dma.move_head(64, MAX_DEPTH.try_into().unwrap(), 32);
         for i in 0..64 {
             let desc = reader.next().unwrap();
