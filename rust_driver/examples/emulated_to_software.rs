@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::{net::Ipv4Addr, time::Duration};
 
 use buddy_system_allocator::LockedHeap;
 use common::init_logging;
@@ -11,7 +11,8 @@ use open_rdma_driver::{
         MemAccessTypeFlag, Pmtu, QpBuilder, QpType, Qpn, RdmaDeviceNetworkParam,
         RdmaDeviceNetworkParamBuilder, Sge, WorkReqSendFlag, PAGE_SIZE,
     },
-    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RoundRobinStrategy,
+    AlignedMemory, Device, DeviceConfigBuilder, DeviceType, Mr, Pd, RetryConfig,
+    RoundRobinStrategy,
 };
 
 mod common;
@@ -73,6 +74,12 @@ fn create_and_init_emulated_card<'a>(
             heap_mem_start_addr: head_start_addr,
         })
         .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            100,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        ))
         .scheduler_size(1024 * 32)
         .build()
         .unwrap();
@@ -113,6 +120,7 @@ fn create_and_init_emulated_card<'a>(
         .pmtu(Pmtu::Mtu4096)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
+        .peer_qpn(qpn)
         .build()
         .unwrap();
     dev.create_qp(&qp).unwrap();
@@ -131,6 +139,13 @@ fn create_and_init_software_card<'a>(
         .network_config(local_network)
         .device_type(DeviceType::Software)
         .strategy(RoundRobinStrategy::new())
+        .retry_config(RetryConfig::new(
+            false,
+            100,
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+        ))
+        .scheduler_size(1024 * 32)
         .build()
         .unwrap();
     let dev = Device::new(config).unwrap();
@@ -162,6 +177,7 @@ fn create_and_init_software_card<'a>(
         .pmtu(Pmtu::Mtu4096)
         .dqp_ip(remote_network.ipaddr)
         .dqp_mac(remote_network.macaddr)
+        .peer_qpn(qpn)
         .build()
         .unwrap();
     dev.create_qp(&qp).unwrap();
@@ -321,7 +337,10 @@ fn main() {
             .unwrap();
 
         let _ = ctx1.wait();
-        assert_eq!(mr_buffer_a.as_ref()[0..SEND_CNT], mr_buffer_b.as_ref()[0..SEND_CNT]);
+        assert_eq!(
+            mr_buffer_a.as_ref()[0..SEND_CNT],
+            mr_buffer_b.as_ref()[0..SEND_CNT]
+        );
         info!("Software read from emulator success");
     }
 }
