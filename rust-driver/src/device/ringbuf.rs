@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use parking_lot::{Mutex, MutexGuard};
 
-use super::DeviceError;
+use super::{error::DeviceResult, DeviceError};
 
 /// A trait provides the ability to poll a descriptor.
 ///
@@ -10,27 +10,27 @@ use super::DeviceError;
 /// Note that the buffer is mutable, so the implementor can update the descriptor in the buffer.
 /// For example, the implementor can erase the `ready` field so that it won't be read again.
 pub(super) trait PollDescriptor {
-    fn poll(&self, buf: &mut [u8]) -> Result<bool, DeviceError>;
+    fn poll(&self, buf: &mut [u8]) -> DeviceResult<bool>;
 }
 
 /// An adaptor to read the tail pointer and write the head pointer.
 /// In this case, the host act as an producer to generate descriptors. 
 pub(super) trait ProducerRbMetaAdaptor {
     /// Write the head pointer to the some where can be read by the device.
-    fn write_head(&self, data: u32) -> Result<(), DeviceError>;
+    fn write_head(&self, data: u32) -> DeviceResult<()>;
 
     /// Read the tail pointer from the device.
-    fn read_tail(&self) -> Result<u32, DeviceError>;
+    fn read_tail(&self) -> DeviceResult<u32>;
 }
 
 /// An adaptor to read the head pointer and write the tail pointer.
 /// In this case, the host act as an customer to read descriptors. 
 pub(super) trait CustomerRbMetaAdaptor {
     /// Write the tail pointer.
-    fn write_tail(&self, data: u32) -> Result<(), DeviceError>;
+    fn write_tail(&self, data: u32) -> DeviceResult<()>;
 
     /// Read the head pointer.
-    fn read_head(&self) -> Result<u32, DeviceError>;
+    fn read_head(&self) -> DeviceResult<u32>;
 }
 
 /// The Ringbuf is a circular buffer used to communicate between the host and the card.
@@ -81,6 +81,7 @@ impl<ADP, BUF: AsMut<[u8]> + AsRef<[u8]>> Ringbuf<ADP, BUF> {
         assert!(_is_power_of_2(depth), "invalid ringbuf depth");
         assert!(_is_power_of_2(elem_size), "invalid element size");
         assert!(depth * elem_size >= page_size, "invalid ringbuf size");
+        assert!(depth < u32::MAX as usize, "depth should be less than u32::MAX");
         #[cfg(not(test))]
         {
             assert!(
@@ -166,7 +167,7 @@ impl<ADP: PollDescriptor, BUF: AsMut<[u8]>> Ringbuf<ADP, BUF> {
 
 impl<'a, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> RingbufWriter<'a, '_, ADP, BUF> {
     /// get a buffer to write a descriptor to the ring buffer
-    pub(crate) fn next(&mut self) -> Result<&'a mut [u8], DeviceError> {
+    pub(crate) fn next(&mut self) -> DeviceResult<&'a mut [u8]> {
         self.next_timeout(None)
     }
 
@@ -181,7 +182,7 @@ impl<'a, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> RingbufWriter<'a, '_, ADP
     pub(crate) fn next_timeout(
         &mut self,
         timeout: Option<Duration>,
-    ) -> Result<&'a mut [u8], DeviceError> {
+    ) -> DeviceResult<&'a mut [u8]> {
         let timeout_in_millis = timeout.map_or(0, |d| d.as_millis());
         let start = std::time::Instant::now();
         let idx = self.next_head_idx();
@@ -212,11 +213,10 @@ impl<'a, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> RingbufWriter<'a, '_, ADP
     }
 
     /// Write back the head pointer to the hardware.
-    pub(crate) fn flush(&mut self) -> Result<(), DeviceError> {
+    pub(crate) fn flush(&mut self) -> DeviceResult<()> {
         self.advance_head()
     }
 
-    #[allow(clippy::unused_self)] // Using Self may lead to lifetime issue
     fn would_it_full(&self, new_head: usize, new_tail: usize) -> bool {
         is_full_helper(
             new_head,
@@ -230,7 +230,7 @@ impl<'a, ADP: ProducerRbMetaAdaptor, BUF: AsMut<[u8]>> RingbufWriter<'a, '_, ADP
         wrapping_add_helper(*self.head, self.written_cnt, *self.hardware_idx_mask)
     }
 
-    fn advance_head(&mut self) -> Result<(), DeviceError> {
+    fn advance_head(&mut self) -> DeviceResult<()> {
         let new_head = self.next_head_idx();
         *self.head = new_head;
         // since the head is got by wrapping_add, it's safe to cast to u32
@@ -266,7 +266,7 @@ pub(super) struct RingbufReader<'ringbuf, 'adaptor, ADP: CustomerRbMetaAdaptor, 
 
 impl<'ringbuf, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> RingbufReader<'ringbuf, '_, ADP, BUF> {
     /// read a descriptor from the ring buffer
-    pub(crate) fn next(&mut self) -> Result<&'ringbuf [u8], DeviceError> {
+    pub(crate) fn next(&mut self) -> DeviceResult<&'ringbuf [u8]> {
         self.next_timeout(None)
     }
 
@@ -281,7 +281,7 @@ impl<'ringbuf, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> RingbufReader<'ring
     pub(crate) fn next_timeout(
         &mut self,
         timeout: Option<Duration>,
-    ) -> Result<&'ringbuf [u8], DeviceError> {
+    ) -> DeviceResult<&'ringbuf [u8]> {
         let timeout_in_millis = timeout.map_or(0, |d| d.as_millis());
         let start = std::time::Instant::now();
         if self.is_full() {
@@ -311,7 +311,7 @@ impl<'ringbuf, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> RingbufReader<'ring
     }
 
     /// Write back the tail pointer to the hardware.
-    pub(crate) fn flush(&mut self) -> Result<(), DeviceError> {
+    pub(crate) fn flush(&mut self) -> DeviceResult<()> {
         self.advance_tail()
     }
 
@@ -332,7 +332,7 @@ impl<'ringbuf, ADP: CustomerRbMetaAdaptor, BUF: AsRef<[u8]>> RingbufReader<'ring
         )
     }
 
-    fn advance_tail(&mut self) -> Result<(), DeviceError> {
+    fn advance_tail(&mut self) -> DeviceResult<()> {
         let new_tail = self.next_tail_idx();
         #[allow(clippy::cast_possible_truncation)] // new_tail must be in range of `DEPTH *2`
         self.adaptor.write_tail(new_tail as u32)?;
@@ -371,11 +371,11 @@ pub(super) struct RingbufPollDescriptorReader<
 impl<'ringbuf, ADP: PollDescriptor, BUF: AsMut<[u8]>>
     RingbufPollDescriptorReader<'_, '_, ADP, BUF>
 {
-    pub(crate) fn next(&mut self) -> Result<&'ringbuf [u8], DeviceError> {
+    pub(crate) fn next(&mut self) -> DeviceResult<&'ringbuf [u8]> {
         self.next_timeout(None)
     }
 
-    fn next_timeout(&mut self, timeout: Option<Duration>) -> Result<&'ringbuf [u8], DeviceError> {
+    fn next_timeout(&mut self, timeout: Option<Duration>) -> DeviceResult<&'ringbuf [u8]> {
         let timeout_in_millis = timeout.map_or(0, |d| d.as_millis());
         let start = std::time::Instant::now();
         let current = self.current_idx();

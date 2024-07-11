@@ -1,6 +1,6 @@
 use crate::{
-    device::{descriptor::u8_slice_to_u64, DeviceError},
-    types::{Key, MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn},
+    device::{error::DeviceResult, DeviceError},
+    types::{Key, MemAccessTypeFlag, Pmtu, Psn, QpType, Qpn}, utils::u8_slice_to_u64,
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
@@ -353,7 +353,7 @@ impl ToCardCtrlRbDesc {
 }
 
 impl ToHostCtrlRbDesc {
-    pub(super) fn read(src: &[u8]) -> Result<ToHostCtrlRbDesc, DeviceError> {
+    pub(super) fn read(src: &[u8]) -> DeviceResult<ToHostCtrlRbDesc> {
         // typedef struct {
         //     Bit#(32)                userData;
         //     ReservedZero#(20)       reserved1;

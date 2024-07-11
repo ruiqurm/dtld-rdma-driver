@@ -18,7 +18,7 @@ impl<const SLOT_SIZE: usize> Slot<SLOT_SIZE> {
             "The real size should be less than the slot size"
         );
         Sge {
-            addr: self.0 as u64,
+            phy_addr: self.0 as u64,
             len: real_size, // safe to cast here
             key: self.1,
         }
@@ -120,7 +120,7 @@ mod tests {
         let mem = Box::leak(Box::new([0u8; 1024 * RDMA_ACK_BUFFER_SLOT_SIZE]));
         let base_va = mem.as_ptr() as usize;
         let buffer: PacketBufAllocator<RDMA_ACK_BUFFER_SLOT_SIZE> =
-            PacketBufAllocator::new(base_va, 1024 * RDMA_ACK_BUFFER_SLOT_SIZE, Key::new(0x1000));
+            PacketBufAllocator::new(base_va, 1024 * RDMA_ACK_BUFFER_SLOT_SIZE, Key::new_unchecked(0x1000));
         for i in 0..2048 {
             let slot = buffer.recycle_buf();
             assert_eq!(

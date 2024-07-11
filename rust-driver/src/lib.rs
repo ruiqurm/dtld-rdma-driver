@@ -153,5 +153,3 @@ mod recycle_allocator;
 
 /// utility functions
 mod utils;
-
-pub use device::PAGE_SIZE;

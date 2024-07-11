@@ -1,11 +1,10 @@
-use std::net::Ipv4Addr;
+use std::{mem, net::Ipv4Addr};
 
 use bitflags::bitflags;
 use derive_builder::Builder;
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
 use thiserror::Error;
-
 
 /// Protection Domain
 #[derive(Debug, Clone, Copy, Default)]
@@ -29,16 +28,20 @@ impl Imm {
         self.0
     }
 
-    /// Convert the value of `Imm` to big endian.
-    #[must_use]
-    pub fn into_be(self) -> u32 {
-        self.0.to_be()
+    pub(crate) fn into_ne(self) -> u32 {
+        if cfg!(target_endian = "little") {
+            self.0.to_be()
+        } else {
+            self.0.to_le()
+        }
     }
 
-    /// Convert the value of big endian to `Imm`.
-    #[must_use]
-    pub fn from_be(val: u32) -> Self {
-        Self::new(val.to_le())
+    pub(crate) fn from_ne(val: u32) -> Self {
+        if cfg!(target_endian = "little") {
+            Self::new(val.to_be())
+        } else {
+            Self::new(val.to_le())
+        }
     }
 }
 
@@ -53,8 +56,7 @@ impl From<u32> for Imm {
 pub struct Msn(u16);
 impl Msn {
     /// Create a new `Msn` with the given value.
-    #[must_use]
-    pub fn new(msn: u16) -> Self {
+    pub(crate) fn new(msn: u16) -> Self {
         Self(msn)
     }
 
@@ -65,9 +67,12 @@ impl Msn {
     }
 
     /// Convert the value of `Msn` to big endian.
-    #[must_use]
-    pub fn into_be(self) -> u16 {
-        self.0.to_be()
+    fn into_ne(self) -> u16 {
+        if cfg!(target_endian = "little") {
+            self.0.to_be()
+        } else {
+            self.0.to_le()
+        }
     }
 }
 
@@ -87,9 +92,16 @@ impl Default for Msn {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
 pub struct Key(u32);
 impl Key {
+    const MR_KEY_IDX_BIT_CNT: usize = 8;
+
     /// Create a new `Key` with the given value.
-    #[must_use]
-    pub fn new(key: u32) -> Self {
+    pub(crate) fn new(mr_idx: u32,key_secret:u32) -> Self {
+        let key_idx = mr_idx << ((u32::BITS as usize).wrapping_sub(Self::MR_KEY_IDX_BIT_CNT));
+        let key_secret = key_secret >> Self::MR_KEY_IDX_BIT_CNT;
+        Self(key_idx | key_secret)
+    }
+    
+    pub(crate) fn new_unchecked(key: u32) -> Self {
         Self(key)
     }
 
@@ -99,115 +111,104 @@ impl Key {
         self.0
     }
 
-    /// Convert the value of `Key` to big endian.
-    #[must_use]
-    pub fn into_be(self) -> u32 {
-        self.0.to_be()
+    /// Convert the value of `Key` to network endian.
+    pub(crate) fn into_ne(self) -> u32 {
+        if cfg!(target_endian = "little") {
+            self.0.to_be()
+        } else {
+            self.0.to_le()
+        }
     }
 
-    /// Convert a big endian value to `Key`.
-    #[must_use]
-    pub fn from_be(val: u32) -> Self {
-        // the val is already in big endian
-        // So we need to convert it to little endian, use `to_be()`
-        Self::new(val.to_be())
+    /// Convert a network endian value to `Key`.
+    pub(crate) fn from_ne(val: u32) -> Self {
+        // the val is already in network endian
+        // So we need to convert it to local endian,
+        //  use `to_be()` in little endian machine, vice versa
+        if cfg!(target_endian = "little") {
+            Self::new_unchecked(val.to_be())
+        } else {
+            Self::new_unchecked(val.to_le())
+        }
     }
 }
-
-impl From<u32> for Key {
-    fn from(key: u32) -> Self {
-        Self::new(key)
-    }
-}
-
-/// Packet Sequence Number
-pub type Psn = ThreeBytesStruct;
 
 /// Queue Pair Number
-pub type Qpn = ThreeBytesStruct;
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
+pub struct Qpn(u32);
+
+impl Qpn {
+    const WIDTH_IN_BITS: usize = 24;
+    const MASK: u32 = u32::MAX >> (32 - Self::WIDTH_IN_BITS);
+
+    /// The `QPN` value should be less than 2^24;
+    pub(crate) fn new(qpn: u32) -> Self {
+        assert!(qpn <= Self::MASK, "QPN should not exceed 24 bits");
+        Self(qpn)
+    }
+
+    /// Get the value of `Qpn`.
+    #[must_use]
+    pub fn get(&self) -> u32 {
+        self.0
+    }
+}
 
 /// In RDMA spec, some structs are defined as 24 bits.
 /// For example : `PSN`, `QPN` etc.
 ///
 /// This struct is used to represent these 24 bits.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
-pub struct ThreeBytesStruct(u32);
+pub struct Psn(u32);
 
-impl ThreeBytesStruct {
-    const WIDTH: usize = 24;
-    const MASK: u32 = u32::MAX >> (32 - Self::WIDTH);
-    const BORDER: u32 = Self::MASK + 1;
-    #[cfg(test)]
-    pub(crate) const MAX_VALUE: u32 = Self::MASK;
+impl Psn {
+    const WIDTH_IN_BITS: usize = 24;
+    const MASK: u32 = u32::MAX >> (32 - Self::WIDTH_IN_BITS);
+    const MAX_PSN_RANGE : u32 = 1 << 23_i32;
 
-    /// Create a new `ThreeBytesStruct` with the given value.
+    /// Create a new `Psn` with the given value.
     ///
-    /// If the value is greater than 24 bits, the higher bits will be ignored.
+    /// # Panics
+    /// If the value is greater than 24 bits, it will panic.
     #[must_use]
-    pub fn new(key: u32) -> Self {
-        Self(key & Self::MASK)
+    pub fn new(psn: u32) -> Self {
+        assert!(psn <= Self::MASK, "PSN should not exceed 24 bits");
+        Self(psn)
     }
 
-    /// Get the value of `ThreeBytesStruct`.
+    /// Get the value of `psn`.
     #[must_use]
     pub fn get(&self) -> u32 {
         self.0
     }
 
-    /// Convert the value of `ThreeBytesStruct` to big endian.
-    #[must_use]
-    pub(crate) fn into_be(self) -> u32 {
+    /// Convert the value of `psn` to big endian.
+    pub(crate) fn into_ne(self) -> u32 {
         // In little endian machine, to_le_bytes() is a no-op. Just get the layout.
         let key = self.0.to_le_bytes();
-        // Then we reoder the bytes to big endian
-        // Note that the last byte is exceed the 24 bits, any value in it will be ignored
         u32::from_le_bytes([key[2], key[1], key[0], 0])
     }
 
-    /// Convert a big endian value to `ThreeBytesStruct`.
-    #[must_use]
-    pub(crate) fn from_be(val: u32) -> Self {
-        // get the layout.
+    /// Convert a big endian value to `psn`.
+    pub(crate) fn from_ne(val: u32) -> Self {
         let key = val.to_le_bytes();
-        // from_le_bytes is also a no-op in little endian machine.
-        // We just use it to convert from [u8;4] to `u32`.
         Self::new(u32::from_le_bytes([key[2], key[1], key[0], 0]))
     }
 
     /// wrapping add the current value with rhs
-    #[must_use]
-    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn wrapping_add(self, rhs: Self) -> Self {
         // since (a+b) mod p  = (a + (b mod p)) mod p, we don't have to let rhs= rhs%p here
-        Self((self.0 + rhs.0) % Self::BORDER)
+        Self(self.0.wrapping_add(rhs.0) & Self::MASK)
     }
 
-    /// wrapping sub the current value with rhs
+    /// Get the difference between two PSN
     #[must_use]
-    #[allow(clippy::arithmetic_side_effects)]
-    pub(crate) fn wrapping_sub(self, rhs: Self) -> Self {
-        if self.0 >= rhs.0 {
-            Self(self.0 - rhs.0)
-        } else {
-            Self(Self::BORDER - rhs.0 + self.0)
-        }
-    }
-
-    /// The absolute difference between two PSN
-    /// We assume that the bigger PSN should not exceed the
-    /// smaller PSN by more than 2^23(that half of the range)
-    #[must_use]
-    #[allow(clippy::arithmetic_side_effects)]
-    pub(crate) fn wrapping_abs(self, rhs: Psn) -> u32 {
-        if self.0 >= rhs.0 {
-            self.0 - rhs.get()
-        } else {
-            self.0 + Self::BORDER - rhs.0
-        }
+    pub(crate) fn wrapping_sub(self, rhs: Self) -> u32 {
+        self.0.wrapping_sub(rhs.0) & Self::MASK
     }
 }
 
-impl From<u32> for ThreeBytesStruct {
+impl From<u32> for Psn {
     fn from(key: u32) -> Self {
         Self::new(key)
     }
@@ -215,7 +216,7 @@ impl From<u32> for ThreeBytesStruct {
 
 bitflags! {
     /// Memory access bit flags
-    #[derive(Debug,Clone,Copy)]
+    #[derive(Debug, Clone, Copy)]
     pub struct MemAccessTypeFlag: u8 {
         /// No access flag
         const IbvAccessNoFlags = 0;      // Not defined in rdma-core
@@ -250,7 +251,7 @@ bitflags! {
 
 bitflags! {
     /// Work Request Send Flag
-    #[derive(Debug,Clone,Copy,Default,PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct WorkReqSendFlag: u8 {
         /// No flags
         const IbvSendNoFlags  = 0; // Not defined in rdma-core
@@ -294,6 +295,7 @@ pub enum QpType {
 /// Packet MTU
 #[non_exhaustive]
 #[derive(Default, Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum Pmtu {
     /// 256 bytes
     #[default]
@@ -312,27 +314,10 @@ pub enum Pmtu {
     Mtu4096 = 5,
 }
 
-impl From<Pmtu> for u64 {
-    fn from(pmtu: Pmtu) -> u64 {
-        match pmtu {
-            Pmtu::Mtu256 => 256,
-            Pmtu::Mtu512 => 512,
-            Pmtu::Mtu1024 => 1024,
-            Pmtu::Mtu2048 => 2048,
-            Pmtu::Mtu4096 => 4096,
-        }
-    }
-}
-
 impl From<Pmtu> for u32 {
     fn from(pmtu: Pmtu) -> u32 {
-        match pmtu {
-            Pmtu::Mtu256 => 256,
-            Pmtu::Mtu512 => 512,
-            Pmtu::Mtu1024 => 1024,
-            Pmtu::Mtu2048 => 2048,
-            Pmtu::Mtu4096 => 4096,
-        }
+        const BASE_VALUE: u32 = 128;
+        BASE_VALUE << (pmtu as usize)
     }
 }
 
@@ -340,10 +325,12 @@ impl From<Pmtu> for u32 {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct Sge {
-    /// Address(physical address)
-    pub addr: u64,
+    /// physical address
+    pub phy_addr: u64,
+
     /// Length
     pub len: u32,
+
     /// LKey
     pub key: Key,
 }
@@ -351,8 +338,8 @@ pub struct Sge {
 impl Sge {
     /// Create a new `Sge`
     #[must_use]
-    pub fn new(addr: u64, len: u32, key: Key) -> Self {
-        Self { addr, len, key }
+    pub fn new(phy_addr: u64, len: u32, key: Key) -> Self {
+        Self { phy_addr, len, key }
     }
 }
 
@@ -362,10 +349,13 @@ impl Sge {
 pub struct RdmaDeviceNetworkParam {
     /// Network gateway
     gateway: Ipv4Addr,
+
     /// Network netmask
     netmask: Ipv4Addr,
+
     /// IP address
     ipaddr: Ipv4Addr,
+
     /// MAC address
     macaddr: MacAddress,
 }
@@ -376,18 +366,25 @@ pub struct RdmaDeviceNetworkParam {
 pub struct Qp {
     /// Protection Domain
     pd: Pd,
+
     /// Queue Pair Number
     qpn: Qpn,
+
     /// Peer Queue Pair Number
     peer_qpn: Qpn,
+
     /// Queue Pair Type
     qp_type: QpType,
+
     /// Receive Queue Access Flags
     rq_acc_flags: MemAccessTypeFlag,
+
     /// Packet MTU
     pmtu: Pmtu,
+
     /// Destination IP
     dqp_ip: Ipv4Addr,
+
     /// Destination MAC
     dqp_mac: MacAddress,
 }
@@ -420,32 +417,46 @@ mod tests {
     }
 
     #[test]
-    fn test_to_be() {
+    fn test_to_ne() {
         let psn = Psn::new(0x123456);
-        let mem = psn.into_be();
+        let mem = psn.into_ne();
         let buf = unsafe { from_raw_parts(&mem as *const _ as *const u8, 4) };
         assert_eq!(buf, &[0x12, 0x34, 0x56, 0]);
-        assert_eq!(Psn::from_be(mem).get(), 0x123456);
+        assert_eq!(Psn::from_ne(mem).get(), 0x123456);
 
-        let key = crate::types::Key::new(0x12345678);
-        let mem = key.into_be();
+        let key = crate::types::Key::new_unchecked(0x12345678);
+        let mem = key.into_ne();
         let buf = unsafe { from_raw_parts(&mem as *const _ as *const u8, 4) };
         assert_eq!(buf, &[0x12, 0x34, 0x56, 0x78]);
-        assert_eq!(crate::types::Key::from_be(mem).get(), 0x12345678);
+        assert_eq!(crate::types::Key::from_ne(mem).get(), 0x12345678);
     }
 
     #[test]
-    fn test_wrapping_abs() {
+    fn test_wrapping_sub() {
         let psn = Psn::new(0);
         let psn2 = psn.wrapping_sub(1.into());
-        assert_eq!(psn2.get(), 0xffffff);
+        assert_eq!(psn2, 0xffffff);
 
-        let psn = psn.wrapping_abs(psn2);
-        assert_eq!(psn, 1);
+        let psn = Psn::new(0x800001);
+        let diff = psn.wrapping_sub(0.into());
+        assert_eq!(diff,0x800001);
 
-        // psn greater than 2**24
-        let psn = Psn::new(0x123456);
-        let psn2 = psn.wrapping_sub(0x12345678.into());
-        assert_eq!(psn2.get(), psn.wrapping_sub(0x345678.into()).get());
+        let psn = Psn::new(0);
+        let diff = psn.wrapping_sub(0x800001.into());
+        assert_eq!(diff,0x7fffff);
+    }
+
+    #[test]
+    fn test_pmtu() {
+        let pmtu = crate::types::Pmtu::Mtu256;
+        assert_eq!(u32::from(pmtu), 256);
+        let pmtu = crate::types::Pmtu::Mtu512;
+        assert_eq!(u32::from(pmtu), 512);
+        let pmtu = crate::types::Pmtu::Mtu1024;
+        assert_eq!(u32::from(pmtu), 1024);
+        let pmtu = crate::types::Pmtu::Mtu2048;
+        assert_eq!(u32::from(pmtu), 2048);
+        let pmtu = crate::types::Pmtu::Mtu4096;
+        assert_eq!(u32::from(pmtu), 4096);
     }
 }

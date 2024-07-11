@@ -12,11 +12,10 @@ use super::{
         OFFSET_OF_RETH_IN_META_REPORT_QUEUE_DESC_BTH_RETH_IN_BYTES, SIZE_OF_BTH_IN_BYTES,
         SIZE_OF_IMM_IN_BYTES,
     },
-    u8_slice_to_u64,
 };
 use crate::{
-    device::DeviceError,
-    types::{Imm, Key, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag},
+    device::{error::DeviceResult, DeviceError},
+    types::{Imm, Key, Msn, Pmtu, Psn, QpType, Qpn, Sge, WorkReqSendFlag}, utils::u8_slice_to_u64,
 };
 use eui48::MacAddress;
 use num_enum::TryFromPrimitive;
@@ -302,7 +301,7 @@ pub(crate) struct DescSge {
 impl From<Sge> for DescSge {
     fn from(sge: Sge) -> Self {
         Self {
-            addr: sge.addr,
+            addr: sge.phy_addr,
             len: sge.len,
             key: sge.key,
         }
@@ -678,7 +677,7 @@ impl ToHostWorkRbDesc {
         let addr = frag_reth.get_va();
         // bitfield restricts the field is not longer than 32 bits.
         #[allow(clippy::cast_possible_truncation)]
-        let key = Key::new(frag_reth.get_rkey() as u32);
+        let key = Key::new_unchecked(frag_reth.get_rkey() as u32);
         #[allow(clippy::cast_possible_truncation)]
         let len = frag_reth.get_dlen() as u32;
 
@@ -702,7 +701,7 @@ impl ToHostWorkRbDesc {
 
     // (last_psn, msn, value, code)
     #[allow(clippy::cast_possible_truncation)]
-    fn read_aeth(src: &[u8]) -> Result<(Psn, Msn, u8, ToHostWorkRbDescAethCode), DeviceError> {
+    fn read_aeth(src: &[u8]) -> DeviceResult<(Psn, Msn, u8, ToHostWorkRbDescAethCode)> {
         // typedef struct {
         //     AethCode                code;         // 3
         //     AethValue               value;        // 5
@@ -894,7 +893,7 @@ impl IncompleteToHostWorkRbDesc {
             // } MetaReportQueueDescFragSecondaryRETH deriving(Bits, FShow);
             let secondary_reth = MetaReportQueueDescFragSecondaryRETH(&src);
             let addr = secondary_reth.get_secondary_va();
-            let key = Key::new(secondary_reth.get_secondary_rkey() as u32);
+            let key = Key::new_unchecked(secondary_reth.get_secondary_rkey() as u32);
 
             (addr, key)
         }
