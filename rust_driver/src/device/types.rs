@@ -266,8 +266,8 @@ pub(crate) struct ToHostWorkRbDescAck {
     pub(crate) common: ToHostWorkRbDescCommon,
     #[allow(unused)]
     pub(crate) msn: Msn,
-    #[allow(unused)]
     pub(crate) psn: Psn,
+    pub(crate) retry_psn: Psn,
     pub(crate) code: ToHostWorkRbDescAethCode,
     #[allow(unused)] // used in nack checking
     pub(crate) value: u8,
@@ -952,7 +952,8 @@ impl ToHostWorkRbDesc {
     #[allow(clippy::cast_possible_truncation)]
     fn read_aeth(src: &[u8]) -> Result<(Psn, Msn, u8, ToHostWorkRbDescAethCode), DeviceError> {
         // typedef struct {
-        //     AethCode                code;         // 3
+        //     ReservedZero#(9)        reserved1;    // 9
+        //     AethCode                code;         // 2
         //     AethValue               value;        // 5
         //     MSN                     msn;          // 24
         //     PSN                     lastRetryPSN; // 24
@@ -1122,7 +1123,7 @@ impl ToHostWorkRbDesc {
                 ))
             }
             ToHostWorkRbDescOpcode::Acknowledge => {
-                let (_last_psn, msn_in_ack, value, code) =
+                let (retry_psn, msn_in_ack, value, code) =
                     Self::read_aeth(src).map_err(ToHostWorkRbDescError::DeviceError)?;
                 Ok(ToHostWorkRbDesc::Ack(ToHostWorkRbDescAck {
                     common,
@@ -1130,6 +1131,7 @@ impl ToHostWorkRbDesc {
                     value,
                     psn,
                     code,
+                    retry_psn
                 }))
             }
         }

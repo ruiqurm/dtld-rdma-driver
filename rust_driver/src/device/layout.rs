@@ -198,7 +198,8 @@ bitfield! {
     pub get_psn, set_psn: 23, 0;          // 24bits
     pub get_msn, set_msn: 47, 24;         // 24bits
     pub get_aeth_value, set_aeth_value: 52, 48; // 5bits
-    pub get_aeth_code, set_aeth_code: 55, 53;   // 3bits
+    pub get_aeth_code, set_aeth_code: 54, 53;   // 2bits
+    reserved1, _: 63, 55;                       // 9bits
 }
 
 impl<T: AsRef<[u8]>> BitRange<u32> for MetaReportQueueDescFragAETH<T> {
@@ -424,9 +425,9 @@ bitfield! {
     /// Aeth layout
     pub struct Aeth([u8]);
     u32;
-    _padding_0,_ : 0;                     // 1bits
-    pub get_aeth_code,set_aeth_code: 2, 1;    // 2bits
-    pub get_aeth_value,set_aeth_value: 7, 3;  // 5bits
+    pub get_aeth_value,set_aeth_value: 4, 0;  // 5bits
+    pub get_aeth_code,set_aeth_code: 6, 5;    // 2bits
+    _padding_0,_ : 7;                     // 1bits
     _padding_1,_ :   15,8;               // 8bits
     pub get_msn,set_msn: 31,16;               // 16bits
 }

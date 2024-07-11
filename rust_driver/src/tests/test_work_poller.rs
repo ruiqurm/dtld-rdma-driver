@@ -89,10 +89,9 @@ fn test_work_desc_poller() {
                 dqpn: Qpn::new(3),
                 ..Default::default()
             },
-            value: 0,
-            msn: Msn::default(),
             psn: Psn::new(2),
             code: ToHostWorkRbDescAethCode::Ack,
+            ..Default::default()
         }),
         ToHostWorkRbDesc::Raw(ToHostWorkRbDescRaw {
             common: ToHostWorkRbDescCommon {

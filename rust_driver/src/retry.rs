@@ -15,9 +15,9 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     device::ToCardWorkRbDesc,
     op_ctx::OpCtx,
-    types::{Msn, Pmtu, Psn, Qpn},
+    types::{Msn, Pmtu, Qpn},
     utils::{calculate_packet_cnt, get_first_packet_max_length},
-    ThreadSafeHashmap, WorkDescriptorSender,
+    Error, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
 #[derive(Debug)]
@@ -42,7 +42,7 @@ fn psn_addr_offset(base_addr: u64, pmtu: Pmtu, psn: u32) -> u64 {
     if psn == 0 {
         return 0;
     }
-    let first_pkt_length : u64 = get_first_packet_max_length(base_addr, u32::from(&pmtu)).into();
+    let first_pkt_length: u64 = get_first_packet_max_length(base_addr, u32::from(&pmtu)).into();
     let second_pkt_addr = base_addr.wrapping_add(first_pkt_length);
     let pmtu = u64::from(&pmtu);
     let psn: u64 = psn.into();
@@ -85,29 +85,36 @@ impl RetryMap {
         map.remove(&key).is_none()
     }
 
+    /// fetch the descriptor from the map.
+    ///
+    /// If a range is given, the descriptor will be cut into the range
     pub(crate) fn get_descritpor(
         &self,
         key: (Qpn, Msn),
         range: Option<(u32, u32)>,
-    ) -> Option<Box<ToCardWorkRbDesc>> {
+    ) -> Result<Option<Box<ToCardWorkRbDesc>>, Error> {
         let guard = self.map.read();
         let mut desc = if let Some(ctx) = guard.get(&key) {
             let inner = ctx.lock();
             inner.descriptor.clone()
         } else {
-            return None;
+            return Ok(None);
         };
         if let Some((from, to)) = range {
             if let ToCardWorkRbDesc::Write(ref mut write_desc) = *desc {
                 let pmtu = write_desc.common.pmtu;
-                let start_offset = psn_addr_offset(write_desc.sge0.addr, pmtu, from);
-                let end_offset = psn_addr_offset(write_desc.sge0.addr, pmtu, to);
-                let new_length = end_offset.wrapping_sub(start_offset);
                 let max_pkt = calculate_packet_cnt(
                     pmtu,
                     write_desc.common.raddr,
                     write_desc.common.total_len,
                 );
+                if from > to || from >= max_pkt || to >= max_pkt {
+                    return Err(Error::Invalid("Invalid psn range".to_owned()));
+                }
+                let start_offset = psn_addr_offset(write_desc.sge0.addr, pmtu, from);
+                let end_offset = psn_addr_offset(write_desc.sge0.addr, pmtu, to);
+                let new_length = end_offset.wrapping_sub(start_offset);
+
                 write_desc.is_first = from == 0;
                 write_desc.is_last = max_pkt.wrapping_sub(1) == to;
                 write_desc.sge0.addr = write_desc.sge0.addr.wrapping_add(start_offset);
@@ -116,11 +123,10 @@ impl RetryMap {
                 write_desc.common.total_len = new_length as u32;
                 write_desc.common.raddr = write_desc.common.raddr.wrapping_add(start_offset);
             } else {
-                return None;
+                return Err(Error::Invalid("Invalid descriptor type".to_owned()));
             }
-            return Some(desc);
         };
-        None
+        Ok(Some(desc))
     }
 
     fn iter_key_and_value(&self) -> Vec<(Qpn, Msn, Arc<Mutex<RetryContext>>)> {
@@ -303,12 +309,12 @@ mod test {
     }
     #[test]
     fn test_psn_addr_offset() {
-        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 0),0);
-        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 1),2048);
-        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 2),4096);
-        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 0),0);
-        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 1),814);
-        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 2),2862);
+        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 0), 0);
+        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 1), 2048);
+        assert_eq!(psn_addr_offset(0, crate::types::Pmtu::Mtu2048, 2), 4096);
+        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 0), 0);
+        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 1), 814);
+        assert_eq!(psn_addr_offset(1234, crate::types::Pmtu::Mtu2048, 2), 2862);
     }
     #[test]
     fn test_retry_monitor() {

@@ -517,6 +517,7 @@ impl NetReceiveLogic<'_> for BlueRDMALogic {
                         value: header.aeth_value,
                         psn: crate::types::Psn::new(header.common_meta.psn.get()),
                         code: ToHostWorkRbDescAethCode::Ack,
+                        retry_psn: Psn::default(),
                     }),
                     ToHostWorkRbDescAethCode::Rnr
                     | ToHostWorkRbDescAethCode::Rsvd

@@ -9,11 +9,19 @@ use std::{
 };
 
 use crate::{
-    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE}, device::{
+    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
+    device::{
         ToCardCtrlRbDesc, ToCardCtrlRbDescCommon, ToCardCtrlRbDescUpdateErrPsnRecoverPoint,
         ToHostWorkRbDescAck, ToHostWorkRbDescAethCode, ToHostWorkRbDescRead,
         ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-    }, op_ctx::OpCtx, qp::QpContext, responser::{make_ack, make_nack, make_read_resp}, retry::RetryMap, types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE}, utils::calculate_packet_cnt, CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender
+    },
+    op_ctx::OpCtx,
+    qp::QpContext,
+    responser::{make_ack, make_nack, make_read_resp},
+    retry::RetryMap,
+    types::{Msn, Pmtu, Psn, Qpn, PSN_MAX_WINDOW_SIZE},
+    utils::calculate_packet_cnt,
+    CtrlDescriptorSender, ThreadSafeHashmap, WorkDescriptorSender,
 };
 
 use flume::{Receiver, TryRecvError};
@@ -135,6 +143,14 @@ impl PacketCheckerContext {
                         wakeup_user_op_ctx(&self.user_op_ctx_map, qpn, msn);
                     }
                     ToHostWorkRbDescAethCode::Nak => {
+                        if let Ok(Some(desc)) = self.retry_map.get_descritpor(
+                            (qpn, msn),
+                            Some((event.psn.get(), event.common.expected_psn.get())),
+                        ) {
+                            if let Err(e) = self.work_desc_sender.send_work_desc(desc) {
+                                error!("Failed to send retry {:?}", e);
+                            }
+                        }
                         log::info!("receive nak");
                     }
                     ToHostWorkRbDescAethCode::Rnr | ToHostWorkRbDescAethCode::Rsvd => {
@@ -234,7 +250,7 @@ impl PacketCheckerContext {
                         recv_map.insert(continous_range);
                     }
                     recv_map.insert((recved_psn, recved_psn));
-                    if let Some((start_psn,end_psn)) = recv_map.get_recent_gap(){
+                    if let Some((start_psn, end_psn)) = recv_map.get_recent_gap() {
                         self.send_nack(qpn, msn, start_psn, end_psn)
                     }
                     need_check_completed_or_try_recover = true;
@@ -614,7 +630,7 @@ impl SlidingWindow {
         }
     }
 
-    #[allow(clippy::unwrap_in_result,clippy::unwrap_used)]
+    #[allow(clippy::unwrap_in_result, clippy::unwrap_used)]
     fn get_recent_gap(&self) -> Option<(Psn, Psn)> {
         if self.intervals.len() <= 1 {
             return None;
@@ -622,7 +638,13 @@ impl SlidingWindow {
         let mut iter = self.intervals.range(..).rev();
         let (last_left, _) = iter.next().unwrap();
         let (_, second_last_right) = iter.next().unwrap();
-        Some((Psn::new(*second_last_right), Psn::new(*last_left)))
+        let left = *last_left;
+        let right = *second_last_right;
+        assert!(left.wrapping_add(1) != right,"Invalid gap");
+        Some((
+            Psn::new(left.wrapping_add(1)),
+            Psn::new(right.wrapping_sub(1)),
+        ))
     }
 
     #[allow(clippy::arithmetic_side_effects, clippy::unwrap_used)]
