@@ -35,7 +35,7 @@ jobs:
       - name: build emulator
         if: steps.cache-building-emulator.outputs.cache-hit != 'true'
         run : |
-          apt update && apt install -y python3-pip tcl8.6
+          apt update && DEBIAN_FRONTEND=noninteractive apt install -y python3-pip tcl8.6
           pip3 install scapy 
           cd ./blue-rdma
           ./setup.sh
