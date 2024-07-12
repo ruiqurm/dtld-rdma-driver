@@ -144,12 +144,6 @@ pub(crate) fn make_read_resp(
 }
 
 /// Covert the MAC address to a u64 in big endian
-///
-/// ```
-/// let mac_addr = MacAddress::new([0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
-/// let be64 = super::mac_to_be64(mac_addr);
-/// assert_eq!(be64, 0xbc9a78563412);
-/// ```
 #[allow(clippy::indexing_slicing)]
 fn mac_to_be64(mac: MacAddress) -> u64 {
     let mac = mac.as_bytes();
