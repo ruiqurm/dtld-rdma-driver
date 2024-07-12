@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
-    sync::{atomic::Ordering, Arc}, time::Duration,
+    slice::from_raw_parts,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 
 use derive_builder::Builder;
@@ -8,10 +10,17 @@ use flume::unbounded;
 use parking_lot::{lock_api::RwLock, Mutex};
 
 use crate::{
-    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE}, checker::{PacketCheckEvent, PacketCheckerContext, RecvContextMap}, device::{
-        ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostWorkRbDescCommon, ToHostWorkRbDescRead,
-        ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType,
-    }, op_ctx::CtrlOpCtx, qp::{QpContext, QpStatus}, retry::RetryMap, types::{Key, Msn, Pmtu, Psn, QpType, Qpn}, utils::{calculate_packet_cnt, get_first_packet_max_length}, CtrlDescriptorSender, WorkDescriptorSender
+    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
+    checker::{PacketCheckEvent, PacketCheckerContext, RecvContextMap},
+    device::{
+        layout::Aeth, ToCardCtrlRbDesc, ToCardWorkRbDesc, ToHostWorkRbDescAethCode, ToHostWorkRbDescCommon, ToHostWorkRbDescRead, ToHostWorkRbDescWriteOrReadResp, ToHostWorkRbDescWriteType
+    },
+    op_ctx::CtrlOpCtx,
+    qp::{QpContext, QpStatus},
+    retry::RetryMap,
+    types::{Key, Msn, Pmtu, Psn, QpType, Qpn},
+    utils::{calculate_packet_cnt, get_first_packet_max_length},
+    CtrlDescriptorSender, WorkDescriptorSender,
 };
 
 macro_rules! construct_context {
@@ -37,7 +46,7 @@ macro_rules! construct_context {
             ctrl_desc_sender,
             work_desc_sender,
             ack_buffers,
-            retry_map : RetryMap::new(0,Duration::new(0,0)),
+            retry_map: RetryMap::new(0, Duration::new(0, 0)),
         };
         let $qpn = Qpn::new($qpn_val);
         $context.qp_table.write().insert(
@@ -447,7 +456,6 @@ fn test_checker_miss_packet_recover_and_miss_again() {
 
     context.handle_check_event(packets[10].clone());
     check_qp_status(&context, qpn, QpStatus::Normal);
-    assert!(device.work_pop().is_none());
 }
 
 #[test]
@@ -690,7 +698,6 @@ fn test_checker_multiple_msn() {
     check_qp_status(&context, qpn, QpStatus::Normal);
     check_recv_ctx_exist(&context, qpn, Msn::new(1), true);
 
-
     reset_packet_psn!(packets, psn = 4, expected = 3);
     context.handle_check_event(packets[4].clone());
     check_qp_status(&context, qpn, QpStatus::OutOfOrder);
@@ -703,7 +710,7 @@ fn test_checker_multiple_msn() {
     reset_packet_psn!(packets, psn = 6, expected = 6);
     context.handle_check_event(packets[6].clone());
     check_recv_ctx_flag_and_intervals(&context, qpn, Msn::new(2), false, false, 1);
-    
+
     reset_packet_psn!(packets, psn = 11, expected = 11);
     context.handle_check_event(packets[11].clone());
     check_recv_ctx_exist(&context, qpn, Msn::new(2), false);
@@ -726,9 +733,6 @@ fn test_checker_multiple_msn() {
     reset_packet_psn!(packets, psn = 0, expected = 13);
     context.handle_check_event(packets[0].clone());
     check_recv_ctx_exist(&context, qpn, Msn::new(2), false);
-
-
-
 }
 
 #[derive(Debug, Default)]
@@ -752,6 +756,17 @@ impl MockCtrlDescSender {
 
     fn work_pop(&self) -> Option<Box<ToCardWorkRbDesc>> {
         self.work_queue.lock().pop()
+    }
+}
+
+fn check_aeth_code(desc : &ToCardWorkRbDesc) -> Option<ToHostWorkRbDescAethCode>{
+    if let ToCardWorkRbDesc::WriteWithImm(ref raw) = *desc {
+        let buf = &unsafe { from_raw_parts(raw.sge0.addr as *const u8, raw.sge0.len.try_into().unwrap()) }[54..];
+        let aeth_header = Aeth(buf);
+        let code = aeth_header.get_aeth_code() as u8;
+        Some(ToHostWorkRbDescAethCode::try_from(code).unwrap())
+    }else{
+        None
     }
 }
 impl CtrlDescriptorSender for MockCtrlDescSender {

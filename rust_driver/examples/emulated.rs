@@ -65,7 +65,9 @@ fn init_global_allocator() {
             libc::O_RDWR,
             0o600,
         );
-
+        if shm_fd == -1{
+            libc::exit(shm_fd);
+        }
         assert!(shm_fd != -1, "shm_open failed");
 
         let heap = libc::mmap(
@@ -206,7 +208,7 @@ fn main() {
         .unwrap();
 
     let _ = ctx1.wait();
-    sleep(Duration::from_secs(3));
+    sleep(Duration::from_secs(1));
     assert_eq!(
         mr_buffer_a.as_ref()[0..SEND_CNT],
         mr_buffer_b.as_ref()[0..SEND_CNT]

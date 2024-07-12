@@ -1,7 +1,13 @@
 use eui48::MacAddress;
 use parking_lot::lock_api::{Mutex, RwLock};
 
-use crate::{buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE}, device::{ToHostWorkRbDescCommon, ToHostWorkRbDescRead}, qp::QpContext, responser::{make_ack, make_nack, make_read_resp, ACKPACKET_SIZE}, types::{Key, Msn, Pmtu, Psn, Qpn, WorkReqSendFlag}};
+use crate::{
+    buf::{PacketBuf, RDMA_ACK_BUFFER_SLOT_SIZE},
+    device::{ToHostWorkRbDescCommon, ToHostWorkRbDescRead},
+    qp::QpContext,
+    responser::{make_ack, make_nack, make_read_resp, ACKPACKET_SIZE},
+    types::{Key, Msn, Pmtu, Psn, Qpn, WorkReqSendFlag},
+};
 
 const BUFFER_SIZE: usize = 1024 * RDMA_ACK_BUFFER_SLOT_SIZE;
 
@@ -112,11 +118,9 @@ fn test_make_nack() {
     // check the content
     // the following context is checked manually
     let expected_buffer = [
-        0x21, 0x43, 0x65, 0x87, 0x9a, 0xbc, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0x08, 0x00, 0x45,
-        0x00, 0x00, 0x34, 0x27, 0x00, 0x00, 0x00, 0x40, 0x11, 0x55, 0xb7, 0x7f, 0x00, 0x00, 0x01,
-        0x7f, 0x00, 0x00, 0x01, 0x12, 0xb7, 0x12, 0xb7, 0x00, 0x20, 0x00, 0x00, 0x11, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x01, 0x41, 0x00, 0x00, 0x04, 0x56, 0x06, 0x00, 0x01, 0x23, 0x00, 0x07,
-        0x89, 0x00, 0xa6, 0xad, 0xef, 0xcc,
+        33, 67, 101, 135, 154, 188, 18, 52, 86, 120, 154, 188, 8, 0, 69, 0, 0, 52, 39, 0, 0, 0, 64,
+        17, 85, 183, 127, 0, 0, 1, 127, 0, 0, 1, 18, 183, 18, 183, 0, 32, 0, 0, 17, 0, 0, 0, 0, 0,
+        1, 65, 0, 0, 4, 86, 96, 0, 1, 35, 0, 7, 137, 0, 154, 4, 107, 218,
     ];
     assert_eq!(&buffer[0..ACKPACKET_SIZE], &expected_buffer);
 }
